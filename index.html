@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>NEXUS ERP — Gestão de Serviços e Operações</title>
   <script>
+    // true  = modo demonstracao (login offline + registro local liberados)
+    // false = producao (login e gravacoes dependem exclusivamente do servidor)
+    window.NEXUS_DEMO_MODE = true;
+  </script>
+  <script>
     // Aplica tema antes do render para evitar flash
     (function(){
       var t = localStorage.getItem('erp_theme') || 'dark';
@@ -500,6 +505,7 @@
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="js/db.js"></script>
+<script src="js/nexus_melhorias.js"></script>
 <script src="js/data.js"></script>
 <script src="js/i18n.js"></script>
 <script src="js/multi_empresa.js"></script>

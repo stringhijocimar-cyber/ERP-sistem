@@ -130,7 +130,7 @@ function renderFinanceiro() {
                       </button>
                     ` : ''}
                     ${f.status !== 'Paga' ? `
-                      <button class="btn btn-success btn-sm btn-icon" onclick="showToast('Baixa registrada para ${f.id}!','success')" title="Baixar Pgto.">
+                      <button class="btn btn-success btn-sm btn-icon" onclick="showToast('Baixa de recebiveis requer o backend financeiro — acao nao persistida.','info')" title="Baixar Pgto.">
                         <i class="fas fa-check"></i>
                       </button>
                     ` : ''}
@@ -342,12 +342,12 @@ function renderFaturamento() {
                       <i class="fas fa-download"></i>
                     </button>
                     ${f.status === 'Atrasada' ? `
-                      <button class="btn btn-warning btn-sm" style="font-size:11px;padding:4px 8px" onclick="showToast('Cobrança enviada!','success')">
+                      <button class="btn btn-warning btn-sm" style="font-size:11px;padding:4px 8px" onclick="showToast('Disparo de cobranca requer integracao de e-mail/portal — nao enviado.','info')">
                         <i class="fas fa-bell"></i> Cobrar
                       </button>
                     ` : ''}
                     ${f.status !== 'Paga' && f.status !== 'Pendente' ? `
-                      <button class="btn btn-success btn-sm btn-icon" onclick="showToast('Baixa registrada!','success')" title="Baixar">
+                      <button class="btn btn-success btn-sm btn-icon" onclick="showToast('Baixa de recebiveis requer o backend financeiro — acao nao persistida.','info')" title="Baixar">
                         <i class="fas fa-check"></i>
                       </button>
                     ` : ''}
@@ -421,7 +421,7 @@ function openNovaFatura() {
     </div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
-    <button class="btn btn-primary" onclick="showToast('Fatura emitida com sucesso!','success');closeModal()">
+    <button class="btn btn-primary" onclick="showToast('Emissao de NF ainda nao conectada ao backend de faturamento — nada foi gravado.','info');closeModal()">
       <i class="fas fa-file-invoice"></i> Emitir NF
     </button>
   `);
@@ -556,8 +556,8 @@ function renderContasPagar() {
   });
 }
 
-function renderTabelaCP_() {
-  const lista = FA_CONTAS_PAGAR;
+function renderTabelaCP_(lista) {
+  if (!Array.isArray(lista)) lista = FA_CONTAS_PAGAR;
   const hoje = new Date().toISOString().split('T')[0];
   if (!lista.length) return `<div class="empty-state"><i class="fas fa-hand-holding-usd"></i><p>Nenhuma conta encontrada</p></div>`;
   return `
@@ -571,21 +571,21 @@ function renderTabelaCP_() {
             const vencido = !c.data_pagamento && c.vencimento < hoje;
             return `
               <tr style="${vencido ? 'background:rgba(220,38,38,0.04)' : ''}">
-                <td style="color:var(--fa-teal);font-weight:600;font-size:11px">${c.id}</td>
-                <td style="font-size:12px">${c.descricao}</td>
-                <td style="font-size:12px;font-weight:500">${c.fornecedor_nome}</td>
-                <td><span class="badge badge-muted" style="font-size:10px">${c.tipo||'—'}</span></td>
-                <td style="font-size:11px;color:var(--text-secondary)">${c.contrato_id||'—'}</td>
+                <td style="color:var(--fa-teal);font-weight:600;font-size:11px">${escapeHtml(c.id)}</td>
+                <td style="font-size:12px">${escapeHtml(c.descricao)}</td>
+                <td style="font-size:12px;font-weight:500">${escapeHtml(c.fornecedor_nome)}</td>
+                <td><span class="badge badge-muted" style="font-size:10px">${escapeHtml(c.tipo||'—')}</span></td>
+                <td style="font-size:11px;color:var(--text-secondary)">${escapeHtml(c.contrato_id||'—')}</td>
                 <td style="font-weight:700;color:var(--orange)">${fmt(c.valor)}</td>
-                <td style="font-size:12px;color:${vencido?'var(--red-light)':'var(--text-secondary)'};font-weight:${vencido?700:400}">${c.vencimento}${vencido?'<span class="badge badge-danger" style="margin-left:4px;font-size:9px">VENC.</span>':''}</td>
-                <td style="font-size:12px;color:${c.data_pagamento?'var(--green-light)':'var(--text-muted)'}">${c.data_pagamento||'—'}</td>
-                <td style="font-size:11px;color:var(--text-muted)">${c.nota_fiscal||'—'}</td>
+                <td style="font-size:12px;color:${vencido?'var(--red-light)':'var(--text-secondary)'};font-weight:${vencido?700:400}">${escapeHtml(c.vencimento)}${vencido?'<span class="badge badge-danger" style="margin-left:4px;font-size:9px">VENC.</span>':''}</td>
+                <td style="font-size:12px;color:${c.data_pagamento?'var(--green-light)':'var(--text-muted)'}">${escapeHtml(c.data_pagamento||'—')}</td>
+                <td style="font-size:11px;color:var(--text-muted)">${escapeHtml(c.nota_fiscal||'—')}</td>
                 <td>${statusBadge(c.data_pagamento ? 'Pago' : vencido ? 'Atrasado' : c.status)}</td>
                 <td>
                   <div class="actions-cell">
                     ${!c.data_pagamento ? `
-                      <button class="btn btn-success btn-sm btn-icon" onclick="baixarCP('${c.id}')" title="Registrar Pagamento"><i class="fas fa-check"></i></button>
-                      <button class="btn btn-secondary btn-sm btn-icon" onclick="editarCP('${c.id}')" title="Editar"><i class="fas fa-edit"></i></button>
+                      <button class="btn btn-success btn-sm btn-icon" onclick="baixarCP('${escapeHtml(c.id)}')" title="Registrar Pagamento"><i class="fas fa-check"></i></button>
+                      <button class="btn btn-secondary btn-sm btn-icon" onclick="editarCP('${escapeHtml(c.id)}')" title="Editar"><i class="fas fa-edit"></i></button>
                     ` : '<span style="color:var(--green-light);font-size:11px"><i class="fas fa-check-circle"></i> Pago</span>'}
                   </div>
                 </td>
@@ -599,36 +599,62 @@ function renderTabelaCP_() {
 }
 
 function filterCP() {
-  const s = document.getElementById('searchCP').value.toLowerCase();
-  const st = document.getElementById('filterCPStatus').value;
-  const tp = document.getElementById('filterCPTipo').value;
+  const s  = (document.getElementById('searchCP')?.value || '').toLowerCase();
+  const st = document.getElementById('filterCPStatus')?.value || '';
+  const tp = document.getElementById('filterCPTipo')?.value || '';
   const hoje = new Date().toISOString().split('T')[0];
-  const f = FA_CONTAS_PAGAR.filter(c => {
-    const ms = !s || (c.descricao+c.fornecedor_nome+c.contrato_id).toLowerCase().includes(s);
-    const actualStatus = c.data_pagamento ? 'Pago' : c.vencimento < hoje ? 'Atrasado' : c.status;
-    const mst = !st || actualStatus === st;
-    const mt = !tp || c.tipo === tp;
+  const filtradas = FA_CONTAS_PAGAR.filter(c => {
+    const ms  = !s || ((c.descricao||'') + (c.fornecedor_nome||'') + (c.contrato_id||'')).toLowerCase().includes(s);
+    const real = c.data_pagamento ? 'Pago' : (c.vencimento < hoje ? 'Atrasado' : c.status);
+    const mst = !st || real === st;
+    const mt  = !tp || c.tipo === tp;
     return ms && mst && mt;
   });
-  document.getElementById('tabelaCP').innerHTML = (() => {
-    const lista = f;
-    const hoje2 = new Date().toISOString().split('T')[0];
-    if (!lista.length) return `<div class="empty-state"><i class="fas fa-hand-holding-usd"></i><p>Nenhuma conta encontrada</p></div>`;
-    return `<div class="table-wrapper"><table><thead><tr><th>ID</th><th>Descrição</th><th>Fornecedor</th><th>Tipo</th><th>Contrato</th><th>Valor</th><th>Vencimento</th><th>Pgto. Real</th><th>Status</th><th>Ações</th></tr></thead><tbody>${lista.map(c => {
-      const vencido = !c.data_pagamento && c.vencimento < hoje2;
-      return `<tr><td style="color:var(--fa-teal);font-size:11px">${c.id}</td><td style="font-size:12px">${c.descricao}</td><td style="font-size:12px">${c.fornecedor_nome}</td><td><span class="badge badge-muted" style="font-size:10px">${c.tipo||'—'}</span></td><td style="font-size:11px;color:var(--text-secondary)">${c.contrato_id||'—'}</td><td style="font-weight:700;color:var(--orange)">${fmt(c.valor)}</td><td style="font-size:12px;color:${vencido?'var(--red-light)':'var(--text-secondary)'}">${c.vencimento}</td><td style="font-size:12px;color:${c.data_pagamento?'var(--green-light)':'var(--text-muted)'}">${c.data_pagamento||'—'}</td><td>${statusBadge(c.data_pagamento ? 'Pago' : vencido ? 'Atrasado' : c.status)}</td><td><div class="actions-cell">${!c.data_pagamento ? `<button class="btn btn-success btn-sm btn-icon" onclick="baixarCP('${c.id}')"><i class="fas fa-check"></i></button>` : '<i class="fas fa-check-circle" style="color:var(--green-light)"></i>'}</div></td></tr>`;
-    }).join('')}</tbody></table></div>`;
-  })();
+  // Reutiliza a MESMA funcao de render (com escape de HTML) — sem duplicar codigo.
+  document.getElementById('tabelaCP').innerHTML = renderTabelaCP_(filtradas);
 }
 
 async function baixarCP(id) {
   const idx = FA_CONTAS_PAGAR.findIndex(c => c.id === id);
   if (idx < 0) return;
-  FA_CONTAS_PAGAR[idx].data_pagamento = new Date().toISOString().split('T')[0];
-  FA_CONTAS_PAGAR[idx].status = 'Pago';
-  try { await fetch(`tables/fa_contas_pagar/${id}`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ data_pagamento: FA_CONTAS_PAGAR[idx].data_pagamento, status: 'Pago' }) }); } catch(e) {}
-  logAction('Baixa CP', 'Financeiro', `${FA_CONTAS_PAGAR[idx].descricao} pago – ${fmt(FA_CONTAS_PAGAR[idx].valor)}`);
-  showToast(`Pagamento registrado: ${FA_CONTAS_PAGAR[idx].descricao}`, 'success');
+  const conta = FA_CONTAS_PAGAR[idx];
+
+  // 1) GATE DE LASTRO — a regra critica do ERP. Vale em demo E em producao.
+  const check = podePagarConta(conta);
+  if (!check.ok) {
+    showToast('Pagamento bloqueado: ' + check.motivos.join('; '), 'error');
+    return; // NAO marca como pago
+  }
+
+  const dadosPgto = { data_pagamento: new Date().toISOString().split('T')[0], status: 'Pago' };
+
+  // 2) Tenta persistir no servidor (sem engolir o erro).
+  let servidorConfirmou = false;
+  try {
+    const res = await fetch(`tables/fa_contas_pagar/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(dadosPgto)
+    });
+    servidorConfirmou = res.ok;
+  } catch (e) { servidorConfirmou = false; }
+
+  // 3) Decide conforme o ambiente — honesto nos dois casos.
+  if (!servidorConfirmou) {
+    if (window.NEXUS_DEMO_MODE === true) {
+      FA_CONTAS_PAGAR[idx] = { ...conta, ...dadosPgto, _local: true };
+      logAction('Baixa CP (demo/local)', 'Financeiro', `${conta.descricao} – ${fmt(conta.valor)}`);
+      showToast('Registrado localmente (modo demonstracao — nao persistido no servidor).', 'warning');
+      document.getElementById('tabelaCP').innerHTML = renderTabelaCP_();
+      return;
+    }
+    showToast('Nao foi possivel registrar o pagamento (servidor indisponivel ou recusou). Nada foi alterado.', 'error');
+    return;
+  }
+
+  // 4) Servidor confirmou de verdade.
+  FA_CONTAS_PAGAR[idx] = { ...conta, ...dadosPgto };
+  logAction('Baixa CP', 'Financeiro', `${conta.descricao} pago – ${fmt(conta.valor)}`);
+  showToast(`Pagamento registrado: ${conta.descricao}`, 'success');
   document.getElementById('tabelaCP').innerHTML = renderTabelaCP_();
 }
 

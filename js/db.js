@@ -101,17 +101,20 @@ const Auth = {
       });
       if (data?.token) {
         _setToken(data.token);
-        if (data.user) {
-          localStorage.setItem('fa_current_user', JSON.stringify(data.user));
-        }
+        if (data.user) localStorage.setItem('fa_current_user', JSON.stringify(data.user));
       }
       return data;
-    } catch(e) {
-      // Fallback localStorage (modo offline/dev)
+    } catch (e) {
+      // -- Login OFFLINE so para DEMONSTRACAO (secure-by-default) ------------
+      // So funciona com window.NEXUS_DEMO_MODE === true (padrao: DESLIGADO).
+      // Em producao (flag off) o login depende SO do servidor e falha de
+      // forma honesta se ele estiver fora. Removida a senha-mestra universal.
+      if (window.NEXUS_DEMO_MODE !== true) throw e;
       const users = _lsGet('fa_usuarios');
       const u = users.find(u => u.email === email || u.username === email);
-      if (u && (u.senha === senha || senha === 'admin' || senha === 'Fraser@2025')) {
-        return { token: 'local-dev-token', user: u };
+      const DEMO_PASS = 'Fraser@2025'; // conveniencia da demo; NUNCA em producao
+      if (u && (u.senha === senha || senha === DEMO_PASS)) {
+        return { token: 'demo-' + (u.id || u.email), user: u, _demo: true };
       }
       throw e;
     }
@@ -343,13 +346,22 @@ function _updateLocal(lsKey, id, changes) {
 // ─── LOGS ─────────────────────────────────────────────────────
 const Logs = {
   async registrar(acao, modulo, descricao) {
-    try { await _apiFetch('/api/logs', { method: 'POST', body: JSON.stringify({ acao, modulo, descricao }) }); }
-    catch { /* silencioso */ }
-    // Sempre salva local também
+    const entrada = {
+      id: `log-${Date.now()}`, acao, modulo, descricao,
+      usuario_nome: (_getCurrentUser()?.name || _getCurrentUser()?.nome || '—'),
+      criado_em: new Date().toISOString(),
+      sincronizado: false
+    };
+    try {
+      await _apiFetch('/api/logs', { method: 'POST', body: JSON.stringify({ acao, modulo, descricao }) });
+      entrada.sincronizado = true;
+    } catch (e) {
+      // Nao trava a acao do usuario, mas TAMBEM nao some: marca pendente e avisa.
+      console.warn('[DB] Log nao sincronizado (mantido local como pendente):', e.message);
+    }
     const logs = _lsGet(DB_CONFIG.keys.logs);
-    const user = _getCurrentUser();
-    logs.unshift({ id: `log-${Date.now()}`, acao, modulo, descricao, usuario_nome: user?.name || user?.nome, criado_em: new Date().toISOString() });
-    _lsSet(DB_CONFIG.keys.logs, logs.slice(0, 500));
+    logs.unshift(entrada);
+    _lsSet(DB_CONFIG.keys.logs, logs.slice(0, 2000)); // cap maior (antes 500)
   },
   async listar(modulo = '', limit = 100) {
     try { return await _apiFetch(`/api/logs?${new URLSearchParams({ modulo, limit: String(limit) })}`); }
