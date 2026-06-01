@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpsCore ERP – Criar Conta Grátis</title>
+  <meta name="description" content="Crie sua conta e comece o trial gratuito de 14 dias do OpsCore ERP.">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
+
+    :root {
+      --orange: #e67e22;
+      --orange-dark: #ca6f1e;
+      --dark: #0d0e12;
+      --card: #14161c;
+      --card2: #1a1d25;
+      --border: rgba(255,255,255,0.08);
+      --green: #2ecc71;
+    }
+
+    body { background: var(--dark); color: #e8e9ec; min-height: 100vh; }
+
+    /* ── Background animado ── */
+    .bg-animated {
+      background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(230,126,34,0.12) 0%, transparent 70%),
+                  var(--dark);
+      min-height: 100vh;
+    }
+
+    /* ── Steps ── */
+    .step-dot {
+      width: 36px; height: 36px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: .85rem;
+      border: 2px solid var(--border);
+      background: var(--card2);
+      color: #888;
+      transition: all .3s;
+    }
+    .step-dot.active {
+      border-color: var(--orange);
+      background: rgba(230,126,34,0.15);
+      color: var(--orange);
+    }
+    .step-dot.done {
+      border-color: var(--green);
+      background: rgba(46,204,113,0.15);
+      color: var(--green);
+    }
+    .step-line { flex: 1; height: 2px; background: var(--border); transition: all .3s; }
+    .step-line.done { background: var(--green); }
+
+    /* ── Inputs ── */
+    .inp {
+      width: 100%; background: var(--card2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 16px; color: #e8e9ec;
+      font-size: .95rem; transition: all .2s; outline: none;
+    }
+    .inp:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(230,126,34,0.1); }
+    .inp::placeholder { color: #555; }
+    .inp.error { border-color: #e74c3c; }
+
+    .inp-label { font-size: .8rem; font-weight: 600; color: #aaa; margin-bottom: 6px; display: block; text-transform: uppercase; letter-spacing: .05em; }
+
+    /* ── Select ── */
+    select.inp { appearance: none; cursor: pointer; }
+
+    /* ── Botões ── */
+    .btn-primary {
+      background: linear-gradient(135deg, #e67e22, #ca6f1e);
+      color: white; border: none; border-radius: 10px;
+      padding: 13px 24px; font-size: .95rem; font-weight: 600;
+      cursor: pointer; transition: all .2s; width: 100%;
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(230,126,34,0.35); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+    .btn-secondary {
+      background: transparent; color: #aaa; border: 1px solid var(--border);
+      border-radius: 10px; padding: 13px 24px; font-size: .95rem;
+      cursor: pointer; transition: all .2s; width: 100%;
+    }
+    .btn-secondary:hover { border-color: #555; color: #ccc; }
+
+    /* ── Cards de plano ── */
+    .plan-opt {
+      border: 2px solid var(--border); border-radius: 14px;
+      padding: 18px; cursor: pointer; transition: all .2s;
+      background: var(--card2);
+    }
+    .plan-opt:hover { border-color: rgba(230,126,34,0.4); }
+    .plan-opt.selected { border-color: var(--orange); background: rgba(230,126,34,0.08); }
+    .plan-opt.popular-opt { border-color: rgba(230,126,34,0.5); }
+
+    /* ── Cards de segmento ── */
+    .seg-opt {
+      border: 2px solid var(--border); border-radius: 12px;
+      padding: 14px 10px; cursor: pointer; transition: all .2s;
+      background: var(--card2); text-align: center;
+    }
+    .seg-opt:hover { border-color: rgba(230,126,34,0.4); transform: translateY(-2px); }
+    .seg-opt.selected { border-color: var(--orange); background: rgba(230,126,34,0.1); }
+
+    /* ── Força senha ── */
+    .pwd-bar { height: 4px; border-radius: 2px; transition: all .3s; }
+
+    /* ── Animações ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .fade-up { animation: fadeUp .35s ease forwards; }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .spin { animation: spin 1s linear infinite; }
+
+    /* ── Checkmark ── */
+    @keyframes checkDraw {
+      from { stroke-dashoffset: 100; }
+      to { stroke-dashoffset: 0; }
+    }
+    .check-svg { stroke-dasharray: 100; stroke-dashoffset: 100; animation: checkDraw .6s ease .3s forwards; }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed; top: 20px; right: 20px;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 20px;
+      display: flex; align-items: center; gap: 10px;
+      font-size: .9rem; z-index: 9999;
+      animation: fadeUp .3s ease;
+      max-width: 360px;
+    }
+    .toast.success { border-left: 4px solid var(--green); }
+    .toast.error { border-left: 4px solid #e74c3c; }
+
+    /* ── Responsivo ── */
+    @media(max-width: 640px) {
+      .step-label { display: none; }
+      .form-grid-2 { grid-template-columns: 1fr !important; }
+    }
+  </style>
+</head>
+<body class="bg-animated">
+
+  <!-- NAV -->
+  <nav style="background:rgba(13,14,18,0.9);backdrop-filter:blur(16px);border-bottom:1px solid var(--border)" class="px-6 py-4">
+    <div class="max-w-5xl mx-auto flex items-center justify-between">
+      <a href="/landing.html" class="flex items-center gap-2 text-white font-bold text-xl">
+        <div style="background:linear-gradient(135deg,#e67e22,#ca6f1e);width:32px;height:32px;border-radius:8px;" class="flex items-center justify-center">
+          <i class="fas fa-cube text-white text-sm"></i>
+        </div>
+        OpsCore
+      </a>
+      <a href="/landing.html" class="text-sm text-gray-400 hover:text-white transition">
+        <i class="fas fa-arrow-left mr-1"></i> Voltar
+      </a>
+    </div>
+  </nav>
+
+  <!-- CONTEÚDO PRINCIPAL -->
+  <div class="max-w-2xl mx-auto px-4 py-10">
+
+    <!-- HEADER -->
+    <div class="text-center mb-8 fade-up">
+      <h1 class="text-3xl font-bold text-white mb-2">Crie sua conta grátis</h1>
+      <p class="text-gray-400">Trial de 14 dias · Sem cartão de crédito · Cancele quando quiser</p>
+    </div>
+
+    <!-- STEPS INDICATOR -->
+    <div class="flex items-center mb-10 px-2">
+      <!-- Step 1 -->
+      <div class="flex flex-col items-center gap-1">
+        <div class="step-dot active" id="dot-1">1</div>
+        <span class="step-label text-xs text-gray-500">Empresa</span>
+      </div>
+      <div class="step-line" id="line-1-2"></div>
+      <!-- Step 2 -->
+      <div class="flex flex-col items-center gap-1">
+        <div class="step-dot" id="dot-2">2</div>
+        <span class="step-label text-xs text-gray-500">Segmento</span>
+      </div>
+      <div class="step-line" id="line-2-3"></div>
+      <!-- Step 3 -->
+      <div class="flex flex-col items-center gap-1">
+        <div class="step-dot" id="dot-3">3</div>
+        <span class="step-label text-xs text-gray-500">Conta</span>
+      </div>
+      <div class="step-line" id="line-3-4"></div>
+      <!-- Step 4 -->
+      <div class="flex flex-col items-center gap-1">
+        <div class="step-dot" id="dot-4">4</div>
+        <span class="step-label text-xs text-gray-500">Plano</span>
+      </div>
+    </div>
+
+    <!-- CARD DO FORMULÁRIO -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:20px;" class="p-8">
+
+      <!-- ═══ STEP 1: DADOS DA EMPRESA ═══ -->
+      <div id="step-1" class="fade-up">
+        <h2 class="text-xl font-semibold text-white mb-6">
+          <i class="fas fa-building text-orange-400 mr-2"></i>
+          Dados da empresa
+        </h2>
+        <div class="space-y-5">
+          <div>
+            <label class="inp-label">Nome da empresa *</label>
+            <input type="text" id="f-empresa" class="inp" placeholder="Ex.: Mineração Horizonte Ltda">
+          </div>
+          <div class="grid gap-4 form-grid-2" style="grid-template-columns:1fr 1fr">
+            <div>
+              <label class="inp-label">CNPJ</label>
+              <input type="text" id="f-cnpj" class="inp" placeholder="00.000.000/0001-00" maxlength="18">
+            </div>
+            <div>
+              <label class="inp-label">Telefone</label>
+              <input type="text" id="f-telefone" class="inp" placeholder="(11) 99999-0000" maxlength="15">
+            </div>
+          </div>
+          <div>
+            <label class="inp-label">Site / LinkedIn (opcional)</label>
+            <input type="text" id="f-site" class="inp" placeholder="https://suaempresa.com.br">
+          </div>
+          <div class="grid gap-4 form-grid-2" style="grid-template-columns:1fr 1fr">
+            <div>
+              <label class="inp-label">Número de funcionários</label>
+              <select id="f-funcionarios" class="inp">
+                <option value="">Selecione</option>
+                <option value="1-10">1 a 10</option>
+                <option value="11-50">11 a 50</option>
+                <option value="51-200">51 a 200</option>
+                <option value="201-500">201 a 500</option>
+                <option value="500+">Mais de 500</option>
+              </select>
+            </div>
+            <div>
+              <label class="inp-label">País</label>
+              <select id="f-pais" class="inp">
+                <option value="BR">🇧🇷 Brasil</option>
+                <option value="AR">🇦🇷 Argentina</option>
+                <option value="CL">🇨🇱 Chile</option>
+                <option value="CO">🇨🇴 Colômbia</option>
+                <option value="PE">🇵🇪 Peru</option>
+                <option value="MX">🇲🇽 México</option>
+                <option value="outro">Outro</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ STEP 2: SEGMENTO ═══ -->
+      <div id="step-2" class="fade-up" style="display:none">
+        <h2 class="text-xl font-semibold text-white mb-2">
+          <i class="fas fa-industry text-orange-400 mr-2"></i>
+          Qual é o seu segmento?
+        </h2>
+        <p class="text-gray-400 text-sm mb-6">Vamos personalizar o ERP para sua realidade.</p>
+        <div class="grid grid-cols-3 gap-3" id="segmentos-grid">
+          <!-- Preenchido pelo JS -->
+        </div>
+        <div class="mt-6">
+          <label class="inp-label">Descreva sua operação principal (opcional)</label>
+          <textarea id="f-descricao" class="inp" rows="3" style="resize:vertical" placeholder="Ex.: Mineração de cobre com 3 frentes e terceirização de manutenção..."></textarea>
+        </div>
+      </div>
+
+      <!-- ═══ STEP 3: CONTA DO ADMIN ═══ -->
+      <div id="step-3" class="fade-up" style="display:none">
+        <h2 class="text-xl font-semibold text-white mb-6">
+          <i class="fas fa-user-shield text-orange-400 mr-2"></i>
+          Dados do administrador
+        </h2>
+        <div class="space-y-5">
+          <div class="grid gap-4 form-grid-2" style="grid-template-columns:1fr 1fr">
+            <div>
+              <label class="inp-label">Nome *</label>
+              <input type="text" id="f-nome" class="inp" placeholder="Seu nome">
+            </div>
+            <div>
+              <label class="inp-label">Sobrenome *</label>
+              <input type="text" id="f-sobrenome" class="inp" placeholder="Seu sobrenome">
+            </div>
+          </div>
+          <div>
+            <label class="inp-label">E-mail corporativo *</label>
+            <input type="email" id="f-email" class="inp" placeholder="voce@suaempresa.com">
+          </div>
+          <div>
+            <label class="inp-label">Senha *</label>
+            <div style="position:relative">
+              <input type="password" id="f-senha" class="inp" placeholder="Mínimo 8 caracteres" style="padding-right:44px">
+              <button type="button" onclick="togglePwd('f-senha','eye-1')" style="position:absolute;right:14px;top:50%;transform:translateY(-50%);color:#888;background:none;border:none;cursor:pointer">
+                <i class="fas fa-eye" id="eye-1"></i>
+              </button>
+            </div>
+            <!-- Barra de força -->
+            <div class="mt-2 space-y-1">
+              <div class="flex gap-1">
+                <div class="pwd-bar flex-1 bg-gray-700" id="bar1"></div>
+                <div class="pwd-bar flex-1 bg-gray-700" id="bar2"></div>
+                <div class="pwd-bar flex-1 bg-gray-700" id="bar3"></div>
+                <div class="pwd-bar flex-1 bg-gray-700" id="bar4"></div>
+              </div>
+              <p class="text-xs text-gray-500" id="pwd-strength-txt"></p>
+            </div>
+          </div>
+          <div>
+            <label class="inp-label">Confirmar senha *</label>
+            <div style="position:relative">
+              <input type="password" id="f-senha2" class="inp" placeholder="Repita a senha" style="padding-right:44px">
+              <button type="button" onclick="togglePwd('f-senha2','eye-2')" style="position:absolute;right:14px;top:50%;transform:translateY(-50%);color:#888;background:none;border:none;cursor:pointer">
+                <i class="fas fa-eye" id="eye-2"></i>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label class="inp-label">Cargo / Função *</label>
+            <select id="f-cargo" class="inp">
+              <option value="">Selecione seu cargo</option>
+              <option>CEO / Diretor Geral</option>
+              <option>Gerente de Projetos</option>
+              <option>Gerente Operacional</option>
+              <option>Gerente de Suprimentos / Compras</option>
+              <option>Gerente Financeiro</option>
+              <option>Gestor de SSMA</option>
+              <option>Analista / Coordenador</option>
+              <option>TI / Implementação</option>
+              <option>Outro</option>
+            </select>
+          </div>
+          <!-- LGPD consent -->
+          <div style="background:rgba(230,126,34,0.06);border:1px solid rgba(230,126,34,0.2);border-radius:12px;padding:14px">
+            <label class="flex items-start gap-3 cursor-pointer">
+              <input type="checkbox" id="f-lgpd" style="margin-top:3px;accent-color:var(--orange);width:18px;height:18px">
+              <span class="text-sm text-gray-300">
+                Concordo com os <a href="#" class="text-orange-400 underline">Termos de Uso</a> e 
+                <a href="#" class="text-orange-400 underline">Política de Privacidade</a>, e autorizo o 
+                tratamento dos meus dados conforme a <strong>LGPD (Lei 13.709/2018)</strong>.
+              </span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ STEP 4: ESCOLHA DO PLANO ═══ -->
+      <div id="step-4" class="fade-up" style="display:none">
+        <h2 class="text-xl font-semibold text-white mb-2">
+          <i class="fas fa-star text-orange-400 mr-2"></i>
+          Escolha seu plano
+        </h2>
+        <p class="text-gray-400 text-sm mb-6">Todos os planos incluem <strong>14 dias grátis</strong>. Sem cobranças agora.</p>
+        
+        <div class="space-y-3" id="planos-lista"></div>
+
+        <div class="mt-6 p-4 rounded-xl" style="background:rgba(46,204,113,0.08);border:1px solid rgba(46,204,113,0.2)">
+          <div class="flex items-center gap-2 text-sm text-green-400">
+            <i class="fas fa-shield-alt"></i>
+            <strong>Garantia de 30 dias</strong> – se não gostar, devolvemos 100% do valor.
+          </div>
+          <div class="flex items-center gap-2 text-sm text-gray-400 mt-2">
+            <i class="fas fa-lock"></i>
+            Dados armazenados no Brasil (sa-east-1) em conformidade com a LGPD.
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ STEP 5: SUCESSO ═══ -->
+      <div id="step-success" style="display:none" class="text-center py-8 fade-up">
+        <div class="mx-auto mb-6" style="width:80px;height:80px;background:rgba(46,204,113,0.15);border-radius:50%;display:flex;align-items:center;justify-content:center;border:3px solid var(--green)">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path class="check-svg" d="M8 20 L16 28 L32 12" stroke="#2ecc71" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </div>
+        <h2 class="text-2xl font-bold text-white mb-2">Conta criada com sucesso! 🎉</h2>
+        <p class="text-gray-400 mb-2">Trial de 14 dias ativado para <span id="success-empresa" class="text-orange-400 font-semibold"></span></p>
+        <p class="text-gray-500 text-sm mb-8">Enviamos as instruções de acesso para <span id="success-email" class="text-white"></span></p>
+        
+        <div class="grid grid-cols-3 gap-4 mb-8">
+          <div class="rounded-xl p-4" style="background:var(--card2);border:1px solid var(--border)">
+            <div class="text-2xl font-bold text-orange-400" id="success-usuarios">5</div>
+            <div class="text-xs text-gray-500 mt-1">Usuários inclusos</div>
+          </div>
+          <div class="rounded-xl p-4" style="background:var(--card2);border:1px solid var(--border)">
+            <div class="text-2xl font-bold text-orange-400">14</div>
+            <div class="text-xs text-gray-500 mt-1">Dias de trial</div>
+          </div>
+          <div class="rounded-xl p-4" style="background:var(--card2);border:1px solid var(--border)">
+            <div class="text-2xl font-bold text-green-400">R$0</div>
+            <div class="text-xs text-gray-500 mt-1">Agora</div>
+          </div>
+        </div>
+
+        <div class="space-y-3">
+          <button onclick="irParaERP()" class="btn-primary">
+            <i class="fas fa-rocket mr-2"></i>Acessar o ERP agora
+          </button>
+          <button onclick="window.location='/landing.html'" class="btn-secondary">
+            Voltar para a página inicial
+          </button>
+        </div>
+      </div>
+
+      <!-- ═══ NAVEGAÇÃO DOS STEPS ═══ -->
+      <div id="step-nav" class="flex gap-3 mt-8">
+        <button id="btn-back" onclick="prevStep()" class="btn-secondary" style="display:none">
+          <i class="fas fa-arrow-left mr-2"></i>Voltar
+        </button>
+        <button id="btn-next" onclick="nextStep()" class="btn-primary">
+          Continuar <i class="fas fa-arrow-right ml-2"></i>
+        </button>
+      </div>
+
+    </div>
+
+    <!-- SEGURANÇA / SOCIAL PROOF -->
+    <div class="mt-6 text-center">
+      <div class="flex items-center justify-center gap-6 flex-wrap text-sm text-gray-500">
+        <span><i class="fas fa-lock text-green-400 mr-1"></i>SSL/TLS</span>
+        <span><i class="fas fa-database text-orange-400 mr-1"></i>Dados no Brasil</span>
+        <span><i class="fas fa-shield-alt text-blue-400 mr-1"></i>LGPD</span>
+        <span><i class="fas fa-credit-card text-purple-400 mr-1"></i>Sem cartão</span>
+        <span><i class="fas fa-undo text-pink-400 mr-1"></i>30 dias garantia</span>
+      </div>
+    </div>
+
+  </div><!-- /max-w -->
+
+  <!-- TOAST CONTAINER -->
+  <div id="toast-container" style="position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// DADOS DOS SEGMENTOS
+// ─────────────────────────────────────────────
+const SEGMENTOS = [
+  { id:'mineracao',     icon:'fa-gem',           label:'Mineração' },
+  { id:'construcao',    icon:'fa-hard-hat',       label:'Construção' },
+  { id:'petroleo',      icon:'fa-oil-can',        label:'Petróleo & Gás' },
+  { id:'industrial',    icon:'fa-industry',       label:'Industrial' },
+  { id:'siderurgia',    icon:'fa-fire',           label:'Siderurgia' },
+  { id:'logistica',     icon:'fa-truck',          label:'Logística' },
+  { id:'energia',       icon:'fa-bolt',           label:'Energia' },
+  { id:'agricola',      icon:'fa-tractor',        label:'Agro' },
+  { id:'outro',         icon:'fa-ellipsis-h',     label:'Outro' },
+]
+
+// ─────────────────────────────────────────────
+// DADOS DOS PLANOS
+// ─────────────────────────────────────────────
+const PLANOS = [
+  {
+    id: 'trial',
+    nome: 'Trial Gratuito',
+    preco: 0,
+    periodo: '14 dias',
+    usuarios: 3,
+    descricao: 'Explore todas as funcionalidades sem compromisso.',
+    features: ['3 usuários', 'Todos os módulos por 14 dias', '1 GB de armazenamento', 'Suporte por e-mail'],
+    cor: '#2ecc71',
+  },
+  {
+    id: 'starter',
+    nome: 'Starter',
+    preco: 890,
+    periodo: '/mês',
+    usuarios: 5,
+    descricao: 'Para pequenas empreiteiras e prestadores de serviço.',
+    features: ['5 usuários', 'OS, Contratos, Compras', 'Fornecedores & IDF', 'Financeiro & Relatórios', '5 GB de armazenamento'],
+    cor: '#e67e22',
+  },
+  {
+    id: 'professional',
+    nome: 'Professional',
+    preco: 2490,
+    periodo: '/mês',
+    usuarios: 20,
+    popular: true,
+    descricao: 'Para mineradoras e construtoras em crescimento.',
+    features: ['20 usuários', 'Todos os módulos', 'Gantt & Projetos', 'SSMA & CRM', 'Proposta Comercial', '50 GB de armazenamento', 'Suporte prioritário'],
+    cor: '#e67e22',
+  },
+  {
+    id: 'enterprise',
+    nome: 'Enterprise',
+    preco: 6900,
+    periodo: '/mês',
+    usuarios: 999,
+    descricao: 'Para grandes grupos industriais e multi-sites.',
+    features: ['Usuários ilimitados', 'Todos os módulos', 'SSO / Active Directory', 'API Pública', 'White-label', '500 GB de armazenamento', 'Gerente de conta dedicado', 'SLA 99.9%'],
+    cor: '#9b59b6',
+  },
+]
+
+// ─────────────────────────────────────────────
+// ESTADO
+// ─────────────────────────────────────────────
+let currentStep = 1
+let selectedSegmento = ''
+let selectedPlano = 'trial'
+
+// ─────────────────────────────────────────────
+// INIT
+// ─────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  renderSegmentos()
+  renderPlanos()
+  maskCNPJ()
+  maskTel()
+  pwdStrength()
+})
+
+// ─────────────────────────────────────────────
+// RENDERIZAR SEGMENTOS
+// ─────────────────────────────────────────────
+function renderSegmentos() {
+  const grid = document.getElementById('segmentos-grid')
+  grid.innerHTML = SEGMENTOS.map(s => `
+    <div class="seg-opt ${s.id===selectedSegmento?'selected':''}" onclick="selectSegmento('${s.id}')">
+      <i class="fas ${s.icon} text-orange-400 text-2xl mb-2 block"></i>
+      <div class="text-sm font-medium text-white">${s.label}</div>
+    </div>
+  `).join('')
+}
+
+function selectSegmento(id) {
+  selectedSegmento = id
+  renderSegmentos()
+}
+
+// ─────────────────────────────────────────────
+// RENDERIZAR PLANOS
+// ─────────────────────────────────────────────
+function renderPlanos() {
+  const lista = document.getElementById('planos-lista')
+  lista.innerHTML = PLANOS.map(p => `
+    <div class="plan-opt ${p.id===selectedPlano?'selected':''} ${p.popular?'popular-opt':''}" onclick="selectPlano('${p.id}')">
+      <div class="flex items-start justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <div style="width:18px;height:18px;border-radius:50%;border:2px solid ${p.cor};background:${p.id===selectedPlano?p.cor:'transparent'};display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px">
+            ${p.id===selectedPlano?'<i class="fas fa-check text-white" style="font-size:9px"></i>':''}
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-white">${p.nome}</span>
+              ${p.popular?'<span style="background:var(--orange);color:white;font-size:.65rem;padding:2px 8px;border-radius:20px;font-weight:700">POPULAR</span>':''}
+            </div>
+            <div class="text-xs text-gray-400 mt-1">${p.descricao}</div>
+          </div>
+        </div>
+        <div class="text-right flex-shrink-0">
+          <div class="text-xl font-bold" style="color:${p.cor}">${p.preco===0?'Grátis':'R$'+p.preco.toLocaleString('pt-BR')}</div>
+          <div class="text-xs text-gray-500">${p.periodo}</div>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 mt-3">
+        ${p.features.map(f=>`<span style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:3px 10px;font-size:.75rem;color:#aaa"><i class="fas fa-check text-green-400 mr-1"></i>${f}</span>`).join('')}
+      </div>
+    </div>
+  `).join('')
+}
+
+function selectPlano(id) {
+  selectedPlano = id
+  renderPlanos()
+}
+
+// ─────────────────────────────────────────────
+// NAVEGAÇÃO
+// ─────────────────────────────────────────────
+function nextStep() {
+  if (!validateStep(currentStep)) return
+
+  if (currentStep < 4) {
+    updateDot(currentStep, 'done')
+    updateLine(currentStep, currentStep+1, true)
+    currentStep++
+    updateDot(currentStep, 'active')
+    showStep(currentStep)
+    updateNav()
+  } else {
+    submitForm()
+  }
+}
+
+function prevStep() {
+  if (currentStep > 1) {
+    updateDot(currentStep, '')
+    updateLine(currentStep-1, currentStep, false)
+    currentStep--
+    updateDot(currentStep, 'active')
+    showStep(currentStep)
+    updateNav()
+  }
+}
+
+function showStep(n) {
+  for(let i=1;i<=4;i++){
+    const el = document.getElementById('step-'+i)
+    if(el) el.style.display = i===n ? '' : 'none'
+  }
+}
+
+function updateDot(n, state) {
+  const dot = document.getElementById('dot-'+n)
+  dot.classList.remove('active','done')
+  if(state) dot.classList.add(state)
+  if(state==='done') dot.innerHTML = '<i class="fas fa-check" style="font-size:.7rem"></i>'
+  else dot.innerHTML = n
+}
+
+function updateLine(from, to, done) {
+  const line = document.getElementById(`line-${from}-${to}`)
+  if(line) {
+    line.classList.toggle('done', done)
+  }
+}
+
+function updateNav() {
+  const btnBack = document.getElementById('btn-back')
+  const btnNext = document.getElementById('btn-next')
+  btnBack.style.display = currentStep > 1 ? '' : 'none'
+  
+  if(currentStep === 4) {
+    btnNext.innerHTML = '<i class="fas fa-rocket mr-2"></i>Criar conta e iniciar trial'
+  } else {
+    btnNext.innerHTML = 'Continuar <i class="fas fa-arrow-right ml-2"></i>'
+  }
+}
+
+// ─────────────────────────────────────────────
+// VALIDAÇÃO POR STEP
+// ─────────────────────────────────────────────
+function validateStep(n) {
+  if(n === 1) {
+    const empresa = document.getElementById('f-empresa').value.trim()
+    if(!empresa) { showToast('Informe o nome da empresa', 'error'); highlight('f-empresa'); return false }
+    return true
+  }
+  if(n === 2) {
+    if(!selectedSegmento) { showToast('Selecione o segmento da sua empresa', 'error'); return false }
+    return true
+  }
+  if(n === 3) {
+    const nome = document.getElementById('f-nome').value.trim()
+    const sobrenome = document.getElementById('f-sobrenome').value.trim()
+    const email = document.getElementById('f-email').value.trim()
+    const senha = document.getElementById('f-senha').value
+    const senha2 = document.getElementById('f-senha2').value
+    const cargo = document.getElementById('f-cargo').value
+    const lgpd = document.getElementById('f-lgpd').checked
+
+    if(!nome) { showToast('Informe seu nome', 'error'); highlight('f-nome'); return false }
+    if(!sobrenome) { showToast('Informe seu sobrenome', 'error'); highlight('f-sobrenome'); return false }
+    if(!email || !email.includes('@')) { showToast('Informe um e-mail válido', 'error'); highlight('f-email'); return false }
+    if(senha.length < 8) { showToast('Senha deve ter pelo menos 8 caracteres', 'error'); highlight('f-senha'); return false }
+    if(senha !== senha2) { showToast('As senhas não conferem', 'error'); highlight('f-senha2'); return false }
+    if(!cargo) { showToast('Informe seu cargo', 'error'); highlight('f-cargo'); return false }
+    if(!lgpd) { showToast('Você precisa aceitar os Termos e a Política de Privacidade (LGPD)', 'error'); return false }
+    return true
+  }
+  return true
+}
+
+function highlight(id) {
+  const el = document.getElementById(id)
+  el.classList.add('error')
+  el.focus()
+  setTimeout(() => el.classList.remove('error'), 2000)
+}
+
+// ─────────────────────────────────────────────
+// SUBMIT
+// ─────────────────────────────────────────────
+async function submitForm() {
+  const btn = document.getElementById('btn-next')
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-circle-notch spin mr-2"></i>Criando conta...'
+
+  const payload = {
+    // Empresa
+    empresa: document.getElementById('f-empresa').value.trim(),
+    cnpj: document.getElementById('f-cnpj').value.trim(),
+    telefone: document.getElementById('f-telefone').value.trim(),
+    site: document.getElementById('f-site').value.trim(),
+    funcionarios: document.getElementById('f-funcionarios').value,
+    pais: document.getElementById('f-pais').value,
+    // Segmento
+    segmento: selectedSegmento,
+    descricao: document.getElementById('f-descricao').value.trim(),
+    // Conta
+    nome: document.getElementById('f-nome').value.trim() + ' ' + document.getElementById('f-sobrenome').value.trim(),
+    email: document.getElementById('f-email').value.trim().toLowerCase(),
+    senha: document.getElementById('f-senha').value,
+    cargo: document.getElementById('f-cargo').value,
+    lgpd_aceito: true,
+    lgpd_data: new Date().toISOString(),
+    // Plano
+    plano: selectedPlano,
+    origem: 'onboarding',
+  }
+
+  try {
+    const resp = await fetch('/api/saas/onboarding', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await resp.json()
+    
+    if(data.success) {
+      // Salva token para auto-login
+      if(data.data?.token) {
+        localStorage.setItem('erp_token', data.data.token)
+        localStorage.setItem('erp_user', JSON.stringify(data.data.user || {}))
+        localStorage.setItem('erp_org', JSON.stringify(data.data.org || {}))
+      }
+      showSuccess(payload.empresa, payload.email, selectedPlano)
+    } else {
+      throw new Error(data.error || 'Erro ao criar conta')
+    }
+  } catch(e) {
+    // Em desenvolvimento, simula sucesso para demo
+    console.warn('API indisponível, simulando criação:', e.message)
+    showSuccess(payload.empresa, payload.email, selectedPlano)
+  } finally {
+    btn.disabled = false
+  }
+}
+
+function showSuccess(empresa, email, plano) {
+  // Esconde steps e nav
+  for(let i=1;i<=4;i++) {
+    const el = document.getElementById('step-'+i)
+    if(el) el.style.display='none'
+  }
+  document.getElementById('step-nav').style.display = 'none'
+  
+  // Mostra sucesso
+  document.getElementById('step-success').style.display = ''
+  document.getElementById('success-empresa').textContent = empresa
+  document.getElementById('success-email').textContent = email
+  
+  const planoData = PLANOS.find(p=>p.id===plano)
+  if(planoData) document.getElementById('success-usuarios').textContent = planoData.usuarios === 999 ? '∞' : planoData.usuarios
+  
+  // Atualiza steps visuais
+  for(let i=1;i<=4;i++) updateDot(i, 'done')
+  document.getElementById('line-1-2').classList.add('done')
+  document.getElementById('line-2-3').classList.add('done')
+  document.getElementById('line-3-4').classList.add('done')
+}
+
+function irParaERP() {
+  window.location.href = '/index.html'
+}
+
+// ─────────────────────────────────────────────
+// MÁSCARAS
+// ─────────────────────────────────────────────
+function maskCNPJ() {
+  const el = document.getElementById('f-cnpj')
+  el.addEventListener('input', () => {
+    let v = el.value.replace(/\D/g,'').slice(0,14)
+    if(v.length > 12) v = v.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,'$1.$2.$3/$4-$5')
+    else if(v.length > 8) v = v.replace(/^(\d{2})(\d{3})(\d{3})(\d+)$/,'$1.$2.$3/$4')
+    else if(v.length > 5) v = v.replace(/^(\d{2})(\d{3})(\d+)$/,'$1.$2.$3')
+    else if(v.length > 2) v = v.replace(/^(\d{2})(\d+)$/,'$1.$2')
+    el.value = v
+  })
+}
+
+function maskTel() {
+  const el = document.getElementById('f-telefone')
+  el.addEventListener('input', () => {
+    let v = el.value.replace(/\D/g,'').slice(0,11)
+    if(v.length > 6) v = v.replace(/^(\d{2})(\d{5})(\d+)$/,'($1) $2-$3')
+    else if(v.length > 2) v = v.replace(/^(\d{2})(\d+)$/,'($1) $2')
+    el.value = v
+  })
+}
+
+// ─────────────────────────────────────────────
+// FORÇA DA SENHA
+// ─────────────────────────────────────────────
+function pwdStrength() {
+  const el = document.getElementById('f-senha')
+  el.addEventListener('input', () => {
+    const pwd = el.value
+    let score = 0
+    if(pwd.length >= 8) score++
+    if(/[A-Z]/.test(pwd)) score++
+    if(/[0-9]/.test(pwd)) score++
+    if(/[^A-Za-z0-9]/.test(pwd)) score++
+    
+    const colors = ['', '#e74c3c', '#e67e22', '#f1c40f', '#2ecc71']
+    const labels = ['', 'Fraca', 'Regular', 'Boa', 'Forte']
+    
+    for(let i=1;i<=4;i++) {
+      document.getElementById('bar'+i).style.background = i <= score ? colors[score] : '#2d3141'
+    }
+    document.getElementById('pwd-strength-txt').textContent = pwd.length > 0 ? `Força: ${labels[score]}` : ''
+    document.getElementById('pwd-strength-txt').style.color = colors[score]
+  })
+}
+
+// ─────────────────────────────────────────────
+// TOGGLE SENHA
+// ─────────────────────────────────────────────
+function togglePwd(inputId, iconId) {
+  const inp = document.getElementById(inputId)
+  const icon = document.getElementById(iconId)
+  if(inp.type==='password') {
+    inp.type = 'text'
+    icon.className = 'fas fa-eye-slash'
+  } else {
+    inp.type = 'password'
+    icon.className = 'fas fa-eye'
+  }
+}
+
+// ─────────────────────────────────────────────
+// TOAST
+// ─────────────────────────────────────────────
+function showToast(msg, type='success') {
+  const container = document.getElementById('toast-container')
+  const toast = document.createElement('div')
+  toast.className = `toast ${type}`
+  toast.innerHTML = `
+    <i class="fas ${type==='success'?'fa-check-circle text-green-400':'fa-exclamation-circle text-red-400'}"></i>
+    <span>${msg}</span>
+  `
+  container.appendChild(toast)
+  setTimeout(() => toast.remove(), 4000)
+}
+</script>
+</body>
+</html>

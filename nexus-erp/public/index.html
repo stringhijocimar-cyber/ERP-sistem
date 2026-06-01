@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>NEXUS ERP — Gestão de Serviços e Operações</title>
+  <script>
+    // true  = modo demonstracao (login offline + registro local liberados)
+    // false = producao (login e gravacoes dependem exclusivamente do servidor)
+    window.NEXUS_DEMO_MODE = false;
+  </script>
+  <script>
+    // Aplica tema antes do render para evitar flash
+    (function(){
+      var t = localStorage.getItem('erp_theme') || 'dark';
+      if(t==='light') document.documentElement.setAttribute('data-theme','light');
+    })();
+  </script>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/responsive.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<!-- =========================================
+     LOGIN PAGE
+     ========================================= -->
+<div id="loginPage" class="login-page">
+  <div class="login-bg-pattern"></div>
+  <div class="login-container">
+    <div class="login-logo">
+      <div id="loginLogoImg"></div>
+      <h1 data-i18n="system_name">NEXUS ERP</h1>
+      <p data-i18n="system_subtitle">Plataforma de Gestão para Serviços e Operações</p>
+    </div>
+    <div class="login-card">
+      <h2>Acessar o sistema</h2>
+      <p class="subtitle">Use suas credenciais corporativas</p>
+
+      <div id="loginError" style="display:none;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#f87171;display:none">
+        <i class="fas fa-exclamation-triangle" style="margin-right:6px"></i><span id="loginErrorMsg"></span>
+      </div>
+
+      <div class="form-group">
+        <label data-i18n="login_email">E-mail corporativo</label>
+        <input type="email" class="form-control" id="loginEmail" placeholder="seu@empresa.com.br"
+          onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <div class="form-group">
+        <label data-i18n="login_password">Senha</label>
+        <div style="position:relative">
+          <input type="password" class="form-control" id="loginPass" placeholder="••••••••"
+            onkeydown="if(event.key==='Enter')doLogin()" style="padding-right:40px">
+          <span onclick="toggleSenhaLogin()" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;color:var(--text-muted)"><i class="fas fa-eye" id="eyeIcon"></i></span>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="doLogin()" id="btnLogin" style="margin-top:8px">
+        <i class="fas fa-sign-in-alt"></i> <span data-i18n="login_btn">Acessar o Sistema</span>
+      </button>
+
+      <div class="login-profiles" style="margin-top:16px">
+        <p style="font-size:11px;color:rgba(255,255,255,0.4);text-align:center;margin-bottom:8px" data-i18n="login_demo">— Acesso rápido para demonstração —</p>
+        <div class="profile-chips">
+          <span class="profile-chip" onclick="quickLogin('admin')" title="admin@fraseralexander.com.br">🛡️ Admin</span>
+          <span class="profile-chip" onclick="quickLogin('diretor')">👔 Diretor</span>
+          <span class="profile-chip" onclick="quickLogin('financeiro')">💰 Financeiro</span>
+          <span class="profile-chip" onclick="quickLogin('operacao')">🔧 Operações</span>
+          <span class="profile-chip" onclick="quickLogin('compras')">🛒 Compras</span>
+          <span class="profile-chip" onclick="quickLogin('ssma')">🦺 SSMA</span>
+        </div>
+        <div style="margin-top:12px;text-align:center">
+          <span style="font-size:12px;color:rgba(255,255,255,0.5);cursor:pointer;text-decoration:underline" onclick="mostrarInstrucoesLoginAdmin()" data-i18n="login_how">📋 Como funciona o acesso? Clique aqui</span>
+        </div>
+        <!-- Seletor de idioma na tela de login -->
+        <div style="margin-top:16px;display:flex;justify-content:center;gap:6px">
+          <button data-lang-btn="pt" onclick="setLang('pt')" style="background:none;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:3px 10px;font-size:12px;color:rgba(255,255,255,0.7);cursor:pointer" title="Português">🇧🇷 PT</button>
+          <button data-lang-btn="en" onclick="setLang('en')" style="background:none;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:3px 10px;font-size:12px;color:rgba(255,255,255,0.7);cursor:pointer" title="English">🇺🇸 EN</button>
+          <button data-lang-btn="es" onclick="setLang('es')" style="background:none;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:3px 10px;font-size:12px;color:rgba(255,255,255,0.7);cursor:pointer" title="Español">🇪🇸 ES</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================
+     APP LAYOUT
+     ========================================= -->
+<div id="app">
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-logo sidebar-logo-new">
+      <div id="sidebarLogoFull"></div>
+      <div id="sidebarLogoMini"></div>
+    </div>
+
+    <div class="sidebar-nav">
+      <!-- Principal -->
+      <div class="nav-section">
+        <div class="nav-section-label">Principal</div>
+        <a class="nav-item active" onclick="navigate('dashboard')" href="#">
+          <span class="nav-icon"><i class="fas fa-th-large"></i></span>
+          <span class="nav-label">Dashboard</span>
+        </a>
+        <a class="nav-item" onclick="navigate('crm')" href="#">
+          <span class="nav-icon"><i class="fas fa-handshake"></i></span>
+          <span class="nav-label">CRM Comercial</span>
+        </a>
+        <a class="nav-item" onclick="navigate('proposta_comercial')" href="#" id="nav-proposta">
+          <span class="nav-icon"><i class="fas fa-file-invoice"></i></span>
+          <span class="nav-label">Propostas Comerciais</span>
+        </a>
+        <a class="nav-item" onclick="navigate('contratos')" href="#">
+          <span class="nav-icon"><i class="fas fa-file-contract"></i></span>
+          <span class="nav-label">Contratos</span>
+          <span class="nav-badge" id="badge-contratos">3</span>
+        </a>
+        <a class="nav-item" onclick="navigate('projetos_gantt')" href="#" id="nav-projetos-gantt" style="background:linear-gradient(90deg,rgba(16,185,129,0.13),transparent);border-left:2px solid #10b981">
+          <span class="nav-icon"><i class="fas fa-project-diagram"></i></span>
+          <span class="nav-label">Projetos / Gantt</span>
+          <span class="nav-badge" id="badge-projetos" style="background:#10b981">4</span>
+        </a>
+        <a class="nav-item" onclick="navigate('os')" href="#">
+          <span class="nav-icon"><i class="fas fa-clipboard-list"></i></span>
+          <span class="nav-label">Ordens de Serviço</span>
+          <span class="nav-badge" id="badge-os">8</span>
+        </a>
+        <a class="nav-item" onclick="navigate('apontamento')" href="#">
+          <span class="nav-icon"><i class="fas fa-clock"></i></span>
+          <span class="nav-label">Apontamento Diário</span>
+          <span class="nav-badge" id="badge-apontamento" style="background:#6366f1;color:#fff">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('medicao')" href="#">
+          <span class="nav-icon"><i class="fas fa-ruler-combined"></i></span>
+          <span class="nav-label">Medição</span>
+        </a>
+        <a class="nav-item" onclick="navigate('criterios_medicao')" href="#">
+          <span class="nav-icon"><i class="fas fa-tasks"></i></span>
+          <span class="nav-label">Critérios & Checklists</span>
+          <span class="nav-badge" style="background:#7c3aed;color:#fff">IA</span>
+        </a>
+      </div>
+
+      <!-- Suprimentos -->
+      <div class="nav-section">
+        <div class="nav-section-label">Suprimentos</div>
+        <a class="nav-item" onclick="navigate('inteligencia_suprimentos')" href="#">
+          <span class="nav-icon"><i class="fas fa-chess" style="color:#ec4899"></i></span>
+          <span class="nav-label">Inteligência Estratégica</span>
+          <span class="nav-badge" style="background:#ec4899;color:#fff">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('compras')" href="#">
+          <span class="nav-icon"><i class="fas fa-shopping-cart"></i></span>
+          <span class="nav-label">Suprimentos</span>
+        </a>
+        <a class="nav-item" onclick="navigate('fluxo_compras')" href="#" style="background:linear-gradient(90deg,rgba(0,180,184,0.12),transparent);border-left:2px solid var(--fa-teal)">
+          <span class="nav-icon"><i class="fas fa-project-diagram" style="color:var(--fa-teal)"></i></span>
+          <span class="nav-label" style="color:var(--fa-teal);font-weight:600">Aprovação de OS</span>
+          <span class="nav-badge" id="badge-fluxo" style="background:var(--fa-teal)">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('requisicoes')" href="#">
+          <span class="nav-icon"><i class="fas fa-file-alt"></i></span>
+          <span class="nav-label">Emissão de Requisições</span>
+          <span class="nav-badge" id="badge-reqs">1</span>
+        </a>
+        <a class="nav-item" onclick="navigate('rfq')" href="#">
+          <span class="nav-icon"><i class="fas fa-file-signature"></i></span>
+          <span class="nav-label">Cotações (RFQ)</span>
+        </a>
+        <a class="nav-item" onclick="navigate('mapa_cotacao')" href="#">
+          <span class="nav-icon"><i class="fas fa-balance-scale"></i></span>
+          <span class="nav-label">Mapa Comparativo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('pedidos')" href="#">
+          <span class="nav-icon"><i class="fas fa-file-invoice"></i></span>
+          <span class="nav-label">Pedidos de Compra</span>
+          <span class="nav-badge" id="badge-pedidos">1</span>
+        </a>
+        <a class="nav-item" onclick="navigate('materiais')" href="#">
+          <span class="nav-icon"><i class="fas fa-cube"></i></span>
+          <span class="nav-label">Materiais</span>
+        </a>
+        <a class="nav-item" onclick="navigate('contratos_sup')" href="#">
+          <span class="nav-icon"><i class="fas fa-handshake"></i></span>
+          <span class="nav-label">Contratos Fornecimento</span>
+        </a>
+        <a class="nav-item" onclick="navigate('fornecedores')" href="#">
+          <span class="nav-icon"><i class="fas fa-building"></i></span>
+          <span class="nav-label">Fornecedores</span>
+        </a>
+        <a class="nav-item" onclick="navigate('estoque')" href="#">
+          <span class="nav-icon"><i class="fas fa-boxes"></i></span>
+          <span class="nav-label">Almoxarifado</span>
+        </a>
+        <a class="nav-item" onclick="navigate('recebimento')" href="#">
+          <span class="nav-icon"><i class="fas fa-dolly"></i></span>
+          <span class="nav-label">Recebimento</span>
+        </a>
+        <a class="nav-item" onclick="navigate('contratos_3rd')" href="#">
+          <span class="nav-icon"><i class="fas fa-file-alt"></i></span>
+          <span class="nav-label">Contratos Terceiros</span>
+        </a>
+      </div>
+
+      <!-- Financeiro -->
+      <div class="nav-section">
+        <div class="nav-section-label">Financeiro</div>
+        <a class="nav-item" onclick="navigate('custos')" href="#">
+          <span class="nav-icon"><i class="fas fa-chart-area"></i></span>
+          <span class="nav-label">Controle de Custos</span>
+          <span class="nav-badge" style="background:#0891b2;color:#fff;">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('financeiro')" href="#">
+          <span class="nav-icon"><i class="fas fa-chart-line"></i></span>
+          <span class="nav-label">Painel Financeiro</span>
+        </a>
+        <a class="nav-item" onclick="navigate('faturamento')" href="#">
+          <span class="nav-icon"><i class="fas fa-file-invoice-dollar"></i></span>
+          <span class="nav-label">Faturamento</span>
+          <span class="nav-badge" id="badge-fat">2</span>
+        </a>
+        <a class="nav-item" onclick="navigate('contas_pagar')" href="#">
+          <span class="nav-icon"><i class="fas fa-hand-holding-usd"></i></span>
+          <span class="nav-label">Contas a Pagar</span>
+        </a>
+        <a class="nav-item" onclick="navigate('dre')" href="#">
+          <span class="nav-icon"><i class="fas fa-chart-pie"></i></span>
+          <span class="nav-label">DRE &amp; Fluxo de Caixa</span>
+          <span class="nav-badge" style="background:#7c3aed;color:#fff;">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('ativo_fixo')" href="#">
+          <span class="nav-icon"><i class="fas fa-building"></i></span>
+          <span class="nav-label">Ativo Fixo / Patrimônio</span>
+          <span class="nav-badge" style="background:#7c3aed;color:#fff;">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('kpi_exec')" href="#">
+          <span class="nav-icon"><i class="fas fa-chart-pie"></i></span>
+          <span class="nav-label">KPI Executivo / BI</span>
+          <span class="nav-badge" style="background:#7c3aed;color:#fff;">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('fiscal')" href="#">
+          <span class="nav-icon"><i class="fas fa-landmark"></i></span>
+          <span class="nav-label">Fiscal &amp; Obrigações</span>
+          <span class="nav-badge" style="background:#0891b2;color:#fff;">Novo</span>
+        </a>
+      </div>
+
+      <!-- Operacional -->
+      <div class="nav-section">
+        <div class="nav-section-label">Operacional</div>
+        <a class="nav-item" onclick="navigate('equipe')" href="#">
+          <span class="nav-icon"><i class="fas fa-users"></i></span>
+          <span class="nav-label">Equipe / Mobilização</span>
+        </a>
+        <a class="nav-item" onclick="navigate('frota')" href="#">
+          <span class="nav-icon"><i class="fas fa-truck"></i></span>
+          <span class="nav-label">Frota / Equipamentos</span>
+        </a>
+      </div>
+
+      <!-- Compliance -->
+      <div class="nav-section">
+        <div class="nav-section-label">Compliance</div>
+        <a class="nav-item" onclick="navigate('ssma')" href="#">
+          <span class="nav-icon"><i class="fas fa-hard-hat"></i></span>
+          <span class="nav-label">SSMA / Qualidade</span>
+          <span class="nav-badge" id="badge-ssma">5</span>
+        </a>
+        <a class="nav-item" onclick="navigate('documentos')" href="#">
+          <span class="nav-icon"><i class="fas fa-folder-open"></i></span>
+          <span class="nav-label">Documentos</span>
+        </a>
+        <a class="nav-item" onclick="navigate('treinamentos')" href="#">
+          <span class="nav-icon"><i class="fas fa-graduation-cap"></i></span>
+          <span class="nav-label">Treinamentos</span>
+        </a>
+      </div>
+
+      <!-- Relatórios -->
+      <div class="nav-section">
+        <div class="nav-section-label">Governança</div>
+        <a class="nav-item" onclick="navigate('governanca')" href="#">
+          <span class="nav-icon"><i class="fas fa-shield-alt"></i></span>
+          <span class="nav-label">Painel de Governança</span>
+          <span class="nav-badge" style="background:#4f46e5;color:#fff">Novo</span>
+        </a>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-label">Análises</div>
+        <a class="nav-item" onclick="navigate('busca_global')" href="#">
+          <span class="nav-icon"><i class="fas fa-search"></i></span>
+          <span class="nav-label">Busca Global</span>
+          <span class="nav-badge" style="background:#4f46e5;color:#fff;">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('meu_painel')" href="#">
+          <span class="nav-icon"><i class="fas fa-th-large"></i></span>
+          <span class="nav-label">Meu Painel</span>
+        </a>
+        <a class="nav-item" onclick="navigate('auditoria_ai')" href="#">
+          <span class="nav-icon"><i class="fas fa-robot"></i></span>
+          <span class="nav-label">Auditoria AI</span>
+        </a>
+        <a class="nav-item" onclick="navigate('kpi_exec')" href="#">
+          <span class="nav-icon"><i class="fas fa-tachometer-alt"></i></span>
+          <span class="nav-label">KPI Executivo &amp; BI</span>
+          <span class="nav-badge" style="background:#4f46e5;color:#fff;">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('benchmark_ia')" href="#">
+          <span class="nav-icon"><i class="fas fa-trophy" style="color:#f59e0b"></i></span>
+          <span class="nav-label">Benchmark Público IA</span>
+          <span class="nav-badge" style="background:#f59e0b;color:#1a1a1a;font-weight:700">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('inteligencia_adaptativa')" href="#">
+          <span class="nav-icon"><i class="fas fa-brain" style="color:#a855f7"></i></span>
+          <span class="nav-label">Inteligência Adaptativa</span>
+          <span class="nav-badge" style="background:#a855f7;color:#fff;font-weight:700">Novo</span>
+        </a>
+        <a class="nav-item" onclick="navigate('comparativo')" href="#">
+          <span class="nav-icon"><i class="fas fa-chart-bar"></i></span>
+          <span class="nav-label">Análise Comparativa ERP</span>
+        </a>
+        <a class="nav-item" onclick="navigate('relatorios')" href="#">
+          <span class="nav-icon"><i class="fas fa-chart-bar"></i></span>
+          <span class="nav-label">Relatórios</span>
+        </a>
+        <a class="nav-item" onclick="navigate('avaliacao_forn')" href="#">
+          <span class="nav-icon"><i class="fas fa-star"></i></span>
+          <span class="nav-label">Aval. Fornecedores</span>
+        </a>
+        <a class="nav-item" onclick="navigate('idf')" href="#">
+          <span class="nav-icon"><i class="fas fa-chart-bar"></i></span>
+          <span class="nav-label">IDF Fornecedores</span>
+        </a>
+      </div>
+
+      <!-- Admin - só aparece para admin -->
+      <div class="nav-section" id="nav-admin" style="display:none">
+        <div class="nav-section-label">Administração</div>
+        <a class="nav-item" onclick="navigate('admin_usuarios')" href="#">
+          <span class="nav-icon"><i class="fas fa-users-cog"></i></span>
+          <span class="nav-label">Usuários</span>
+        </a>
+        <a class="nav-item" onclick="navigate('admin_config')" href="#">
+          <span class="nav-icon"><i class="fas fa-cog"></i></span>
+          <span class="nav-label">Configurações</span>
+        </a>
+        <a class="nav-item" onclick="navigate('admin_logs')" href="#">
+          <span class="nav-icon"><i class="fas fa-history"></i></span>
+          <span class="nav-label">Logs do Sistema</span>
+        </a>
+        <a class="nav-item" onclick="navigate('admin_backup')" href="#">
+          <span class="nav-icon"><i class="fas fa-database"></i></span>
+          <span class="nav-label">Backup / Dados</span>
+        </a>
+      </div>
+
+      <!-- SaaS Admin - só para superadmin -->
+      <div class="nav-section" id="nav-saas-admin" style="display:none">
+        <div class="nav-section-label">SaaS / Negócio</div>
+        <a class="nav-item" onclick="navigate('saas_dashboard')" href="#">
+          <span class="nav-icon"><i class="fas fa-chart-line"></i></span>
+          <span class="nav-label">Dashboard SaaS</span>
+        </a>
+        <a class="nav-item" onclick="navigate('saas_clientes')" href="#">
+          <span class="nav-icon"><i class="fas fa-building"></i></span>
+          <span class="nav-label">Clientes / Orgs</span>
+        </a>
+        <a class="nav-item" onclick="navigate('saas_leads')" href="#">
+          <span class="nav-icon"><i class="fas fa-funnel-dollar"></i></span>
+          <span class="nav-label">Leads / Pipeline</span>
+        </a>
+        <a class="nav-item" onclick="navigate('saas_billing')" href="#">
+          <span class="nav-icon"><i class="fas fa-file-invoice-dollar"></i></span>
+          <span class="nav-label">Billing / Receita</span>
+        </a>
+        <a class="nav-item" onclick="navigate('saas_lgpd')" href="#">
+          <span class="nav-icon"><i class="fas fa-shield-alt"></i></span>
+          <span class="nav-label">LGPD</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-user" onclick="navigate('perfil')">
+        <div class="user-avatar" id="userAvatar">JS</div>
+        <div class="user-info">
+          <div class="user-name" id="userName">Usuário</div>
+          <div class="user-role" id="userRole">Administrador</div>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- OVERLAY MOBILE SIDEBAR -->
+  <div id="sidebarOverlay" onclick="closeMobileSidebar()"></div>
+
+  <!-- TOPBAR -->
+  <header class="topbar" id="topbar">
+    <!-- Botão hamburger (visível em mobile/tablet) -->
+    <button id="btnMobileMenu" onclick="toggleMobileSidebar()" title="Menu">
+      <i class="fas fa-bars"></i>
+    </button>
+    <!-- Botão padrão collapse (visível em desktop) -->
+    <button class="topbar-toggle" onclick="toggleSidebar()" id="btnDesktopToggle">
+      <i class="fas fa-bars"></i>
+    </button>
+    <div class="topbar-breadcrumb" id="breadcrumb">
+      <span class="breadcrumb-item"><i class="fas fa-th-large"></i></span>
+      <span class="breadcrumb-item">›</span>
+      <span class="breadcrumb-item active">Dashboard</span>
+    </div>
+    <div class="topbar-actions">
+      <!-- Badge de Plano/Trial -->
+      <div id="plano-badge-wrap" style="display:none">
+        <span id="plano-badge" onclick="navigate('saas_dashboard')" style="cursor:pointer;padding:4px 12px;border-radius:20px;font-size:.72rem;font-weight:700;border:1px solid;transition:all .2s" title="Ver plano atual"></span>
+      </div>
+
+      <!-- Seletor de Empresa -->
+      <button id="empresaBadge" class="topbar-btn" onclick="abrirGerenciarEmpresas()" 
+        data-i18n-title="topbar_companies"
+        style="display:flex;align-items:center;gap:6px;font-size:12px;padding:0 12px;max-width:190px;border-radius:20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12)">
+        <i class="fas fa-building" style="flex-shrink:0;font-size:12px;color:var(--orange)"></i>
+        <span id="topbarEmpresaName" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;font-size:11px;font-weight:600">Empresa</span>
+        <i class="fas fa-chevron-down" style="font-size:8px;opacity:.5;flex-shrink:0"></i>
+      </button>
+
+      <!-- Seletor de Idioma -->
+      <div style="position:relative" id="langDropWrap">
+        <button class="topbar-btn" onclick="_toggleLangDrop()" title="Idioma" style="font-size:12px;padding:0 10px;gap:4px;display:flex;align-items:center">
+          <span id="langFlagCurrent">🇧🇷</span>
+          <span id="langLabelCurrent" style="font-size:11px;font-weight:600">PT</span>
+          <i class="fas fa-chevron-down" style="font-size:9px"></i>
+        </button>
+        <div id="langDrop" style="display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--bg-card);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);z-index:9999;min-width:120px;overflow:hidden">
+          <button data-lang-btn="pt" onclick="setLang('pt');_toggleLangDrop()" style="display:flex;align-items:center;gap:8px;width:100%;padding:9px 14px;background:none;border:none;color:var(--text-primary);cursor:pointer;font-size:13px">🇧🇷 <span>Português</span></button>
+          <button data-lang-btn="en" onclick="setLang('en');_toggleLangDrop()" style="display:flex;align-items:center;gap:8px;width:100%;padding:9px 14px;background:none;border:none;color:var(--text-primary);cursor:pointer;font-size:13px">🇺🇸 <span>English</span></button>
+          <button data-lang-btn="es" onclick="setLang('es');_toggleLangDrop()" style="display:flex;align-items:center;gap:8px;width:100%;padding:9px 14px;background:none;border:none;color:var(--text-primary);cursor:pointer;font-size:13px">🇪🇸 <span>Español</span></button>
+        </div>
+      </div>
+
+      <!-- Toggle Tema Escuro/Claro -->
+      <button class="topbar-btn" onclick="toggleTheme()" id="btnThemeToggle" title="Alternar Tema">
+        <i class="fas fa-moon" id="themeIcon"></i>
+      </button>
+
+      <!-- Busca rápida no topbar — sempre visível -->
+      <div style="position:relative;flex:1;min-width:180px;max-width:380px">
+        <div id="topbar_search_wrap" style="display:flex;align-items:center;background:var(--bg-dark);border:1.5px solid var(--border);border-radius:10px;padding:0 10px 0 36px;height:36px;transition:border-color .2s,box-shadow .2s;position:relative">
+          <i class="fas fa-search" style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:13px;pointer-events:none"></i>
+          <input type="text" id="topbar_quick_search"
+            placeholder="Buscar… (Ctrl+K)"
+            style="width:100%;background:transparent;border:none;color:var(--text-primary);font-size:13px;outline:none;font-family:inherit"
+            onkeydown="if(event.key==='Enter'){const v=this.value.trim();if(v){_bgQuery=v;document.getElementById('topbar_search_dropdown').style.display='none';navigate('busca_global');}}"
+            onkeyup="if(event.key==='Escape'){this.value='';document.getElementById('topbar_search_clear').style.display='none';document.getElementById('topbar_search_dropdown').style.display='none';this.blur();}"
+            oninput="_topbarSearchLive(this.value)"
+            onfocus="document.getElementById('topbar_search_wrap').style.borderColor='var(--orange)';document.getElementById('topbar_search_wrap').style.boxShadow='0 0 0 3px rgba(249,115,22,.15)';if(this.value.trim().length>0)document.getElementById('topbar_search_dropdown').style.display='block'"
+            onblur="setTimeout(()=>{document.getElementById('topbar_search_wrap').style.borderColor='var(--border)';document.getElementById('topbar_search_wrap').style.boxShadow='none';document.getElementById('topbar_search_dropdown').style.display='none'},200)"
+            autocomplete="off">
+          <button id="topbar_search_clear" onclick="document.getElementById('topbar_quick_search').value='';document.getElementById('topbar_search_clear').style.display='none';document.getElementById('topbar_search_dropdown').style.display='none';document.getElementById('topbar_quick_search').focus()" style="display:none;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px;padding:0;line-height:1;margin-left:4px;flex-shrink:0" title="Limpar">×</button>
+        </div>
+        <!-- Dropdown de resultados rápidos -->
+        <div id="topbar_search_dropdown" style="display:none;position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--bg-card);border:1.5px solid var(--border);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.35);z-index:9999;max-height:440px;overflow-y:auto;min-width:320px"></div>
+      </div>
+
+      <button class="topbar-btn" id="notifBtn" onclick="showNotificationsPanel()">
+        <i class="fas fa-bell"></i>
+        <span class="notif-dot" id="notif-dot" style="display:none"></span>
+      </button>
+      <button class="topbar-btn" onclick="navigate('relatorios')" title="Relatórios">
+        <i class="fas fa-chart-bar"></i>
+      </button>
+      <button class="topbar-btn" onclick="mostrarInstrucoesAdmin()" title="Instruções e Ajuda do Sistema" style="position:relative">
+        <i class="fas fa-question-circle"></i>
+      </button>
+      <button class="topbar-btn" onclick="doLogout()" title="Sair">
+        <i class="fas fa-sign-out-alt"></i>
+      </button>
+
+    </div>
+
+  <!-- Painel de Notificações -->
+  <div id="notif-panel" style="display:none;position:fixed;top:60px;right:16px;width:360px;background:#14161c;border:1px solid rgba(255,255,255,0.1);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.5);z-index:9990;max-height:80vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid rgba(255,255,255,0.06)">
+      <span style="font-weight:700;color:#fff"><i class="fas fa-bell text-orange-400 mr-2"></i>Notificações</span>
+      <div style="display:flex;gap:8px">
+        <button onclick="marcarTodasLidas()" style="font-size:.75rem;color:#888;background:none;border:none;cursor:pointer">Marcar todas como lidas</button>
+        <button onclick="fecharNotifPanel()" style="color:#666;background:none;border:none;cursor:pointer"><i class="fas fa-times"></i></button>
+      </div>
+    </div>
+    <div id="notif-list" style="padding:8px"></div>
+  </div>
+  </header>
+
+  <!-- MAIN CONTENT -->
+  <main class="main-content" id="mainContent"></main>
+</div>
+
+<!-- MODAL GLOBAL -->
+<div class="modal-overlay" id="globalModal">
+  <div class="modal" id="modalContainer">
+    <div class="modal-header">
+      <h3 id="modalTitle">Título</h3>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="js/db.js"></script>
+<script src="js/nexus_melhorias.js"></script>
+<script src="js/data.js"></script>
+<script src="js/i18n.js"></script>
+<script src="js/multi_empresa.js"></script>
+<script src="js/wbs_manager.js"></script>
+<script src="js/permissoes.js"></script>
+<script src="js/app.js"></script>
+<script src="js/pages/dashboard.js"></script>
+<script src="js/pages/contratos.js"></script>
+<script src="js/pages/os.js"></script>
+<script src="js/pages/custos.js"></script>
+<script src="js/pages/financeiro.js"></script>
+<script src="js/pages/ssma.js"></script>
+<script src="js/pages/equipe.js"></script>
+<script src="js/pages/outros.js"></script>
+<script src="js/pages/fornecedores.js"></script>
+<script src="js/pages/pedidos.js"></script>
+<script src="js/pages/suprimentos.js"></script>
+<script src="js/pages/editaveis.js"></script>
+<script src="js/pages/crm.js"></script>
+<script src="js/pages/proposta_comercial.js"></script>
+<script src="js/pages/procurement.js"></script>
+<script src="js/pages/avaliacoes.js"></script>
+<script src="js/pages/idf.js"></script>
+<script src="js/pages/fluxo_compras.js"></script>
+<script src="js/pages/fluxo_aprovacao_rc.js"></script>
+<script src="js/pages/cadastro_massa.js"></script>
+<script src="js/pages/criterios_medicao.js"></script>
+<script src="js/pages/apontamento.js"></script>
+<script src="js/pages/inteligencia_suprimentos.js"></script>
+<script src="js/pages/projetos_gantt.js"></script>
+<script src="js/pages/relatorios.js"></script>
+  <script src="js/pages/busca_global.js"></script>
+<script src="js/pages/auditoria_ai.js"></script>
+<script src="js/pages/dashboard_perfil.js"></script>
+<script src="js/pages/admin.js"></script>
+<script src="js/pages/saas_admin.js"></script>
+<script src="js/pages/almoxarifado.js"></script>
+<script src="js/pages/dre.js"></script>
+<script src="js/pages/ativo_fixo.js"></script>
+<script src="js/pages/kpi_exec.js"></script>
+<script src="js/pages/fiscal.js"></script>
+<script src="js/pages/comparativo_erp.js"></script>
+<script src="js/pages/melhorias_v3.js"></script>
+<script src="js/melhorias.js"></script>
+<script src="js/pages/benchmark_ia.js"></script>
+<script src="js/pages/inteligencia_adaptativa.js"></script>
+<!-- ── Módulos Etapas 23-33 ──────────────────────────────── -->
+<script src="js/pages/commercial_generation_api.js"></script>
+<script src="js/pages/crm_pipeline_api.js"></script>
+<script src="js/pages/customer_lifecycle_api.js"></script>
+<script src="js/pages/customer_portal_api.js"></script>
+<script src="js/pages/data_platform_integrations_api.js"></script>
+<script src="js/pages/enterprise_consolidation_api.js"></script>
+<script src="js/pages/lowcode_form_builder_api.js"></script>
+<script src="js/pages/notifications_api.js"></script>
+<script src="js/pages/production_readiness_api.js"></script>
+<script src="js/pages/security_enterprise_api.js"></script>
+<script src="js/pages/workflow_orchestration_api.js"></script>
+<!-- ── Fim Módulos Etapas 23-33 ──────────────────────────── -->
+<script src="js/seed_demo.js"></script>
+<script>
+  // ─── Migração: 'Aguardando Envio' → 'Em Cotação' (status removido do fluxo RFQ) ───
+  function _migrarRFQsAguardandoEnvio() {
+    try {
+      ['fa_rfqs', 'fa_rfq_flow'].forEach(function(chave) {
+        var raw = localStorage.getItem(chave);
+        if (!raw) return;
+        var lista = JSON.parse(raw);
+        var alterado = false;
+        lista = lista.map(function(r) {
+          if (r.status === 'Aguardando Envio') {
+            alterado = true;
+            return Object.assign({}, r, { status: 'Em Cotação' });
+          }
+          return r;
+        });
+        if (alterado) localStorage.setItem(chave, JSON.stringify(lista));
+      });
+    } catch(e) {}
+  }
+  // Roda imediatamente (dados já existentes no localStorage)
+  _migrarRFQsAguardandoEnvio();
+  // Roda novamente após o seed (seed usa setTimeout 400ms)
+  setTimeout(_migrarRFQsAguardandoEnvio, 600);
+  // Roda uma terceira vez para garantir (seed extra roda em etapas)
+  setTimeout(_migrarRFQsAguardandoEnvio, 1500);
+
+  // Inicialização após todos os scripts carregarem
+  document.addEventListener('DOMContentLoaded', function() {
+    // Substituir renderAdminBackup pela versão melhorada
+    if (typeof renderAdminBackupMelhorado === 'function') {
+      window.renderAdminBackup = renderAdminBackupMelhorado;
+    }
+    // Aplicar atualizações de badge após navegação
+    const origNav = window.navigate;
+    window.navigate = function(page) {
+      const result = origNav ? origNav(page) : null;
+      setTimeout(atualizarBadgesSidebar, 300);
+      return result;
+    };
+
+    // Botão flutuante de demo (aparece só se não houver dados)
+    setTimeout(() => {
+      const temDados = localStorage.getItem('fa_ordens_servico');
+      const temFornecedores = localStorage.getItem('fa_fornecedores_cache');
+      const jaTemOSReais = temDados && JSON.parse(temDados||'[]').length >= 5;
+      const jaTemFornReal = temFornecedores && JSON.parse(temFornecedores||'[]').length >= 5;
+      if (!jaTemOSReais || !jaTemFornReal) {
+        const btn = document.createElement('div');
+        btn.id = 'btnSeedDemo';
+        btn.innerHTML = `
+          <div style="position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+            <div style="background:linear-gradient(135deg,#1a73e8,#0d47a1);color:#fff;border-radius:12px;padding:14px 20px;box-shadow:0 8px 32px rgba(26,115,232,0.4);max-width:320px;font-size:13px;line-height:1.5;">
+              <div style="font-weight:700;font-size:14px;margin-bottom:6px;">🚀 Sistema sem dados de demonstração</div>
+              <div style="opacity:0.9;">Carregue dados fictícios de operação de mineração para explorar todos os módulos com um processo completo de ponta a ponta.</div>
+            </div>
+            <button onclick="seedDemoCompleto()" style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border:none;border-radius:12px;padding:14px 28px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 8px 24px rgba(245,158,11,0.5);letter-spacing:0.3px;">
+              <i class="fas fa-database" style="margin-right:8px"></i>Carregar Demo Completo
+            </button>
+            <button onclick="document.getElementById('btnSeedDemo').remove()" style="background:rgba(0,0,0,0.4);color:#fff;border:none;border-radius:8px;padding:6px 16px;font-size:11px;cursor:pointer;">Fechar</button>
+          </div>`;
+        document.body.appendChild(btn);
+      }
+    }, 2000);
+
+    // ── Inicializar badge de plano + notificações ─────────────
+    setTimeout(initSaasBadge, 800);
+    setTimeout(initLgpdConsent, 1500);
+  });
+
+  // ─── BADGE DE PLANO / TRIAL NA TOPBAR ──────────────────────
+  function initSaasBadge() {
+    try {
+      const org = JSON.parse(localStorage.getItem('erp_org') || '{}');
+      const wrap = document.getElementById('plano-badge-wrap');
+      const badge = document.getElementById('plano-badge');
+      if (!wrap || !badge) return;
+
+      const cores = { trial: ['#f39c12','#f39c1244'], starter: ['#e67e22','#e67e2244'], professional: ['#3498db','#3498db44'], enterprise: ['#9b59b6','#9b59b644'] };
+      const plano = org.plano || 'trial';
+      const [cor, bg] = cores[plano] || ['#888','#88844'];
+
+      badge.style.cssText = `cursor:pointer;padding:4px 12px;border-radius:20px;font-size:.72rem;font-weight:700;border:1px solid ${cor};background:${bg};color:${cor}`;
+
+      if (plano === 'trial' && org.trial_fim) {
+        const dias = Math.ceil((new Date(org.trial_fim) - new Date()) / 86400000);
+        badge.innerHTML = `<i class="fas fa-hourglass-half mr-1"></i>Trial – ${dias}d restantes`;
+        if (dias <= 3) badge.style.background = '#e74c3c33', badge.style.borderColor = '#e74c3c', badge.style.color = '#e74c3c';
+        wrap.style.display = '';
+        // Notificação automática de trial
+        if (dias <= 7) addNotif({ id:'trial-warn', tipo: dias<=3?'danger':'warning', titulo: `Trial vencendo em ${dias} dias`, mensagem: 'Faça upgrade para continuar usando o OpsCore ERP.', link: '/landing.html#planos' });
+      } else if (plano !== 'trial') {
+        badge.innerHTML = `<i class="fas fa-check mr-1"></i>${plano.charAt(0).toUpperCase()+plano.slice(1)}`;
+        wrap.style.display = '';
+      }
+    } catch(e) { /* silencia */ }
+  }
+
+  // ─── SISTEMA DE NOTIFICAÇÕES IN-APP ──────────────────────
+  window._notifs = JSON.parse(localStorage.getItem('erp_notifs') || '[]');
+
+  function addNotif(notif) {
+    if (window._notifs.find(n => n.id === notif.id)) return;
+    notif.criado_em = notif.criado_em || new Date().toISOString();
+    notif.lida = false;
+    window._notifs.unshift(notif);
+    localStorage.setItem('erp_notifs', JSON.stringify(window._notifs.slice(0,50)));
+    updateNotifDot();
+  }
+
+  function updateNotifDot() {
+    const dot = document.getElementById('notif-dot');
+    const count = (window._notifs || []).filter(n => !n.lida).length;
+    if (dot) dot.style.display = count > 0 ? '' : 'none';
+  }
+
+  window.showNotificationsPanel = function() {
+    const panel = document.getElementById('notif-panel');
+    if (!panel) return;
+    const isOpen = panel.style.display !== 'none';
+    panel.style.display = isOpen ? 'none' : '';
+    if (!isOpen) renderNotifList();
+  };
+
+  window.fecharNotifPanel = function() {
+    const panel = document.getElementById('notif-panel');
+    if (panel) panel.style.display = 'none';
+  };
+
+  function renderNotifList() {
+    const el = document.getElementById('notif-list');
+    if (!el) return;
+    const notifs = window._notifs || [];
+    if (!notifs.length) {
+      el.innerHTML = '<div style="padding:24px;text-align:center;color:#666"><i class="fas fa-bell-slash text-2xl mb-2 block"></i>Sem notificações</div>';
+      return;
+    }
+    const icons = { info:'fa-info-circle', warning:'fa-exclamation-triangle', danger:'fa-exclamation-circle', success:'fa-check-circle' };
+    const cores = { info:'#3498db', warning:'#f39c12', danger:'#e74c3c', success:'#2ecc71' };
+    el.innerHTML = notifs.slice(0,20).map(n => {
+      const cor = cores[n.tipo] || '#888';
+      const icon = icons[n.tipo] || 'fa-bell';
+      const tempo = n.criado_em ? new Date(n.criado_em).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+      return `<div onclick="clicarNotif('${n.id}')" style="display:flex;align-items:flex-start;gap:12px;padding:12px;border-radius:10px;cursor:pointer;background:${n.lida?'transparent':'rgba(255,255,255,0.03)'};border-left:3px solid ${n.lida?'transparent':cor};margin-bottom:4px;transition:all .2s" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='${n.lida?'transparent':'rgba(255,255,255,0.03)'}'">
+        <div style="background:${cor}22;color:${cor};width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="fas ${icon} text-xs"></i></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:${n.lida?'400':'600'};color:${n.lida?'#888':'#ddd'};font-size:.85rem;margin-bottom:2px">${n.titulo}</div>
+          ${n.mensagem?`<div style="font-size:.78rem;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${n.mensagem}</div>`:''}
+          <div style="font-size:.72rem;color:#444;margin-top:4px">${tempo}</div>
+        </div>
+        ${!n.lida ? `<div style="width:8px;height:8px;border-radius:50%;background:${cor};flex-shrink:0;margin-top:4px"></div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  window.marcarTodasLidas = function() {
+    window._notifs.forEach(n => n.lida = true);
+    localStorage.setItem('erp_notifs', JSON.stringify(window._notifs));
+    updateNotifDot();
+    renderNotifList();
+  };
+
+  window.clicarNotif = function(id) {
+    const n = window._notifs.find(x => x.id === id);
+    if (n) { n.lida = true; localStorage.setItem('erp_notifs', JSON.stringify(window._notifs)); }
+    updateNotifDot();
+    fecharNotifPanel();
+    if (n?.link) window.location.href = n.link;
+  };
+
+  // Fecha painel ao clicar fora
+  document.addEventListener('click', function(e) {
+    const panel = document.getElementById('notif-panel');
+    const btn = document.getElementById('notifBtn');
+    if (panel && btn && !panel.contains(e.target) && !btn.contains(e.target)) {
+      panel.style.display = 'none';
+    }
+  });
+
+  // Notificações iniciais de boas-vindas
+  setTimeout(() => {
+    addNotif({ id:'welcome-1', tipo:'success', titulo:'Bem-vindo ao OpsCore ERP!', mensagem:'Explore os módulos e configure sua operação.' });
+    addNotif({ id:'saas-tip', tipo:'info', titulo:'Comercialize sua instância', mensagem:'Acesse SaaS → Dashboard para gerenciar clientes.' });
+    updateNotifDot();
+  }, 2000);
+
+  // ─── MODAL LGPD ──────────────────────────────────────────
+  function initLgpdConsent() {
+    if (localStorage.getItem('lgpd_consent_v1')) return;
+    const modal = document.createElement('div');
+    modal.id = 'lgpd-modal';
+    modal.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;background:rgba(13,14,18,0.98);border-top:1px solid rgba(255,255,255,0.1);padding:20px 24px;backdrop-filter:blur(8px)';
+    modal.innerHTML = `
+      <div style="max-width:900px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap">
+        <div style="flex:1;min-width:260px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <i class="fas fa-shield-alt" style="color:#2ecc71"></i>
+            <strong style="color:#fff;font-size:.95rem">Política de Privacidade & Cookies (LGPD)</strong>
+          </div>
+          <p style="font-size:.82rem;color:#888;line-height:1.5">
+            Utilizamos cookies essenciais para o funcionamento do sistema. Seus dados são tratados conforme a 
+            <strong style="color:#ddd">Lei Geral de Proteção de Dados (Lei 13.709/2018)</strong> e armazenados em 
+            servidores no Brasil. Você pode solicitar acesso, correção ou exclusão a qualquer momento.
+          </p>
+        </div>
+        <div style="display:flex;gap:10px;flex-shrink:0;flex-wrap:wrap">
+          <button onclick="aceitarLgpd()" style="background:linear-gradient(135deg,#2ecc71,#27ae60);color:white;border:none;border-radius:10px;padding:10px 20px;font-size:.88rem;font-weight:600;cursor:pointer;white-space:nowrap">
+            <i class="fas fa-check mr-1"></i>Aceitar e Continuar
+          </button>
+          <button onclick="document.getElementById('lgpd-modal').remove()" style="background:rgba(255,255,255,0.06);color:#aaa;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px 16px;font-size:.88rem;cursor:pointer;white-space:nowrap">
+            Apenas Essenciais
+          </button>
+          <a href="/landing.html#privacidade" target="_blank" style="display:flex;align-items:center;color:#3498db;font-size:.82rem;text-decoration:none;padding:10px 0;white-space:nowrap">
+            Saiba mais <i class="fas fa-external-link-alt ml-1 text-xs"></i>
+          </a>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+
+  window.aceitarLgpd = function() {
+    localStorage.setItem('lgpd_consent_v1', JSON.stringify({ aceito: true, data: new Date().toISOString(), versao: '1.0' }));
+    const modal = document.getElementById('lgpd-modal');
+    if (modal) modal.remove();
+  };
+</script>
+
+<!-- ═══════════════════════════════════════════════
+     RESPONSIVO – Sidebar Mobile + Viewport Control v2
+     ═══════════════════════════════════════════════ -->
+<script>
+(function() {
+  'use strict';
+
+  /* ── Breakpoints ───────────────────────────────── */
+  var BP = { mobile: 480, phablet: 640, tablet: 768, notebook: 1024 };
+
+  /* ── Labels amigáveis ──────────────────────────── */
+  var BP_LABELS = {
+    mobile:   '📱 Celular (≤480px)',
+    phablet:  '📱 Celular Grande (≤640px)',
+    tablet:   '📟 Tablet (≤768px)',
+    notebook: '💻 Notebook (≤1024px)',
+    desktop:  '🖥️  Desktop (>1024px)'
+  };
+
+  var BP_ICONS = {
+    mobile:   'fa-mobile-alt',
+    phablet:  'fa-mobile',
+    tablet:   'fa-tablet-alt',
+    notebook: 'fa-laptop',
+    desktop:  'fa-desktop'
+  };
+
+  /* ── Estado ────────────────────────────────────── */
+  var _mobileSidebarOpen = false;
+
+  /* ── Detecção do breakpoint atual ──────────────── */
+  function _getBreakpoint() {
+    var w = window.innerWidth;
+    if (w <= BP.mobile)   return 'mobile';
+    if (w <= BP.phablet)  return 'phablet';
+    if (w <= BP.tablet)   return 'tablet';
+    if (w <= BP.notebook) return 'notebook';
+    return 'desktop';
+  }
+
+  /* ── Expõe breakpoint globalmente ───────────────── */
+  window.getBreakpoint = _getBreakpoint;
+
+  /* ── Abrir/fechar sidebar mobile ─────────────────── */
+  window.toggleMobileSidebar = function() {
+    var bp = _getBreakpoint();
+    if (bp === 'desktop') { if (window.toggleSidebar) toggleSidebar(); return; }
+    _mobileSidebarOpen ? closeMobileSidebar() : openMobileSidebar();
+  };
+
+  window.openMobileSidebar = function() {
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebarOverlay');
+    if (!sidebar) return;
+    sidebar.classList.add('mobile-open');
+    if (overlay) overlay.classList.add('visible');
+    _mobileSidebarOpen = true;
+    document.body.style.overflow = 'hidden';
+  };
+
+  window.closeMobileSidebar = function() {
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebarOverlay');
+    if (!sidebar) return;
+    sidebar.classList.remove('mobile-open');
+    if (overlay) overlay.classList.remove('visible');
+    _mobileSidebarOpen = false;
+    document.body.style.overflow = '';
+  };
+
+  /* ── Fecha sidebar ao navegar em mobile ─────────── */
+  var _origNavResp = window.navigate;
+  window.navigate = function(page) {
+    var bp = _getBreakpoint();
+    if (bp !== 'desktop' && bp !== 'notebook' && _mobileSidebarOpen) {
+      closeMobileSidebar();
+    }
+    return _origNavResp ? _origNavResp(page) : null;
+  };
+
+  /* ── Ajuste automático ao redimensionar ──────────── */
+  var _resizeTimer, _lastBP = _getBreakpoint();
+  window.addEventListener('resize', function() {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(function() {
+      var bp = _getBreakpoint();
+      if (bp === 'desktop' || bp === 'notebook') {
+        closeMobileSidebar();
+        document.body.style.overflow = '';
+      }
+      _updateTopbarLayout();
+      // Atualiza ícone do botão de viewport se breakpoint mudou
+      if (bp !== _lastBP) {
+        _lastBP = bp;
+        _updateViewportBtnIcon(bp);
+      }
+    }, 120);
+  });
+
+  /* ── Atualiza layout do topbar/main-content ───── */
+  function _updateTopbarLayout() {
+    var bp     = _getBreakpoint();
+    var topbar = document.getElementById('topbar');
+    var main   = document.getElementById('mainContent');
+    if (!topbar || !main) return;
+
+    if (bp === 'mobile' || bp === 'phablet') {
+      topbar.style.left = '0';
+      main.style.marginLeft = '0';
+    } else if (bp === 'tablet') {
+      var scw = getComputedStyle(document.documentElement)
+                  .getPropertyValue('--sidebar-collapsed').trim() || '64px';
+      topbar.style.left = scw;
+      main.style.marginLeft = scw;
+    } else {
+      topbar.style.left = '';
+      main.style.marginLeft = '';
+    }
+  }
+
+  /* ── Swipe para abrir/fechar sidebar em touch ──── */
+  var _touchStartX = 0, _touchStartY = 0;
+  document.addEventListener('touchstart', function(e) {
+    _touchStartX = e.touches[0].clientX;
+    _touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+
+  document.addEventListener('touchend', function(e) {
+    var bp = _getBreakpoint();
+    if (bp === 'desktop' || bp === 'notebook') return;
+
+    var dx = e.changedTouches[0].clientX - _touchStartX;
+    var dy = Math.abs(e.changedTouches[0].clientY - _touchStartY);
+
+    if (Math.abs(dx) < 60 || dy > 60) return;
+
+    if (dx > 0 && _touchStartX < 40 && !_mobileSidebarOpen) {
+      openMobileSidebar();
+    } else if (dx < 0 && _mobileSidebarOpen) {
+      closeMobileSidebar();
+    }
+  }, { passive: true });
+
+  /* ── Fecha com tecla ESC ─────────────────────── */
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && _mobileSidebarOpen) closeMobileSidebar();
+  });
+
+  /* ── Atualiza ícone do botão de viewport ────────── */
+  function _updateViewportBtnIcon(bp) {
+    var btn = document.getElementById('btnViewportCtrl');
+    if (!btn) return;
+    var icon = BP_ICONS[bp] || 'fa-desktop';
+    btn.innerHTML = '<i class="fas ' + icon + '"></i>';
+    btn.title = 'Visualização: ' + (BP_LABELS[bp] || bp);
+  }
+
+  /* ── Botão de controle de viewport ────────────── */
+  function _injectViewportControl() {
+    var topbarActions = document.querySelector('.topbar-actions');
+    if (!topbarActions || document.getElementById('btnViewportCtrl')) return;
+
+    var bp  = _getBreakpoint();
+    var btn = document.createElement('button');
+    btn.id        = 'btnViewportCtrl';
+    btn.className = 'topbar-btn';
+    btn.title     = 'Visualização: ' + (BP_LABELS[bp] || bp);
+    btn.innerHTML = '<i class="fas ' + (BP_ICONS[bp] || 'fa-desktop') + '"></i>';
+
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      _toggleViewportMenu();
+    });
+
+    var notifBtn = document.getElementById('notifBtn');
+    if (notifBtn) topbarActions.insertBefore(btn, notifBtn);
+    else topbarActions.prepend(btn);
+  }
+
+  /* ── Menu dropdown de viewport ───────────────── */
+  var _menuOpen = false;
+  function _toggleViewportMenu() {
+    var existing = document.getElementById('viewportMenu');
+    if (existing) { existing.remove(); _menuOpen = false; return; }
+    _menuOpen = true;
+
+    var btn  = document.getElementById('btnViewportCtrl');
+    var rect = btn ? btn.getBoundingClientRect() : { bottom: 60, right: window.innerWidth - 50 };
+
+    var menu = document.createElement('div');
+    menu.id = 'viewportMenu';
+    menu.style.cssText = [
+      'position:fixed',
+      'top:' + (rect.bottom + 6) + 'px',
+      'right:' + (window.innerWidth - rect.right) + 'px',
+      'background:var(--bg-card)',
+      'border:1px solid var(--border)',
+      'border-radius:12px',
+      'padding:6px 0',
+      'min-width:230px',
+      'z-index:9999',
+      'box-shadow:0 12px 40px rgba(0,0,0,0.6)',
+      'font-family:Inter,sans-serif'
+    ].join(';');
+
+    var bp = _getBreakpoint();
+    var w  = window.innerWidth;
+
+    // Header com breakpoint atual
+    var header = document.createElement('div');
+    header.className = 'viewport-header';
+    header.innerHTML =
+      '<span>Ajuste de Tela</span>' +
+      '<span class="viewport-badge">' + w + 'px · ' + bp + '</span>';
+    menu.appendChild(header);
+
+    var options = [
+      { id: 'mobile',   label: BP_LABELS.mobile,   w: 430  },
+      { id: 'phablet',  label: BP_LABELS.phablet,  w: 600  },
+      { id: 'tablet',   label: BP_LABELS.tablet,   w: 768  },
+      { id: 'notebook', label: BP_LABELS.notebook, w: 1024 },
+      { id: 'desktop',  label: BP_LABELS.desktop,  w: 0    },
+    ];
+
+    options.forEach(function(opt) {
+      var item = document.createElement('button');
+      item.className = 'viewport-option' + (opt.id === bp ? ' active' : '');
+      var checkIcon = opt.id === bp
+        ? '<i class="fas fa-check" style="width:16px;color:var(--orange)"></i>'
+        : '<i class="fas ' + BP_ICONS[opt.id] + '" style="width:16px;color:var(--text-muted)"></i>';
+      item.innerHTML = checkIcon + ' ' + opt.label;
+      item.addEventListener('click', function() {
+        menu.remove(); _menuOpen = false;
+        _setViewport(opt.w, opt.id);
+      });
+      menu.appendChild(item);
+    });
+
+    // Divider + dica
+    var hint = document.createElement('div');
+    hint.className = 'viewport-hint';
+    hint.innerHTML =
+      '<i class="fas fa-hand-pointer" style="margin-right:5px;color:var(--orange)"></i>' +
+      'Toque/deslize da borda esquerda para abrir o menu em telas pequenas.';
+    menu.appendChild(hint);
+
+    document.body.appendChild(menu);
+
+    // Fecha ao clicar fora
+    setTimeout(function() {
+      document.addEventListener('click', function _cls(e) {
+        var btn2 = document.getElementById('btnViewportCtrl');
+        if (!menu.contains(e.target) && e.target !== btn2 && !btn2.contains(e.target)) {
+          menu.remove(); _menuOpen = false;
+          document.removeEventListener('click', _cls);
+        }
+      });
+    }, 50);
+  }
+
+  /* ── Simula breakpoint via meta viewport ─────── */
+  function _setViewport(width, bpId) {
+    var metaVP = document.querySelector('meta[name="viewport"]');
+
+    if (width === 0) {
+      if (metaVP) metaVP.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';
+      try { window.resizeTo(screen.availWidth, screen.availHeight); } catch(e){}
+      _updateTopbarLayout();
+      _updateViewportBtnIcon(_getBreakpoint());
+      setTimeout(function() { if (window.showToast) showToast('Modo Desktop ativado', 'info'); }, 100);
+      return;
+    }
+
+    // Força largura via viewport meta
+    if (metaVP) {
+      metaVP.content = 'width=' + width + ', initial-scale=1.0, viewport-fit=cover';
+    }
+    try { window.resizeTo(width, window.outerHeight); } catch(e){}
+
+    _updateTopbarLayout();
+    _updateViewportBtnIcon(bpId || _getBreakpoint());
+    setTimeout(function() {
+      if (window.showToast) showToast('Tela ajustada para ' + (BP_LABELS[bpId] || width + 'px'), 'info');
+    }, 150);
+  }
+
+  /* ── Inicialização ─────────────────────────────── */
+  document.addEventListener('DOMContentLoaded', function() {
+    _updateTopbarLayout();
+  });
+
+  // Injeta botão após o login (app fica visível após autenticação)
+  var _checkInjectInterval = setInterval(function() {
+    var topbarActions = document.querySelector('.topbar-actions');
+    var app = document.getElementById('app');
+    if (topbarActions && app && app.style.display !== 'none') {
+      _injectViewportControl();
+      clearInterval(_checkInjectInterval);
+    }
+  }, 400);
+
+})();
+</script>
+<script src="js/fluxo_server_bridge.js"></script>
+</body>
+</html>

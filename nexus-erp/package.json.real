@@ -1,0 +1,38 @@
+{
+  "name": "fraser-alexander-erp",
+  "productName": "Fraser Alexander ERP",
+  "version": "1.0.0",
+  "description": "Sistema Integrado de Gestão Operacional – Fraser Alexander",
+  "author": "Fraser Alexander",
+  "homepage": "https://fraseralexander.com",
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "wrangler pages dev",
+    "deploy": "npm run build && wrangler pages deploy",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "desktop:copy": "cp -r public dist-desktop",
+    "desktop:dev": "NODE_ENV=development npx electron electron/main.js",
+    "desktop:build": "npm run desktop:copy && npx electron-builder --linux --config electron-builder.json",
+    "desktop:build:win": "npm run desktop:copy && npx electron-builder --win --config electron-builder.json",
+    "desktop:build:mac": "npm run desktop:copy && npx electron-builder --mac --config electron-builder.json",
+    "desktop:build:all": "npm run desktop:copy && npx electron-builder --linux --win --config electron-builder.json"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.101.1",
+    "bcryptjs": "^3.0.3",
+    "hono": "^4.12.9",
+    "jsonwebtoken": "^9.0.3"
+  },
+  "devDependencies": {
+    "@hono/vite-build": "^1.2.0",
+    "@hono/vite-cloudflare-pages": "^0.4.3",
+    "@hono/vite-dev-server": "^0.18.2",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.8.1",
+    "vite": "^6.3.5",
+    "wrangler": "^4.4.0"
+  }
+}
