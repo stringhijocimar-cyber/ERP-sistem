@@ -73,7 +73,12 @@ async function audit(env, actorId, action, entity, entityId, payloadObj){
 }
 
 // ===== CRUD generico (entidades "documento") =====
-const TABLES = { fornecedores:'fornecedores', os:'os', rc:'rc', rfq:'rfq', mapas:'mapas', pedidos:'pedidos', fluxo:'fluxo', 'contas-pagar':'contas_pagar' };
+const TABLES = {
+  fornecedores:'fornecedores', os:'os', rc:'rc', rfq:'rfq', mapas:'mapas', pedidos:'pedidos', fluxo:'fluxo',
+  'contas-pagar':'contas_pagar',
+  // Absorvidos do Express legado (consolidação onto D1):
+  contratos:'contratos', crm:'crm', projetos:'projetos', ssma:'ssma', almoxarifado:'almoxarifado', recebimentos:'recebimentos',
+};
 const sanitizeKey = (k) => String(k).replace(/[^a-zA-Z0-9_]/g,'');
 
 async function listDocs(env, table, url){

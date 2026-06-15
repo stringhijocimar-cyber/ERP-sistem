@@ -3,10 +3,11 @@ main = "src/index.js"
 compatibility_date = "2024-11-01"
 
 # Arquivos estaticos do front-end (a pasta public/ do NEXUS).
+# Caminho relativo a este wrangler.toml (nexus-cf/) -> ../nexus-erp/public.
 # Comportamento: se a URL casa com um arquivo, ele e servido; se nao casa
 # (ex.: /api/...), a requisicao vai para o Worker. /api SEMPRE chega no Worker.
 [assets]
-directory = "./nexus-erp/public"
+directory = "../nexus-erp/public"
 binding = "ASSETS"
 
 # Banco D1. Preencha database_id apos criar (ver PASSO A PASSO).

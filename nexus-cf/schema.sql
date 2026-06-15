@@ -25,6 +25,16 @@ CREATE TABLE IF NOT EXISTS pedidos      ( id TEXT PRIMARY KEY, payload TEXT NOT 
 CREATE TABLE IF NOT EXISTS fluxo        ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 CREATE TABLE IF NOT EXISTS contas_pagar ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 
+-- Entidades absorvidas do backend Express legado (consolidacao onto D1).
+-- Mesmo modelo documento (id + payload JSON), servidas pelo CRUD generico
+-- do Worker via a whitelist TABLES.
+CREATE TABLE IF NOT EXISTS contratos    ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS crm          ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS projetos     ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS ssma         ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS almoxarifado ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS recebimentos ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+
 CREATE TABLE IF NOT EXISTS permissoes ( user_id TEXT PRIMARY KEY, permissoes TEXT DEFAULT '[]' );
 CREATE TABLE IF NOT EXISTS config     ( chave TEXT PRIMARY KEY, valor TEXT );
 

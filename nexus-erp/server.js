@@ -1,6 +1,9 @@
 // ============================================================
 // NEXUS ERP v3.0 – Servidor Express + SQLite (sandbox)
 // Simula o ambiente Hono + Cloudflare D1
+//
+// ⚠️  LEGADO: backend canônico é o Cloudflare Worker (nexus-cf).
+//     Mantido apenas como sandbox local até o cutover (ver CONSOLIDACAO.md).
 // ============================================================
 import express from 'express'
 import cors from 'cors'
