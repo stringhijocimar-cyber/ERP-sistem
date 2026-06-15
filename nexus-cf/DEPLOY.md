@@ -105,6 +105,10 @@ curl -s -X POST $BASE/api/contas-pagar/CP-BLOQ-001/pagar \
 
 Esperado: `CP-OK-001` paga; `CP-BLOQ-001` retorna **409** com o motivo do gate.
 
+> Para a verificação completa multiusuário (aprovação em 2 estágios,
+> no-double-approval, segregação, emissão de PC e gate), siga o roteiro
+> passo a passo em **`VERIFICACAO.md`**.
+
 ---
 
 ## 8. Flags do gate (`[vars]` no wrangler.toml)
