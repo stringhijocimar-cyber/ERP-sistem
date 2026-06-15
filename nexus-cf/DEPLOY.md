@@ -7,6 +7,18 @@ servidor Express (`nexus-erp/server.js`) é legado e será aposentado.
 > Pré-requisitos: conta Cloudflare (plano gratuito serve para começar),
 > Node.js 18+ e `npx`. Não precisa instalar o wrangler globalmente.
 
+## Atalho (script)
+
+Depois do `wrangler login`, o `setup.sh` automatiza os passos 2–5:
+
+```bash
+cd nexus-cf
+./setup.sh
+```
+
+Ele cria o D1, grava o `database_id` no `wrangler.toml`, aplica o schema, pede
+os segredos e faz o deploy. Os passos manuais abaixo explicam cada etapa.
+
 ---
 
 ## 1. Login no Cloudflare

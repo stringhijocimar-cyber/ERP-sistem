@@ -58,8 +58,14 @@ histórico do sandbox), e deixam de ser a fonte de verdade.
 - `nexus-cf/src/index.js`: a whitelist `TABLES` passou a servir essas entidades
   pelo CRUD genérico (com auth + auditoria).
 - `nexus-cf/wrangler.toml`: corrigido o caminho dos assets (`../nexus-erp/public`).
-- `nexus-cf/DEPLOY.md`: guia de ambiente (criar D1, schema, secrets, deploy,
-  verificação do gate).
+- `nexus-cf/DEPLOY.md` + `nexus-cf/setup.sh`: guia e script de ambiente (criar
+  D1, schema, secrets, deploy, verificação do gate).
+- `nexus-cf/schema.sql` **validado** num SQLite real (aplica limpo, 19 tabelas,
+  CRUD documento OK) antes de qualquer deploy.
+- **Migrations relacionais decluttered**: o set legado foi movido para
+  `nexus-erp/migrations/legacy/` (com README). Ficam ativos só os dois arquivos
+  que o `server.js` carrega (`0001_schema_completo`, `0002_seed_inicial`),
+  eliminando a ambiguidade das numerações duplicadas.
 
 ## 5. Plano de cutover (não-destrutivo, por módulo)
 
