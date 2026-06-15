@@ -8,6 +8,10 @@
     // true  = modo demonstracao (login offline + registro local liberados)
     // false = producao (login e gravacoes dependem exclusivamente do servidor)
     window.NEXUS_DEMO_MODE = false;
+    // true = CAMINHO DO DINHEIRO autoritativo no servidor (aprovar mapa ->
+    //        emitir PC -> pagar passam pelo Worker/gate; sem fallback local
+    //        que forje o resultado). Ligar apos o deploy do Worker (DEPLOY.md).
+    window.NEXUS_SERVER_MODE = false;
   </script>
   <script>
     // Aplica tema antes do render para evitar flash
