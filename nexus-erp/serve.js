@@ -10,13 +10,20 @@ import { createReadStream, existsSync } from 'fs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 3002
 
+// Origens permitidas (separadas por vírgula). Sem curinga "*" por padrão.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3002,http://127.0.0.1:3002')
+  .split(',').map(s => s.trim()).filter(Boolean)
+
 const app = express()
 
-// Habilita compressão e cache básico
+// Cache básico + CORS restrito por origem conhecida
 app.use((req, res, next) => {
-  res.setHeader('X-Powered-By', 'NEXUS ERP v3.0')
-  // Permite CORS para acesso externo no sandbox
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.removeHeader('X-Powered-By')
+  const origin = req.headers.origin
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+  }
   next()
 })
 
@@ -45,7 +52,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`  ║   URL   : http://0.0.0.0:${PORT}           ║`)
   console.log(`  ║                                          ║`)
   console.log(`  ║   Login : admin@fraseralexander.com.br   ║`)
-  console.log(`  ║   Senha : Fraser@2025                    ║`)
+  console.log(`  ║   Senha : definida via SEED_PASSWORD     ║`)
   console.log(`  ║                                          ║`)
   console.log(`  ║   Ou use os botões de Acesso Rápido      ║`)
   console.log(`  ╚══════════════════════════════════════════╝`)

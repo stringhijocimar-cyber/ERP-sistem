@@ -46,7 +46,12 @@ async function verifyJWT(token, secret){
   if (payload.exp && Math.floor(Date.now()/1000) > payload.exp) throw new Error('token expirado');
   return payload;
 }
-function getSecret(env){ return env.JWT_SECRET || 'DEV-SECRET-TROQUE-EM-PRODUCAO'; }
+function getSecret(env){
+  const s = env.JWT_SECRET;
+  // Falha fechada: sem segredo configurado, nenhum token é assinado/validado.
+  if (!s || s.length < 16) throw { code:500, msg:'JWT_SECRET não configurado (defina via `wrangler secret put JWT_SECRET`)' };
+  return s;
+}
 
 async function requireAuth(request, env){
   const h = request.headers.get('Authorization') || '';
@@ -278,10 +283,20 @@ async function emitirPCdoMapa(env, id, user){
 }
 
 // ===== Seed (lazy: so quando a tabela users esta vazia) =====
+function genRandomPassword(){
+  const b = crypto.getRandomValues(new Uint8Array(18));
+  return btoa(String.fromCharCode(...b)).replace(/[+/=]/g,'').slice(0,24);
+}
 async function ensureSeed(env){
   const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
   if (row && row.n > 0) return;
-  const pass = env.SEED_PASSWORD || 'Fraser@2025';
+  // Sem SEED_PASSWORD configurado, gera uma senha aleatória forte e a registra
+  // no log do Worker (visível em `wrangler tail`) — nunca um default conhecido.
+  let pass = env.SEED_PASSWORD;
+  if (!pass) {
+    pass = genRandomPassword();
+    console.warn('SEED_PASSWORD não definido — senha inicial gerada (troque após o 1º acesso):', pass);
+  }
   const base = [
     { id:'u-admin',   email:'admin@fraseralexander.com.br',      name:'Administrador', role:'admin' },
     { id:'u-diretor', email:'diretor@fraseralexander.com.br',    name:'Diretoria',     role:'diretor' },
