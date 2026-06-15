@@ -66,6 +66,13 @@ histórico do sandbox), e deixam de ser a fonte de verdade.
   `nexus-erp/migrations/legacy/` (com README). Ficam ativos só os dois arquivos
   que o `server.js` carrega (`0001_schema_completo`, `0002_seed_inicial`),
   eliminando a ambiguidade das numerações duplicadas.
+- **`db.js` religado ao caminho do dinheiro** (atrás de `NEXUS_SERVER_MODE`):
+  módulo `DB.contas` com o gate `pagar()`, `DB.mapas.emitirPC()` e aprovação de
+  mapa server-authoritative (sem fallback que forje "Aprovado").
+- **Call-sites da UI religados** (aditivo, via `fluxo_server_bridge.js`): com o
+  modo servidor ligado, `aprovarMapa2`, `emitirPedidoDoMapa`, `gerarPedidoDeMapa`
+  delegam ao servidor; `financeiro.js` paga via `DB.contas.pagar`. Modo desligado
+  preserva o comportamento legado. Cobertos por testes jsdom (15/15 na suíte).
 
 ## 5. Plano de cutover (não-destrutivo, por módulo)
 

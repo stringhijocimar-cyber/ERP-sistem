@@ -94,9 +94,28 @@
     catch (e) { showToast('Não foi possível reprovar: ' + e.message, 'error'); }
   };
   window.emitirPCServer = async function (id) {
-    try { const pc = await apiAuth('/api/mapas/' + id + '/emitir-pc', { method: 'POST' }); showToast('Pedido de compra emitido: ' + ((pc && pc.id) || ''), 'success'); await refreshMapas('processo4'); }
+    // Canonico via DB.mapas.emitirPC (trava de status "Aprovado" no servidor).
+    try { const pc = await DB.mapas.emitirPC(id); showToast('Pedido de compra emitido: ' + ((pc && pc.id) || ''), 'success'); await refreshMapas('processo4'); }
     catch (e) { showToast('Não foi possível emitir o PC: ' + e.message, 'error'); }
   };
 
-  console.info('[NEXUS] bridge de aprovação no servidor ativo.');
+  // ===== RELIGAÇÃO DO CAMINHO DO DINHEIRO (NEXUS_SERVER_MODE) =====
+  // Aditivo: quando o modo servidor está LIGADO, as ações locais do caminho do
+  // dinheiro (que gravavam só no localStorage) passam a delegar ao servidor.
+  // Com o modo DESLIGADO (padrão), o comportamento legado é mantido intacto.
+  function wrapMoney(nome, serverFn) {
+    const orig = window[nome];
+    window[nome] = function () {
+      if (window.NEXUS_SERVER_MODE === true) return serverFn.apply(this, arguments);
+      if (typeof orig === 'function') return orig.apply(this, arguments);
+      console.warn('[bridge] função local ausente e modo servidor desligado:', nome);
+    };
+  }
+  // Aprovar mapa → servidor (recheca papel, alçada por estágio, no-double-approval)
+  wrapMoney('aprovarMapa2',       function (id) { return window.aprovarMapaServer(id); });
+  // Emitir PC a partir do mapa aprovado → servidor (trava de status)
+  wrapMoney('emitirPedidoDoMapa', function (id) { return window.emitirPCServer(id); });
+  wrapMoney('gerarPedidoDeMapa',  function (id) { return window.emitirPCServer(id); });
+
+  console.info('[NEXUS] bridge de aprovação no servidor ativo. Server mode:', window.NEXUS_SERVER_MODE === true);
 })();
