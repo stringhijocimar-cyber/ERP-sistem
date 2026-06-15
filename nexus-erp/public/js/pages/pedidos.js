@@ -1238,6 +1238,22 @@ async function aprovarPedido(id) {
     return;
   }
 
+  // Segregação de funções: quem solicita não pode aprovar o próprio pedido.
+  const aprovadorNome = currentUser ? currentUser.name : 'Sistema';
+  if (pedido.solicitante && pedido.solicitante === aprovadorNome) {
+    openModal('⚠️ Segregação de Funções', `
+      <div style="text-align:center;padding:16px 0">
+        <i class="fas fa-user-shield" style="color:var(--orange);font-size:40px;margin-bottom:12px"></i>
+        <div style="font-size:16px;font-weight:700;color:var(--orange)">Aprovação não permitida</div>
+      </div>
+      <div style="font-size:13px;color:var(--text-secondary);line-height:1.6;padding:0 8px">
+        O solicitante do pedido <strong>${pedido.numero}</strong> não pode aprová-lo.
+        A aprovação deve ser feita por outra pessoa com alçada.
+      </div>
+    `, `<button class="btn btn-secondary" onclick="closeModal()">Entendido</button>`);
+    return;
+  }
+
   FA_PEDIDOS[idx].status = 'Aprovado';
   FA_PEDIDOS[idx].aprovador = currentUser ? currentUser.name : 'Sistema';
   FA_PEDIDOS[idx].data_aprovacao = new Date().toISOString();
@@ -1750,17 +1766,25 @@ async function _gerarCPRecebimento(pedido, nfNum, valorNF, dataISO, condPagto) {
     origem: 'Recebimento PC'
   };
 
+  // Remove o placeholder "Aguardando NF" deste pedido (evita título em dobro).
+  const ehPlaceholder = c => c.pedido_id === pedido.id && (c.aguardando_nf || !c.nota_fiscal);
+
   // Salva no localStorage
   try {
-    const cps = JSON.parse(localStorage.getItem('fa_contas_pagar') || '[]');
+    let cps = JSON.parse(localStorage.getItem('fa_contas_pagar') || '[]');
+    cps = cps.filter(c => !ehPlaceholder(c));
     if (!cps.find(c => c.pedido_id === pedido.id && c.nota_fiscal === nfNum)) {
       cps.unshift(cp);
-      localStorage.setItem('fa_contas_pagar', JSON.stringify(cps));
     }
+    localStorage.setItem('fa_contas_pagar', JSON.stringify(cps));
   } catch(e) {}
 
   // Atualiza array global
   if (typeof window.FA_CONTAS_PAGAR !== 'undefined') {
+    const i = window.FA_CONTAS_PAGAR.length - 1;
+    for (let k = i; k >= 0; k--) {
+      if (ehPlaceholder(window.FA_CONTAS_PAGAR[k])) window.FA_CONTAS_PAGAR.splice(k, 1);
+    }
     if (!window.FA_CONTAS_PAGAR.find(c => c.pedido_id === pedido.id && c.nota_fiscal === nfNum)) {
       window.FA_CONTAS_PAGAR.unshift(cp);
     }
@@ -1890,6 +1914,15 @@ function _mostrarResumoRecebimento(rec, pedido, cpGerado) {
 
 // INTEGRAÇÃO FINANCEIRA: Cria conta a pagar ao aprovar pedido
 async function criarContaPagarFromPedido(pedido) {
+  // ⚠️ "Nada paga sem lastro": a CP NÃO nasce pagável na aprovação.
+  // Cria-se apenas um título "Pendente – Aguardando NF", SEM nota fiscal, que
+  // o gate de pagamento (servidor: gateContaPagar / ENFORCE_NF) bloqueia. A CP
+  // pagável de verdade só surge no recebimento, com NF (_gerarCPRecebimento).
+  // Dedup: não cria placeholder se já existe qualquer CP para este pedido.
+  const jaExiste = (window.FA_CONTAS_PAGAR || []).some(c => c.pedido_id === pedido.id)
+    || _cpsLocal().some(c => c.pedido_id === pedido.id);
+  if (jaExiste) return;
+
   const for_ = FA_FORNECEDORES.find(f => f.id === pedido.fornecedor_id);
   const prazo = for_ ? (for_.prazo_pagamento || 30) : 30;
   const venc = new Date();
@@ -1897,7 +1930,7 @@ async function criarContaPagarFromPedido(pedido) {
 
   const cp = {
     id: gerarId('CP'),
-    descricao: `${pedido.numero} – ${pedido.descricao}`,
+    descricao: `${pedido.numero} – ${pedido.descricao} – Aguardando NF`,
     fornecedor_id: pedido.fornecedor_id,
     fornecedor_nome: pedido.fornecedor_nome,
     pedido_id: pedido.id,
@@ -1905,18 +1938,32 @@ async function criarContaPagarFromPedido(pedido) {
     valor: pedido.valor_total,
     vencimento: venc.toISOString().split('T')[0],
     data_pagamento: '',
-    status: 'Aprovado',
+    status: 'Pendente',          // NÃO 'Aprovado' — não pagável
+    aguardando_nf: true,
     tipo: 'Fornecedor',
     centro_custo: pedido.centro_custo,
-    nota_fiscal: '—'
+    nota_fiscal: '',             // sem NF — o gate bloqueia o pagamento
+    origem: 'Aprovação PC (aguardando NF)'
   };
 
   try {
-    await fetch('tables/fa_contas_pagar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(cp) });
+    const cps = _cpsLocal();
+    cps.unshift(cp);
+    localStorage.setItem('fa_contas_pagar', JSON.stringify(cps));
+  } catch(e) {}
+
+  try {
+    await fetch('/api/contas-pagar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(cp) });
   } catch(e) {}
 
   // Atualiza array local de contas
   if (window.FA_CONTAS_PAGAR) window.FA_CONTAS_PAGAR.unshift(cp);
+}
+
+// Helper: lê o array de contas a pagar do localStorage com fallback seguro.
+function _cpsLocal() {
+  try { return JSON.parse(localStorage.getItem('fa_contas_pagar') || '[]'); }
+  catch(e) { return []; }
 }
 
 // Abertura de novo pedido com dados pré-preenchidos (do mapa de cotação)

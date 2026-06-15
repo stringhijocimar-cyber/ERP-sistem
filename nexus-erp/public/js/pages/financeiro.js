@@ -621,7 +621,8 @@ async function baixarCP(id) {
 
   try {
     // O SERVIDOR reaplica o gate de lastro e so confirma se estiver tudo ok.
-    const r = await apiAuth('/api/contas-pagar/' + id + '/pagar', { method: 'POST' });
+    // Canonico via DB.contas.pagar (server-authoritative; propaga o 409).
+    const r = await DB.contas.pagar(id);
     FA_CONTAS_PAGAR[idx] = { ...conta, status: 'Pago', data_pagamento: (r && r.data_pagamento) || new Date().toISOString().split('T')[0] };
     logAction('Baixa CP', 'Financeiro', `${conta.descricao} pago – ${fmt(conta.valor)}`);
     showToast(`Pagamento registrado: ${conta.descricao}`, 'success');

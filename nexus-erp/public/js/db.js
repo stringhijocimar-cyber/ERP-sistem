@@ -60,6 +60,24 @@ async function _apiFetch(path, opts = {}) {
   }
 }
 
+// ─── MODO SERVIDOR (server-authoritative) ───────────────────
+// Quando window.NEXUS_SERVER_MODE === true, o CAMINHO DO DINHEIRO
+// (aprovar mapa → emitir PC → pagar conta) é autoritativo no servidor:
+// erros (inclusive o 409 do gate de pagamento) PROPAGAM e NÃO há fallback
+// para localStorage — porque cair no localStorage forjaria o resultado.
+const _serverMode = () => window.NEXUS_SERVER_MODE === true;
+
+// Executa uma ação do caminho do dinheiro. Em server mode, propaga o erro.
+// Fora dele (legado/demo), usa o fallback informado.
+async function _moneyAction(apiCall, legacyFallback) {
+  if (_serverMode()) return await apiCall();
+  try { return await apiCall(); }
+  catch (e) {
+    if (typeof legacyFallback === 'function') return legacyFallback(e);
+    throw e;
+  }
+}
+
 // ─── STORAGE LOCAL (fallback) ─────────────────────────────────
 function _lsGet(key) {
   try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch { return []; }
@@ -300,22 +318,33 @@ const RFQ = {
 const Mapas = {
   ..._makeCrud('/api/mapas', DB_CONFIG.keys.mapas),
   async aprovar(mapaId, dados) {
-    try { return await _apiFetch(`/api/mapas/${mapaId}/aprovar`, { method: 'POST', body: JSON.stringify(dados) }); }
-    catch(e) {
-      const lista = _lsGet(DB_CONFIG.keys.mapas);
-      const idx = lista.findIndex(x => x.id === mapaId);
-      if (idx >= 0) { lista[idx].status = 'Aprovado'; lista[idx].aprovado_por = dados.aprovador; lista[idx].aprovado_em = new Date().toISOString(); _lsSet(DB_CONFIG.keys.mapas, lista); }
-      return { aprovado: true, _local: true };
-    }
+    // Server-authoritative sob NEXUS_SERVER_MODE: o servidor recheca papel,
+    // alçada por estágio e no-double-approval. Sem fallback que forje o status.
+    return _moneyAction(
+      () => _apiFetch(`/api/mapas/${mapaId}/aprovar`, { method: 'POST', body: JSON.stringify(dados) }),
+      () => {
+        const lista = _lsGet(DB_CONFIG.keys.mapas);
+        const idx = lista.findIndex(x => x.id === mapaId);
+        if (idx >= 0) { lista[idx].status = 'Aprovado'; lista[idx].aprovado_por = dados.aprovador; lista[idx].aprovado_em = new Date().toISOString(); _lsSet(DB_CONFIG.keys.mapas, lista); }
+        return { aprovado: true, _local: true };
+      }
+    );
   },
   async reprovar(mapaId, dados) {
-    try { return await _apiFetch(`/api/mapas/${mapaId}/reprovar`, { method: 'POST', body: JSON.stringify(dados) }); }
-    catch(e) {
-      const lista = _lsGet(DB_CONFIG.keys.mapas);
-      const idx = lista.findIndex(x => x.id === mapaId);
-      if (idx >= 0) { lista[idx].status = 'Reprovado'; lista[idx].motivo_reprovacao = dados.motivo; _lsSet(DB_CONFIG.keys.mapas, lista); }
-      return { reprovado: true, _local: true };
-    }
+    return _moneyAction(
+      () => _apiFetch(`/api/mapas/${mapaId}/reprovar`, { method: 'POST', body: JSON.stringify(dados) }),
+      () => {
+        const lista = _lsGet(DB_CONFIG.keys.mapas);
+        const idx = lista.findIndex(x => x.id === mapaId);
+        if (idx >= 0) { lista[idx].status = 'Reprovado'; lista[idx].motivo_reprovacao = dados.motivo; _lsSet(DB_CONFIG.keys.mapas, lista); }
+        return { reprovado: true, _local: true };
+      }
+    );
+  },
+  // Emissão de PC: ação de servidor (trava de status "Aprovado" no Worker).
+  // Sem equivalente local seguro — sempre vai à API e propaga erros.
+  async emitirPC(mapaId, dados = {}) {
+    return await _apiFetch(`/api/mapas/${mapaId}/emitir-pc`, { method: 'POST', body: JSON.stringify(dados) });
   }
 };
 
@@ -342,6 +371,17 @@ function _updateLocal(lsKey, id, changes) {
   if (idx >= 0) { lista[idx] = { ...lista[idx], ...changes }; _lsSet(lsKey, lista); }
   return { id, _local: true };
 }
+
+// ─── CONTAS A PAGAR (com GATE de pagamento) ──────────────────
+const Contas = {
+  ..._makeCrud('/api/contas-pagar', 'fa_contas_pagar'),
+  // GATE: "nada paga sem lastro". SEMPRE no servidor (NF + origem + 3-way +
+  // segregação). Nunca cai para localStorage — pagar localmente dribraria o
+  // controle. Em bloqueio, o servidor responde 409 e o erro propaga com o motivo.
+  async pagar(contaId, dados = {}) {
+    return await _apiFetch(`/api/contas-pagar/${contaId}/pagar`, { method: 'POST', body: JSON.stringify(dados) });
+  }
+};
 
 // ─── LOGS ─────────────────────────────────────────────────────
 const Logs = {
@@ -425,6 +465,7 @@ window.DB = {
   rfq:        RFQ,
   mapas:      Mapas,
   pedidos:    Pedidos,
+  contas:     Contas,
   logs:       Logs,
   usuarios:   Usuarios,
   config:     Config,
@@ -434,6 +475,8 @@ window.DB = {
   token: { get: _getToken, set: _setToken },
   checkApi: _checkApi,
   isOnline: () => _apiOk !== false,
+  // Caminho do dinheiro autoritativo no servidor quando ligado.
+  serverMode: { get: _serverMode, set: (v) => { window.NEXUS_SERVER_MODE = v === true; } },
 
   // Compatibilidade com código legado que usa logAction()
   log: (acao, modulo, desc) => Logs.registrar(acao, modulo, desc),

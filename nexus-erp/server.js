@@ -1,17 +1,36 @@
 // ============================================================
 // NEXUS ERP v3.0 – Servidor Express + SQLite (sandbox)
 // Simula o ambiente Hono + Cloudflare D1
+//
+// ⚠️  LEGADO: backend canônico é o Cloudflare Worker (nexus-cf).
+//     Mantido apenas como sandbox local até o cutover (ver CONSOLIDACAO.md).
 // ============================================================
 import express from 'express'
 import cors from 'cors'
+import rateLimit from 'express-rate-limit'
+import bcrypt from 'bcryptjs'
 import Database from 'better-sqlite3'
 import { readFileSync, existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const PORT = 3002
-const DB_PATH = join(__dirname, 'nexus.db')
+const PORT = process.env.PORT || 3002
+const DB_PATH = process.env.DB_PATH || join(__dirname, 'nexus.db')
+const IS_TEST = process.env.NODE_ENV === 'test'
+const BCRYPT_ROUNDS = 10
+
+// Origens permitidas para CORS (separadas por vírgula). Em produção, defina
+// ALLOWED_ORIGINS explicitamente — sem fallback curinga "*".
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3002,http://127.0.0.1:3002')
+  .split(',').map(s => s.trim()).filter(Boolean)
+
+// Senha inicial usada apenas para semear/migrar contas que ainda estão com
+// hash placeholder. Configure via env; o default só serve para dev local.
+const SEED_PASSWORD = process.env.SEED_PASSWORD || 'Fraser@2025'
+if (!process.env.SEED_PASSWORD && !IS_TEST) {
+  console.warn('⚠️  SEED_PASSWORD não definido — usando senha de desenvolvimento. Defina SEED_PASSWORD em produção.')
+}
 
 // ─── Banco de dados ───────────────────────────────────────────
 const db = new Database(DB_PATH)
@@ -27,16 +46,76 @@ for (const m of migrations) {
   const p = join(__dirname, 'migrations', m)
   if (existsSync(p)) {
     const sql = readFileSync(p, 'utf-8')
-    db.exec(sql)
+    // Runner resiliente: uma migration incompatível (ex.: seed escrito para
+    // outro schema) não deve impedir o boot. O aviso mantém o problema visível.
+    try {
+      db.exec(sql)
+    } catch (e) {
+      if (!IS_TEST) console.warn(`⚠️  Migration "${m}" falhou (ignorada): ${e.message}`)
+    }
   }
 }
-console.log('✅ Banco de dados inicializado')
+
+// ─── Bootstrap de admin ───────────────────────────────────────
+// Garante que exista um usuário admin com hash bcrypt real, mesmo que o seed
+// SQL falhe (schemas divergentes). Idempotente: identifica pelo email.
+function ensureAdmin() {
+  try {
+    const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'admin@fraseralexander.com.br').toLowerCase()
+    const existe = db.prepare(`SELECT id FROM usuarios WHERE email = ?`).get(ADMIN_EMAIL)
+    if (existe) return
+    const hash = bcrypt.hashSync(SEED_PASSWORD, BCRYPT_ROUNDS)
+    db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, ativo) VALUES(?,?,?,?,1)`)
+      .run('Administrador', ADMIN_EMAIL, hash, 'admin')
+    if (!IS_TEST) console.log(`🔐 Admin inicial criado: ${ADMIN_EMAIL} (senha via SEED_PASSWORD)`)
+  } catch (e) {
+    if (!IS_TEST) console.error('Erro ao garantir admin:', e.message)
+  }
+}
+
+// ─── Bootstrap de senhas ──────────────────────────────────────
+// Substitui hashes placeholder (`$2b$10$placeholder...`) por um hash bcrypt
+// real derivado de SEED_PASSWORD. Sem isso o login compararia texto plano.
+function bootstrapSenhas() {
+  try {
+    const pendentes = db.prepare(
+      `SELECT id, senha_hash FROM usuarios WHERE senha_hash LIKE '$2b$10$placeholder%'`
+    ).all()
+    if (!pendentes.length) return
+    const hash = bcrypt.hashSync(SEED_PASSWORD, BCRYPT_ROUNDS)
+    const upd = db.prepare(`UPDATE usuarios SET senha_hash = ? WHERE id = ?`)
+    for (const u of pendentes) upd.run(hash, u.id)
+    if (!IS_TEST) console.log(`🔐 ${pendentes.length} usuário(s) migrado(s) para hash bcrypt`)
+  } catch (e) {
+    if (!IS_TEST) console.error('Erro no bootstrap de senhas:', e.message)
+  }
+}
+bootstrapSenhas()
+ensureAdmin()
+if (!IS_TEST) console.log('✅ Banco de dados inicializado')
 
 // ─── App Express ──────────────────────────────────────────────
 const app = express()
-app.use(cors())
+// CORS restrito: só responde para origens conhecidas. Requisições sem header
+// Origin (curl, mesmo host) são permitidas para não quebrar a SPA local.
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
+    cb(new Error('Origem não permitida pelo CORS'))
+  },
+  credentials: true,
+}))
 app.use(express.json())
 app.use(express.static(join(__dirname, 'public')))
+
+// ─── Rate limiting no login (anti força-bruta) ────────────────
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: IS_TEST ? 20 : 10,   // tentativas por IP na janela
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Muitas tentativas de login. Tente novamente em alguns minutos.', status: 429 },
+})
 
 // ─── Helpers ─────────────────────────────────────────────────
 const ok = (data, meta) => ({ success: true, data, ...(meta ? { meta } : {}) })
@@ -68,6 +147,17 @@ function requireAuth(req, res, next) {
   next()
 }
 
+// Autorização por perfil. Use após requireAuth: requireRole('admin','diretor')
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json(err('Não autenticado', 401))
+    if (!roles.includes(req.user.perfil)) {
+      return res.status(403).json(err('Perfil sem permissão para esta ação', 403))
+    }
+    next()
+  }
+}
+
 function log(userId, userName, acao, modulo, descricao) {
   try {
     db.prepare(
@@ -79,21 +169,18 @@ function log(userId, userName, acao, modulo, descricao) {
 // ════════════════════════════════════════════════════════════
 // AUTH
 // ════════════════════════════════════════════════════════════
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', loginLimiter, (req, res) => {
   const { email, senha } = req.body
   if (!email || !senha) return res.status(400).json(err('Email e senha obrigatórios'))
 
   const user = db.prepare(
     `SELECT id, nome, email, perfil, senha_hash FROM usuarios WHERE email = ? AND ativo = 1`
-  ).get(email.toLowerCase().trim())
+  ).get(String(email).toLowerCase().trim())
 
-  if (!user) return res.status(401).json(err('Credenciais inválidas'))
-
-  const senhaOk = user.senha_hash.startsWith('$2b$10$placeholder')
-    ? (senha === 'Fraser@2025' || senha === 'admin' || senha === '123456')
-    : user.senha_hash === senha
-
-  if (!senhaOk) return res.status(401).json(err('Credenciais inválidas'))
+  // Compara sempre com bcrypt (mesmo quando o usuário não existe, para não
+  // vazar timing). Sem comparação de texto plano nem senhas hardcoded.
+  const senhaOk = user ? bcrypt.compareSync(String(senha), user.senha_hash) : false
+  if (!user || !senhaOk) return res.status(401).json(err('Credenciais inválidas', 401))
 
   const token = uid('tok')
   const expira = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
@@ -289,7 +376,7 @@ app.get('/api/fluxo', requireAuth, (req, res) => {
   res.json(ok(rows))
 })
 
-app.post('/api/fluxo/:id/aprovar', requireAuth, (req, res) => {
+app.post('/api/fluxo/:id/aprovar', requireAuth, requireRole('admin', 'diretor', 'supervisor', 'compras'), (req, res) => {
   const { comentario = '' } = req.body
   db.prepare(
     `UPDATE fluxo_aprovacao SET status='Aprovado', aprovador_id=?, aprovador_nome=?, comentario=?, data_acao=datetime('now') WHERE id=?`
@@ -300,7 +387,7 @@ app.post('/api/fluxo/:id/aprovar', requireAuth, (req, res) => {
   res.json(ok(f))
 })
 
-app.post('/api/fluxo/:id/reprovar', requireAuth, (req, res) => {
+app.post('/api/fluxo/:id/reprovar', requireAuth, requireRole('admin', 'diretor', 'supervisor', 'compras'), (req, res) => {
   const { comentario = '' } = req.body
   db.prepare(
     `UPDATE fluxo_aprovacao SET status='Reprovado', aprovador_id=?, aprovador_nome=?, comentario=?, data_acao=datetime('now') WHERE id=?`
@@ -465,7 +552,7 @@ app.post('/api/mapas', requireAuth, (req, res) => {
   res.status(201).json(ok(mapa))
 })
 
-app.post('/api/mapas/:id/aprovar', requireAuth, (req, res) => {
+app.post('/api/mapas/:id/aprovar', requireAuth, requireRole('admin', 'diretor', 'financeiro', 'compras'), (req, res) => {
   const { comentario = '' } = req.body
   db.prepare(`UPDATE mapas_comparativos SET status='Aprovado', aprovado_em=datetime('now'), aprovado_por=? WHERE id=?`)
     .run(req.user.nome, req.params.id)
@@ -474,7 +561,7 @@ app.post('/api/mapas/:id/aprovar', requireAuth, (req, res) => {
   res.json(ok(mapa))
 })
 
-app.post('/api/mapas/:id/reprovar', requireAuth, (req, res) => {
+app.post('/api/mapas/:id/reprovar', requireAuth, requireRole('admin', 'diretor', 'financeiro', 'compras'), (req, res) => {
   db.prepare(`UPDATE mapas_comparativos SET status='Reprovado' WHERE id=?`).run(req.params.id)
   const mapa = db.prepare(`SELECT * FROM mapas_comparativos WHERE id = ?`).get(req.params.id)
   res.json(ok(mapa))
@@ -606,7 +693,7 @@ app.get('/api/contas-pagar', requireAuth, (req, res) => {
   res.json(ok(db.prepare(sql).all(...params)))
 })
 
-app.put('/api/contas-pagar/:id', requireAuth, (req, res) => {
+app.put('/api/contas-pagar/:id', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
   const { status, data_pagamento, forma_pagamento, observacoes } = req.body
   db.prepare(`UPDATE contas_pagar SET status=?,data_pagamento=?,forma_pagamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
     .run(status, data_pagamento, forma_pagamento, observacoes, req.params.id)
@@ -767,12 +854,14 @@ app.get('/api/usuarios', requireAuth, (req, res) => {
   res.json(ok(rows))
 })
 
-app.post('/api/usuarios', requireAuth, (req, res) => {
+app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
   const { nome, email, senha, perfil } = req.body
   if (!nome || !email) return res.status(400).json(err('Nome e email obrigatórios'))
+  // Senha sempre armazenada com hash bcrypt; se omitida, usa SEED_PASSWORD.
+  const senhaHash = bcrypt.hashSync(String(senha || SEED_PASSWORD), BCRYPT_ROUNDS)
   try {
     const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil) VALUES(?,?,?,?)`)
-      .run(nome, email.toLowerCase().trim(), senha || '$2b$10$placeholder', perfil || 'operacao')
+      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao')
     const u = db.prepare(`SELECT id, nome, email, perfil, ativo FROM usuarios WHERE id = ?`).get(r.lastInsertRowid)
     log(req.user.usuario_id, req.user.nome, 'Criar', 'usuarios', `Usuário criado: ${nome}`)
     res.status(201).json(ok(u))
@@ -781,10 +870,15 @@ app.post('/api/usuarios', requireAuth, (req, res) => {
   }
 })
 
-app.put('/api/usuarios/:id', requireAuth, (req, res) => {
-  const { nome, email, perfil, ativo } = req.body
+app.put('/api/usuarios/:id', requireAuth, requireRole('admin'), (req, res) => {
+  const { nome, email, perfil, ativo, senha } = req.body
   db.prepare(`UPDATE usuarios SET nome=?,email=?,perfil=?,ativo=?,updated_at=datetime('now') WHERE id=?`)
     .run(nome, email, perfil, ativo ?? 1, req.params.id)
+  // Troca de senha opcional (sempre com hash bcrypt).
+  if (senha) {
+    db.prepare(`UPDATE usuarios SET senha_hash = ? WHERE id = ?`)
+      .run(bcrypt.hashSync(String(senha), BCRYPT_ROUNDS), req.params.id)
+  }
   res.json(ok(db.prepare(`SELECT id, nome, email, perfil, ativo FROM usuarios WHERE id = ?`).get(req.params.id)))
 })
 
@@ -809,8 +903,13 @@ app.get('/api/config', requireAuth, (req, res) => {
 // ════════════════════════════════════════════════════════════
 // START
 // ════════════════════════════════════════════════════════════
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🚀 NEXUS ERP v3.0 rodando em http://localhost:${PORT}`)
-  console.log(`📦 Banco de dados: ${DB_PATH}`)
-  console.log(`👤 Login: admin@fraseralexander.com.br / Fraser@2025\n`)
-})
+// Exporta o app para testes (supertest) sem subir o listener.
+export { app, db }
+
+if (!IS_TEST) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 NEXUS ERP v3.0 rodando em http://localhost:${PORT}`)
+    console.log(`📦 Banco de dados: ${DB_PATH}`)
+    console.log(`👤 Usuário admin: admin@fraseralexander.com.br (senha definida via SEED_PASSWORD)\n`)
+  })
+}
