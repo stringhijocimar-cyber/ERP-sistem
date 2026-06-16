@@ -79,9 +79,11 @@ posicionamento a perseguir.
 - ⬜ **Almoxarifado**: movimentação atômica de estoque no servidor.
 
 ### P2 — Inteligência adaptativa
-- 🟡 **Crédito de fornecedor** (entregue, base para o resto).
-- ⬜ **Detecção de anomalias** em pedidos/pagamentos (valor fora da curva,
-  fornecedor novo + valor alto, fracionamento para furar alçada).
+- ✅ **Crédito de fornecedor** (entregue, base para o resto).
+- ✅ **Detecção de anomalias** em pedidos (`js/lib/anomalias.js`): fracionamento
+  para furar alçada, valor fora da curva, fornecedor novo + valor alto, crédito
+  ruim + valor alto (integra o motor de crédito) e duplicidade. Ligado à criação
+  de pedido: risco alto pede confirmação e fica no log de auditoria.
 - ⬜ **Sugestão de aprovação** (recomenda aprovar/revisar com base em histórico).
 - ⬜ **Previsão de prazo de entrega** por fornecedor/categoria.
 - ⬜ **Recomendação de fornecedor** em RFQ (custo × IDF × crédito × prazo).
