@@ -56,6 +56,32 @@ for (const m of migrations) {
   }
 }
 
+// ─── Colunas aditivas (idempotente) ──────────────────────────
+// SQLite não tem "ADD COLUMN IF NOT EXISTS"; checa via PRAGMA e adiciona só o
+// que falta. Mantém o schema legado evoluindo sem migration destrutiva.
+function ensureColumns(table, cols) {
+  try {
+    const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name))
+    for (const [name, ddl] of cols) {
+      if (!existing.has(name)) {
+        try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`) }
+        catch (e) { if (!IS_TEST) console.warn(`coluna ${table}.${name} não adicionada: ${e.message}`) }
+      }
+    }
+  } catch (e) { if (!IS_TEST) console.warn(`ensureColumns(${table}) falhou: ${e.message}`) }
+}
+// Campos financeiros e de crédito do fornecedor.
+ensureColumns('fornecedores', [
+  ['razao_social', 'razao_social TEXT'],
+  ['nome_fantasia', 'nome_fantasia TEXT'],
+  ['faturamento_anual', 'faturamento_anual REAL DEFAULT 0'],
+  ['limite_credito', 'limite_credito REAL DEFAULT 0'],
+  ['score_credito', 'score_credito INTEGER DEFAULT 0'],
+  ['classificacao_credito', 'classificacao_credito TEXT'],
+  ['analise_credito', 'analise_credito TEXT'],
+  ['status', "status TEXT DEFAULT 'Em Homologação'"],
+])
+
 // ─── Bootstrap de admin ───────────────────────────────────────
 // Garante que exista um usuário admin com hash bcrypt real, mesmo que o seed
 // SQL falhe (schemas divergentes). Idempotente: identifica pelo email.
@@ -272,24 +298,49 @@ app.get('/api/fornecedores/:id', requireAuth, (req, res) => {
 })
 
 app.post('/api/fornecedores', requireAuth, (req, res) => {
-  const { nome, cnpj, email, telefone, contato, cidade, estado, categoria, prazo_entrega, condicao_pagamento, observacoes } = req.body
+  const b = req.body || {}
+  const nome = b.nome
   if (!nome) return res.status(400).json(err('Nome obrigatório'))
+  // Aceita aliases vindos do frontend (contato_nome, prazo_pagamento).
+  const contato = b.contato ?? b.contato_nome ?? null
+  const prazo = b.prazo_entrega ?? b.prazo_pagamento ?? 7
   const r = db.prepare(
-    `INSERT INTO fornecedores(nome,cnpj,email,telefone,contato,cidade,estado,categoria,prazo_entrega,condicao_pagamento,observacoes,ativo)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,1)`
-  ).run(nome, cnpj, email, telefone, contato, cidade, estado, categoria || 'Geral', prazo_entrega || 7, condicao_pagamento || '30 dias', observacoes)
+    `INSERT INTO fornecedores(nome,razao_social,nome_fantasia,cnpj,email,telefone,contato,cidade,estado,categoria,
+       banco,agencia,conta,prazo_entrega,condicao_pagamento,observacoes,faturamento_anual,limite_credito,
+       score_credito,classificacao_credito,analise_credito,status,ativo)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    nome, b.razao_social ?? null, b.nome_fantasia ?? null, b.cnpj ?? null, b.email ?? null, b.telefone ?? null,
+    contato, b.cidade ?? null, b.estado ?? null, b.categoria || 'Geral',
+    b.banco ?? null, b.agencia ?? null, b.conta ?? null, prazo, b.condicao_pagamento || '30 dias', b.observacoes ?? null,
+    b.faturamento_anual ?? 0, b.limite_credito ?? 0, b.score_credito ?? 0, b.classificacao_credito ?? null,
+    b.analise_credito ?? null, b.status || 'Em Homologação', b.ativo ?? 1
+  )
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'fornecedores', `Fornecedor criado: ${nome}`)
   res.status(201).json(ok(f))
 })
 
 app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
-  const { nome, cnpj, email, telefone, contato, cidade, estado, categoria, ativo, prazo_entrega, condicao_pagamento, observacoes } = req.body
+  const b = req.body || {}
+  const atual = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!atual) return res.status(404).json(err('Fornecedor não encontrado'))
+  // Merge parcial: só sobrescreve o que veio no corpo (aceita aliases).
+  const v = (campo, ...alias) => { for (const k of [campo, ...alias]) if (b[k] !== undefined) return b[k]; return atual[campo] }
   db.prepare(
-    `UPDATE fornecedores SET nome=?,cnpj=?,email=?,telefone=?,contato=?,cidade=?,estado=?,categoria=?,ativo=?,prazo_entrega=?,condicao_pagamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`
-  ).run(nome, cnpj, email, telefone, contato, cidade, estado, categoria, ativo ?? 1, prazo_entrega, condicao_pagamento, observacoes, req.params.id)
+    `UPDATE fornecedores SET nome=?,razao_social=?,nome_fantasia=?,cnpj=?,email=?,telefone=?,contato=?,cidade=?,estado=?,
+       categoria=?,ativo=?,banco=?,agencia=?,conta=?,prazo_entrega=?,condicao_pagamento=?,observacoes=?,
+       faturamento_anual=?,limite_credito=?,score_credito=?,classificacao_credito=?,analise_credito=?,status=?,
+       updated_at=datetime('now') WHERE id=?`
+  ).run(
+    v('nome'), v('razao_social'), v('nome_fantasia'), v('cnpj'), v('email'), v('telefone'), v('contato', 'contato_nome'),
+    v('cidade'), v('estado'), v('categoria'), b.ativo ?? atual.ativo, v('banco'), v('agencia'), v('conta'),
+    v('prazo_entrega', 'prazo_pagamento'), v('condicao_pagamento'), v('observacoes'),
+    v('faturamento_anual'), v('limite_credito'), v('score_credito'), v('classificacao_credito'), v('analise_credito'),
+    v('status'), req.params.id
+  )
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
-  log(req.user.usuario_id, req.user.nome, 'Editar', 'fornecedores', `Fornecedor atualizado: ${nome}`)
+  log(req.user.usuario_id, req.user.nome, 'Editar', 'fornecedores', `Fornecedor atualizado: ${v('nome')}`)
   res.json(ok(f))
 })
 
