@@ -901,9 +901,23 @@ function openNovoFornecedor() {
       <div class="form-group"><label>Cidade</label><input class="form-control" id="nf_cidade" type="text" placeholder="Cidade"></div>
       <div class="form-group"><label>Prazo de Pagamento (dias)</label><input class="form-control" id="nf_prazo" type="number" value="30" min="0"></div>
     </div>
+    <div class="section-divider"><h4>Dados Financeiros e Crédito</h4></div>
     <div class="form-row">
-      <div class="form-group"><label>Limite de Crédito (R$)</label><input class="form-control" id="nf_limite" type="number" placeholder="0" min="0"></div>
-      <div class="form-group"></div>
+      <div class="form-group"><label>Faturamento Anual (R$)</label><input class="form-control" id="nf_faturamento" type="number" placeholder="0" min="0" oninput="_marcarCreditoDesatualizado()"></div>
+      <div class="form-group"><label>Limite de Crédito Solicitado (R$)</label><input class="form-control" id="nf_limite" type="number" placeholder="0" min="0" oninput="_marcarCreditoDesatualizado()"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Banco</label><input class="form-control" id="nf_banco" type="text" placeholder="Banco"></div>
+      <div class="form-group"><label>Agência</label><input class="form-control" id="nf_agencia" type="text" placeholder="0000"></div>
+      <div class="form-group"><label>Conta</label><input class="form-control" id="nf_conta" type="text" placeholder="00000-0"></div>
+    </div>
+
+    <div style="margin-top:8px">
+      <button type="button" onclick="analisarCreditoNoCadastro()" class="btn btn-outline-primary btn-sm">
+        <i class="fas fa-gauge-high"></i> Analisar crédito
+      </button>
+      <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Calcula o score de risco com base na situação do CNPJ, porte e exposição.</span>
+      <div id="credito_result" style="display:none;margin-top:10px"></div>
     </div>
 
     <div style="margin-top:12px;padding:10px;background:rgba(37,99,235,0.06);border-radius:8px;border:1px solid rgba(37,99,235,0.15)">
@@ -967,6 +981,59 @@ function mascararCNPJ(input) {
   input.value = v;
 }
 
+// ─── ANÁLISE DE CRÉDITO (no cadastro) ────────────────────────
+function _coletarDadosCredito() {
+  const consulta = window._cnpjConsultaResult || {};
+  const statusCad = document.getElementById('nf_status')?.value || '';
+  return {
+    situacaoCnpj:      consulta.situacao || (statusCad === 'Ativo' ? 'ATIVA' : ''),
+    dataAbertura:      consulta.abertura || consulta.data_abertura || consulta.inicio_atividade || null,
+    faturamentoAnual:  parseFloat(document.getElementById('nf_faturamento')?.value) || 0,
+    limiteSolicitado:  parseFloat(document.getElementById('nf_limite')?.value) || 0,
+    scoreInternoIDF:   null,
+  };
+}
+
+function _renderCreditoResult(res) {
+  const box = document.getElementById('credito_result');
+  if (!box) return;
+  box.style.display = 'block';
+  const fatoresHtml = (res.fatores || []).map(f =>
+    `<li style="display:flex;justify-content:space-between;gap:8px;padding:2px 0">
+       <span>${f.fator}${f.detalhe ? ` <span style="color:var(--text-muted)">(${f.detalhe})</span>` : ''}</span>
+       <strong style="color:${f.impacto >= 0 ? '#16a34a' : '#dc2626'}">${f.impacto >= 0 ? '+' : ''}${f.impacto}</strong>
+     </li>`).join('');
+  box.innerHTML = `
+    <div style="border:1px solid ${res.cor}40;background:${res.cor}0d;border-radius:10px;padding:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div>
+          <span style="font-size:26px;font-weight:800;color:${res.cor}">${res.score}</span>
+          <span style="font-size:12px;color:var(--text-muted)">/100</span>
+          <span style="margin-left:8px;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;background:${res.cor}1f;color:${res.cor}">Classe ${res.classe} · ${res.risco}</span>
+        </div>
+        ${res.limiteSugerido > 0 ? `<button type="button" class="btn btn-secondary btn-sm" onclick="_usarLimiteSugerido(${res.limiteSugerido})"><i class="fas fa-wand-magic-sparkles"></i> Usar limite sugerido: R$ ${res.limiteSugerido.toLocaleString('pt-BR')}</button>` : ''}
+      </div>
+      ${fatoresHtml ? `<ul style="list-style:none;margin:10px 0 0;padding:0;font-size:12px">${fatoresHtml}</ul>` : ''}
+    </div>`;
+}
+
+function analisarCreditoNoCadastro() {
+  if (typeof window.analisarCreditoFornecedor !== 'function') {
+    showToast('Motor de análise de crédito não carregado.', 'error'); return;
+  }
+  const res = window.analisarCreditoFornecedor(_coletarDadosCredito());
+  window._creditoResult = res;
+  _renderCreditoResult(res);
+}
+
+function _usarLimiteSugerido(valor) {
+  const el = document.getElementById('nf_limite');
+  if (el) { el.value = valor; _marcarCreditoDesatualizado(); }
+}
+
+// Quando o usuário muda faturamento/limite, a análise exibida fica obsoleta.
+function _marcarCreditoDesatualizado() { window._creditoResult = null; }
+
 async function salvarNovoFornecedor() {
   const razao = (document.getElementById('nf_razao')?.value || '').trim();
   if (!razao) { showToast('Informe a Razão Social', 'warning'); return; }
@@ -975,11 +1042,9 @@ async function salvarNovoFornecedor() {
   if (cnpj) {
     const cnpjLimpo = cnpj.replace(/\D/g, '');
     if (cnpjLimpo.length !== 14) { showToast('CNPJ deve ter 14 dígitos', 'warning'); return; }
-    // Verifica dígitos verificadores CNPJ
     if (!_validarDigitosCNPJ(cnpjLimpo)) {
       showToast('⚠️ CNPJ inválido — verifique os dígitos verificadores.', 'error'); return;
     }
-    // Detecta duplicata de CNPJ
     const existente = FA_FORNECEDORES.find(f => f.cnpj && f.cnpj.replace(/\D/g,'') === cnpjLimpo);
     if (existente) {
       showToast(`⚠️ CNPJ já cadastrado para "${existente.nome_fantasia || existente.razao_social || existente.nome}". Verifique antes de continuar.`, 'error', 6000);
@@ -987,44 +1052,60 @@ async function salvarNovoFornecedor() {
     }
   }
 
+  // Validação de e-mail (quando informado)
+  const email = document.getElementById('nf_email')?.value?.trim() || '';
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showToast('E-mail inválido — verifique o formato.', 'warning'); return;
+  }
+
+  // Garante uma análise de crédito atual (recalcula se o usuário não clicou).
+  const credito = window._creditoResult || window.analisarCreditoFornecedor(_coletarDadosCredito());
+
   const btn = document.querySelector('[onclick="salvarNovoFornecedor()"]');
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Salvando...'; }
 
   const statusSelecionado = document.getElementById('nf_status')?.value || 'Em Homologação';
+  const prazo = parseInt(document.getElementById('nf_prazo')?.value) || 30;
+  const contato = document.getElementById('nf_contato')?.value?.trim() || null;
   const payload = {
-    nome:          document.getElementById('nf_fantasia')?.value?.trim() || razao,
-    razao_social:  razao,
-    cnpj:          cnpj,
-    categoria:     document.getElementById('nf_cat')?.value || 'Outros',
-    contato_nome:  document.getElementById('nf_contato')?.value?.trim() || null,
-    email:         document.getElementById('nf_email')?.value?.trim() || null,
-    telefone:      document.getElementById('nf_tel')?.value?.trim() || null,
-    cidade:        document.getElementById('nf_cidade')?.value?.trim() || null,
-    estado:        document.getElementById('nf_uf')?.value || null,
-    prazo_pagamento: parseInt(document.getElementById('nf_prazo')?.value) || 30,
-    limite_credito:  parseFloat(document.getElementById('nf_limite')?.value) || 0,
-    status:        statusSelecionado,
-    ativo:         statusSelecionado === 'Ativo' ? 1 : (statusSelecionado === 'Inativo' ? 0 : 1),
+    nome:            document.getElementById('nf_fantasia')?.value?.trim() || razao,
+    razao_social:    razao,
+    nome_fantasia:   document.getElementById('nf_fantasia')?.value?.trim() || null,
+    cnpj:            cnpj,
+    categoria:       document.getElementById('nf_cat')?.value || 'Outros',
+    // Envia os dois nomes de campo p/ compatibilidade Express (contato/prazo_entrega)
+    contato:         contato,
+    contato_nome:    contato,
+    email:           email || null,
+    telefone:        document.getElementById('nf_tel')?.value?.trim() || null,
+    cidade:          document.getElementById('nf_cidade')?.value?.trim() || null,
+    estado:          document.getElementById('nf_uf')?.value || null,
+    prazo_entrega:   prazo,
+    prazo_pagamento: prazo,
+    banco:           document.getElementById('nf_banco')?.value?.trim() || null,
+    agencia:         document.getElementById('nf_agencia')?.value?.trim() || null,
+    conta:           document.getElementById('nf_conta')?.value?.trim() || null,
+    faturamento_anual: parseFloat(document.getElementById('nf_faturamento')?.value) || 0,
+    limite_credito:    parseFloat(document.getElementById('nf_limite')?.value) || 0,
+    score_credito:        credito.score,
+    classificacao_credito: credito.classe,
+    analise_credito:   JSON.stringify(credito),
+    status:          statusSelecionado,
+    ativo:           statusSelecionado === 'Ativo' ? 1 : (statusSelecionado === 'Inativo' ? 0 : 1),
   };
 
   try {
-    const token = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
-    const res = await fetch('/api/fornecedores', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify(payload)
-    });
-    const json = await res.json();
-    if (!res.ok || !json.success) throw new Error(json.error || 'Erro ao salvar');
-
-    logAction('Cadastro', 'Fornecedores', `Novo fornecedor cadastrado: ${razao}`);
+    // Camada DB: funciona tanto no Worker (canônico) quanto no Express.
+    // Robusto ao formato de resposta (não depende de json.success).
+    const novo = await DB.fornecedores.criar(payload);
+    if (novo && novo._local) {
+      showToast('Salvo localmente (servidor indisponível). Sincroniza quando voltar.', 'warning', 5000);
+    } else {
+      showToast(`Fornecedor "${payload.nome}" cadastrado · crédito ${credito.score}/100 (classe ${credito.classe}).`, 'success', 5000);
+    }
+    logAction('Cadastro', 'Fornecedores', `Novo fornecedor: ${razao} (crédito ${credito.score}/${credito.classe})`);
     closeModal();
-    showToast(`Fornecedor "${payload.nome}" cadastrado com sucesso!`, 'success');
     await loadFornecedores();
-    // Sincroniza lista de fornecedores com avaliações IDF existentes
     if (typeof _syncFornecedoresIDF === 'function') _syncFornecedoresIDF();
     renderFornecedores();
   } catch (e) {
