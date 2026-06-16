@@ -89,7 +89,9 @@ posicionamento a perseguir.
 - ⬜ **Recomendação de fornecedor** em RFQ (custo × IDF × crédito × prazo).
 
 ### P3 — Conformidade e governança
-- ⬜ **Auditoria ISO integrada** (ver §6).
+- ✅ **Auditoria ISO integrada** (esqueleto): `js/lib/iso.js` + página `iso`.
+  Evidências derivadas automaticamente de IDF/SSMA/RBAC/logs/documentos,
+  cobertura por norma (9001/14001/45001/27001), lacunas e CAPA. Ver §6.
 - ⬜ **Trilha de auditoria imutável** (hash encadeado em `audit_log`).
 - ⬜ **LGPD**: base legal, retenção e anonimização.
 
