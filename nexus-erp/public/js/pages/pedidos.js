@@ -1156,6 +1156,29 @@ async function salvarPedido(status) {
     centro_custo: document.getElementById('np_contrato').value
   };
 
+  // ── Detecção de anomalias (fracionamento, valor atípico, crédito, duplicidade) ──
+  // Interliga com o cadastro de fornecedor (score/classe de crédito). Risco alto
+  // pede confirmação explícita e fica registrado no log de auditoria.
+  if (typeof window.detectarAnomalias === 'function') {
+    const _hist = FA_PEDIDOS.map(p => ({ fornecedor_id: p.fornecedor_id, valor: p.valor_total, data: p.data_emissao, id: p.id }));
+    const _an = window.detectarAnomalias(
+      { fornecedor_id: forId, valor, data: novo.data_emissao, categoria: for_ && for_.categoria },
+      _hist, for_ || {}
+    );
+    if (_an.risco !== 'Nenhum') {
+      logAction('Anomalia', 'Pedidos', `Risco ${_an.risco} em ${numPedido}: ${_an.alertas.map(a => a.tipo).join(', ')}`);
+      novo.anomalia_risco = _an.risco;
+      novo.anomalia_alertas = JSON.stringify(_an.alertas);
+      if (_an.risco === 'Alto') {
+        const _msg = _an.alertas.map(a => '• ' + a.mensagem + (a.detalhe ? ' — ' + a.detalhe : '')).join('\n');
+        const segue = window.confirm(`⚠️ RISCO ALTO neste pedido:\n\n${_msg}\n\nRegistrar mesmo assim? A ação ficará no log de auditoria.`);
+        if (!segue) { showToast('Pedido não registrado — revise os alertas de risco.', 'info'); return; }
+      } else {
+        showToast(`Atenção (risco ${_an.risco}): ${_an.alertas[0].mensagem}`, 'warning', 6000);
+      }
+    }
+  }
+
   try {
     await fetch('/api/pedidos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(novo) });
   } catch(e) {}
