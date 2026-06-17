@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   salt          TEXT NOT NULL,
   scopes        TEXT DEFAULT '[]',
+  fornecedor_id TEXT,
   ativo         INTEGER DEFAULT 1,
   created_at    TEXT DEFAULT (datetime('now'))
 );

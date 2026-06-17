@@ -64,6 +64,18 @@ function requireRole(user, roles){
   if (!roles.includes(user.role)) throw { code:403, msg:'papel sem permissao para esta acao' };
 }
 
+// ===== Portal do fornecedor: regra de isolamento (espelha o Express) =====
+// Garante perfil 'fornecedor' COM vínculo; o fornecedor_id vira o único filtro.
+function portalScope(user){
+  if (!user || user.role !== 'fornecedor') return { ok:false, code:403, msg:'Acesso restrito ao portal do fornecedor' };
+  if (!user.fornecedor_id) return { ok:false, code:403, msg:'Usuario sem fornecedor vinculado' };
+  return { ok:true, fornecedor_id: user.fornecedor_id };
+}
+// Ownership: um pedido só "é" do fornecedor se o vínculo bater.
+function pedidoPertence(pedido, fornecedorId){
+  return !!pedido && fornecedorId != null && String(pedido.fornecedor_id) === String(fornecedorId);
+}
+
 // ===== Auditoria (append-only + hash encadeado, tamper-evident) =====
 async function sha256hex(str){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -470,6 +482,13 @@ function genRandomPassword(){
   const b = crypto.getRandomValues(new Uint8Array(18));
   return btoa(String.fromCharCode(...b)).replace(/[+/=]/g,'').slice(0,24);
 }
+// Upgrade in-place: garante a coluna de vínculo do portal em bancos já criados.
+let _userColsReady = false;
+async function ensureUserCols(env){
+  if (_userColsReady) return;
+  try { await env.DB.prepare('ALTER TABLE users ADD COLUMN fornecedor_id TEXT').run(); } catch(_){ /* já existe */ }
+  _userColsReady = true;
+}
 async function ensureSeed(env){
   const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
   if (row && row.n > 0) return;
@@ -511,6 +530,7 @@ export default {
     }
 
     try { await ensureSeed(env); } catch(e){ /* segue mesmo se o seed falhar */ }
+    try { await ensureUserCols(env); } catch(e){ /* coluna opcional do portal */ }
 
     const seg = path.slice(5).split('/').filter(Boolean);
     const method = request.method;
@@ -526,7 +546,7 @@ export default {
           await audit(env, null, 'login_failed', 'users', email, {});
           return E('credenciais invalidas', 401);
         }
-        const token = await signJWT({ sub:u.id, role:u.role, name:u.name, email:u.email, scopes:JSON.parse(u.scopes||'[]'), exp: Math.floor(Date.now()/1000)+8*3600 }, getSecret(env));
+        const token = await signJWT({ sub:u.id, role:u.role, name:u.name, email:u.email, fornecedor_id:u.fornecedor_id||null, scopes:JSON.parse(u.scopes||'[]'), exp: Math.floor(Date.now()/1000)+8*3600 }, getSecret(env));
         await audit(env, u.id, 'login_ok', 'users', u.id, {});
         return J({ token, user:{ id:u.id, name:u.name, email:u.email, role:u.role } });
       }
@@ -543,6 +563,58 @@ export default {
         return J(u || null);
       }
       if (seg[0]==='auth' && seg[1]==='logout') return J({ ok:true });
+
+      // ---- Usuarios (admin): provisiona inclusive usuario de portal ----
+      if (seg[0]==='usuarios' && method==='POST'){
+        requireRole(user, ['admin']);
+        const { nome, email, senha, perfil, fornecedor_id } = body;
+        if (!nome || !email) return E('Nome e email obrigatorios', 400);
+        if (perfil === 'fornecedor' && !fornecedor_id) return E('Usuario fornecedor exige fornecedor_id', 400);
+        const { hash, salt } = await hashPassword(String(senha || env.SEED_PASSWORD || genRandomPassword()));
+        const id = 'u-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+        try {
+          await env.DB.prepare('INSERT INTO users (id,email,username,name,role,password_hash,salt,scopes,fornecedor_id,ativo) VALUES (?,?,?,?,?,?,?,?,?,1)')
+            .bind(id, String(email).toLowerCase().trim(), String(email).split('@')[0], nome, perfil||'operacao', hash, salt, '[]', fornecedor_id||null).run();
+        } catch(e){ return E('Email ja cadastrado', 400); }
+        await audit(env, user.sub, 'usuario_criar', 'users', id, { perfil: perfil||'operacao' });
+        return J({ id, nome, email, perfil: perfil||'operacao', fornecedor_id: fornecedor_id||null }, 201);
+      }
+
+      // ---- Portal do fornecedor (self-service, escopo isolado) ----
+      if (seg[0]==='portal'){
+        const ps = portalScope(user);
+        if (!ps.ok) return E(ps.msg, ps.code);
+        // GET /api/portal/pedidos — só os pedidos do próprio fornecedor.
+        if (seg[1]==='pedidos' && seg.length===2 && method==='GET'){
+          const faux = { searchParams: new URLSearchParams({ fornecedor_id: String(ps.fornecedor_id), limit:'200' }) };
+          return J(await listDocs(env, 'pedidos', faux));
+        }
+        // POST /api/portal/pedidos/:id/nf — anexa NF (ownership obrigatório).
+        if (seg[1]==='pedidos' && seg[3]==='nf' && method==='POST'){
+          const ped = await getDoc(env, 'pedidos', seg[2]);
+          if (!ped) return E('Pedido nao encontrado', 404);
+          if (!pedidoPertence(ped, ps.fornecedor_id)) return E('Pedido nao pertence a este fornecedor', 403);
+          if (!body.nf_numero) return E('Informe o numero da NF', 400);
+          const r = await updateDoc(env, 'pedidos', seg[2], { nf_numero: body.nf_numero, nf_valor: body.nf_valor || ped.valor || 0, status: 'NF Enviada' });
+          await audit(env, user.sub, 'portal_nf', 'pedidos', seg[2], { nf: body.nf_numero });
+          return r ? J(r) : E('nao encontrado', 404);
+        }
+        // GET/PUT /api/portal/perfil — próprio cadastro; só contato/bancário.
+        if (seg[1]==='perfil' && method==='GET'){
+          const f = await getDoc(env, 'fornecedores', ps.fornecedor_id);
+          return f ? J(f) : E('Fornecedor nao encontrado', 404);
+        }
+        if (seg[1]==='perfil' && method==='PUT'){
+          const f = await getDoc(env, 'fornecedores', ps.fornecedor_id);
+          if (!f) return E('Fornecedor nao encontrado', 404);
+          const patch = {};
+          for (const k of ['contato','email','telefone','banco','agencia','conta']) if (body[k] !== undefined) patch[k] = body[k];
+          const r = await updateDoc(env, 'fornecedores', ps.fornecedor_id, patch);
+          await audit(env, user.sub, 'portal_perfil', 'fornecedores', ps.fornecedor_id, {});
+          return r ? J(r) : E('nao encontrado', 404);
+        }
+        return E('rota de portal nao encontrada', 404);
+      }
 
       // Logs de aplicacao
       if (seg[0]==='logs'){
@@ -671,3 +743,6 @@ export default {
     }
   }
 };
+
+// Exporta as regras puras de isolamento do portal para teste unitário.
+export { portalScope, pedidoPertence };
