@@ -73,8 +73,10 @@ posicionamento a perseguir.
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
 - ⬜ **Fornecedores+**: consulta automática de situação fiscal/credit bureau real
   (hoje a análise usa dados informados + CNPJ; integrar Serasa/SPC/Receita).
-- ⬜ **Numeração atômica no servidor** (RC/PC/Mapa) — eliminar o `length+1` que
-  gera corrida; mover para sequência no Worker/D1.
+- ✅ **Numeração atômica no servidor** — endpoint `POST /api/sequencia/:tipo`
+  (Express + Worker/D1) com UPSERT+RETURNING; PC já usa, com fallback offline.
+  Testado com 100 chamadas concorrentes → 100 números únicos. RC/RFQ/MAPA
+  podem usar o mesmo helper (`DB.sequencia`).
 - ⬜ **Recebimento ↔ 3-way match completo** (qtd e preço por item, não só total).
 - ⬜ **Almoxarifado**: movimentação atômica de estoque no servidor.
 

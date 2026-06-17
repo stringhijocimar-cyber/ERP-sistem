@@ -1130,7 +1130,11 @@ async function salvarPedido(status) {
   }
 
   const valor = parseFloat(document.getElementById('np_valor').value) || itens.reduce((a,b)=>a+b.total,0);
-  const numPedido = 'PC-' + new Date().getFullYear() + '-' + String(FA_PEDIDOS.length + 43).padStart(4,'0');
+  // Numeração ATÔMICA no servidor (sem corrida do length+1). Fallback local só
+  // se o servidor estiver indisponível (modo offline/demo).
+  let numPedido = null;
+  try { const _seq = await DB.sequencia('PC'); numPedido = _seq && _seq.numero; } catch (e) {}
+  if (!numPedido) numPedido = 'PC-' + new Date().getFullYear() + '-' + String(FA_PEDIDOS.length + 43).padStart(4,'0');
 
   const novo = {
     id: gerarId('PC'),
