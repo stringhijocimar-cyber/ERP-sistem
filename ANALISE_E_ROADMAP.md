@@ -81,6 +81,10 @@ posicionamento a perseguir.
   pedido e o recebimento item a item (qtd e preço, com tolerância). Integrado
   ao gate de pagamento no Worker e no Express (rota `/pagar` com gate completo,
   que antes só existia no Worker). Bloqueios respondem 409 e vão à auditoria.
+- ✅ **Recebimento por item** (Express: tabelas `recebimentos`/`recebimento_itens`
+  + endpoints + modal com quantidades): o gate **puxa automaticamente** o
+  recebido acumulado do pedido e o usa no 3-way (sem precisar informar no
+  pagamento). "Não paga o que não chegou" passa a ser automático.
 - ⬜ **Almoxarifado**: movimentação atômica de estoque no servidor.
 
 ### P2 — Inteligência adaptativa
