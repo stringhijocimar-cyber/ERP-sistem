@@ -71,6 +71,11 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Portal do Fornecedor** (self-service, escopo restrito): usuário com perfil
+  `fornecedor` vinculado a um `fornecedor_id`. Rotas `/api/portal/*` (pedidos,
+  enviar NF, perfil) sempre filtradas pelo vínculo — um fornecedor nunca vê
+  dados de outro (ownership enforced + testes). Worker: paridade pendente
+  (exige provisionamento de usuário-fornecedor na auth do Worker).
 - ✅ **Fornecedores+ / credit bureau**: adaptador server-side `lib/credit_bureau.js`
   com provedor selecionável por env (mock determinístico por padrão, Serasa/SPC
   plugáveis com credencial). Endpoint `/api/credito/consultar` (Express + Worker)

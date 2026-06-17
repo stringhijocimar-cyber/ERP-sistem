@@ -94,6 +94,15 @@ ensureColumns('logs_sistema', [
   ['hash', 'hash TEXT'],
   ['hash_anterior', 'hash_anterior TEXT'],
 ])
+// Portal do fornecedor: usuário pode ser vinculado a um fornecedor (escopo).
+ensureColumns('usuarios', [
+  ['fornecedor_id', 'fornecedor_id INTEGER'],
+])
+// NF enviada pelo fornecedor no pedido.
+ensureColumns('pedidos_compra', [
+  ['nf_numero', 'nf_numero TEXT'],
+  ['nf_valor', 'nf_valor REAL'],
+])
 // Gate de pagamento precisa de NF e origem na conta a pagar.
 ensureColumns('contas_pagar', [
   ['nota_fiscal', 'nota_fiscal TEXT'],
@@ -227,7 +236,7 @@ function getUser(req) {
   if (!token) return null
   try {
     const row = db.prepare(
-      `SELECT s.usuario_id, u.nome, u.email, u.perfil, u.ativo
+      `SELECT s.usuario_id, u.nome, u.email, u.perfil, u.ativo, u.fornecedor_id
        FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id
        WHERE s.token = ? AND u.ativo = 1`
     ).get(token)
@@ -415,6 +424,55 @@ app.post('/api/sequencia/:tipo', requireAuth, (req, res) => {
   } catch (e) {
     res.status(400).json(err(e.message))
   }
+})
+
+// ════════════════════════════════════════════════════════════
+// PORTAL DO FORNECEDOR (self-service, escopo restrito ao próprio fornecedor)
+// ════════════════════════════════════════════════════════════
+// Garante perfil 'fornecedor' COM vínculo. Toda rota /portal usa req.user.fornecedor_id
+// como filtro — um fornecedor nunca enxerga dados de outro.
+function requirePortal(req, res, next) {
+  if (!req.user || req.user.perfil !== 'fornecedor') return res.status(403).json(err('Acesso restrito ao portal do fornecedor', 403))
+  if (!req.user.fornecedor_id) return res.status(403).json(err('Usuário sem fornecedor vinculado', 403))
+  next()
+}
+
+app.get('/api/portal/pedidos', requireAuth, requirePortal, (req, res) => {
+  const rows = db.prepare(
+    `SELECT id, numero, status, valor_total, prazo_entrega, created_at, nf_numero, nf_valor
+       FROM pedidos_compra WHERE fornecedor_id = ? ORDER BY created_at DESC LIMIT 200`
+  ).all(req.user.fornecedor_id)
+  res.json(ok(rows))
+})
+
+app.post('/api/portal/pedidos/:id/nf', requireAuth, requirePortal, (req, res) => {
+  const ped = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(req.params.id)
+  if (!ped) return res.status(404).json(err('Pedido não encontrado'))
+  // Ownership: só o dono do pedido pode anexar NF.
+  if (ped.fornecedor_id !== req.user.fornecedor_id) return res.status(403).json(err('Pedido não pertence a este fornecedor', 403))
+  const { nf_numero, nf_valor } = req.body || {}
+  if (!nf_numero) return res.status(400).json(err('Informe o número da NF'))
+  db.prepare(`UPDATE pedidos_compra SET nf_numero=?, nf_valor=?, status='NF Enviada', updated_at=datetime('now') WHERE id=?`)
+    .run(nf_numero, nf_valor || ped.valor_total || 0, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'Portal NF', 'pedidos_compra', `NF ${nf_numero} enviada no pedido ${ped.numero}`)
+  res.json(ok(db.prepare(`SELECT id, numero, status, nf_numero, nf_valor FROM pedidos_compra WHERE id = ?`).get(req.params.id)))
+})
+
+app.get('/api/portal/perfil', requireAuth, requirePortal, (req, res) => {
+  const f = db.prepare(`SELECT id, nome, razao_social, cnpj, contato, email, telefone, banco, agencia, conta FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  res.json(ok(f))
+})
+
+app.put('/api/portal/perfil', requireAuth, requirePortal, (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  const b = req.body || {}
+  // Fornecedor só edita dados de contato/bancários — nunca crédito/status/ativo.
+  db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, banco=?, agencia=?, conta=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.contato ?? f.contato, b.email ?? f.email, b.telefone ?? f.telefone, b.banco ?? f.banco, b.agencia ?? f.agencia, b.conta ?? f.conta, req.user.fornecedor_id)
+  log(req.user.usuario_id, req.user.nome, 'Portal perfil', 'fornecedores', `Atualização de cadastro pelo portal`)
+  res.json(ok(db.prepare(`SELECT id, nome, contato, email, telefone, banco, agencia, conta FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)))
 })
 
 app.get('/api/fornecedores', requireAuth, (req, res) => {
@@ -1124,13 +1182,15 @@ app.get('/api/usuarios', requireAuth, (req, res) => {
 })
 
 app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
-  const { nome, email, senha, perfil } = req.body
+  const { nome, email, senha, perfil, fornecedor_id } = req.body
   if (!nome || !email) return res.status(400).json(err('Nome e email obrigatórios'))
+  // Usuário de portal (perfil 'fornecedor') exige vínculo com um fornecedor.
+  if (perfil === 'fornecedor' && !fornecedor_id) return res.status(400).json(err('Usuário fornecedor exige fornecedor_id'))
   // Senha sempre armazenada com hash bcrypt; se omitida, usa SEED_PASSWORD.
   const senhaHash = bcrypt.hashSync(String(senha || SEED_PASSWORD), BCRYPT_ROUNDS)
   try {
-    const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil) VALUES(?,?,?,?)`)
-      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao')
+    const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, fornecedor_id) VALUES(?,?,?,?,?)`)
+      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao', fornecedor_id || null)
     const u = db.prepare(`SELECT id, nome, email, perfil, ativo FROM usuarios WHERE id = ?`).get(r.lastInsertRowid)
     log(req.user.usuario_id, req.user.nome, 'Criar', 'usuarios', `Usuário criado: ${nome}`)
     res.status(201).json(ok(u))
