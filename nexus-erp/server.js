@@ -96,6 +96,35 @@ ensureColumns('contas_pagar', [
   ['contrato_id', 'contrato_id TEXT'],
 ])
 
+// Recebimento por item (alimenta o 3-way automaticamente).
+db.exec(`CREATE TABLE IF NOT EXISTS recebimentos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pc_id INTEGER,
+  nf_numero TEXT,
+  valor_nf REAL DEFAULT 0,
+  status TEXT,
+  conferente TEXT,
+  observacoes TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+db.exec(`CREATE TABLE IF NOT EXISTS recebimento_itens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recebimento_id INTEGER NOT NULL REFERENCES recebimentos(id) ON DELETE CASCADE,
+  pc_id INTEGER,
+  codigo_produto TEXT,
+  descricao TEXT,
+  quantidade_recebida REAL DEFAULT 0
+)`)
+// Soma do que já foi recebido por item de um pedido (chave: código ou descrição).
+function itensRecebidosAcumulados(pcId) {
+  return db.prepare(
+    `SELECT COALESCE(NULLIF(codigo_produto,''), descricao) AS codigo, descricao,
+            SUM(quantidade_recebida) AS quantidade_recebida
+       FROM recebimento_itens WHERE pc_id = ?
+      GROUP BY COALESCE(NULLIF(codigo_produto,''), descricao)`
+  ).all(pcId)
+}
+
 // ─── Sequências atômicas (numeração sem corrida) ──────────────
 // Substitui o `length+1` do cliente por um contador no servidor, incrementado
 // atomicamente (UPSERT + RETURNING numa única instrução — sem race condition).
@@ -805,6 +834,38 @@ app.put('/api/contas-pagar/:id', requireAuth, requireRole('admin', 'financeiro')
   res.json(ok(db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)))
 })
 
+// ── Recebimento por item ──────────────────────────────────────
+app.get('/api/recebimentos', requireAuth, (req, res) => {
+  const { pc_id } = req.query
+  let sql = `SELECT * FROM recebimentos`
+  const params = []
+  if (pc_id) { sql += ` WHERE pc_id = ?`; params.push(pc_id) }
+  sql += ` ORDER BY created_at DESC LIMIT 200`
+  const recs = db.prepare(sql).all(...params).map(r => ({
+    ...r, itens: db.prepare(`SELECT * FROM recebimento_itens WHERE recebimento_id = ?`).all(r.id)
+  }))
+  res.json(ok(recs))
+})
+
+app.post('/api/recebimentos', requireAuth, (req, res) => {
+  const b = req.body || {}
+  const r = db.prepare(
+    `INSERT INTO recebimentos(pc_id, nf_numero, valor_nf, status, conferente, observacoes)
+     VALUES(?,?,?,?,?,?)`
+  ).run(b.pc_id ?? null, b.nf_numero ?? null, b.valor_nf ?? 0, b.status ?? 'Conforme',
+        b.conferente ?? req.user.nome, b.observacoes ?? null)
+  const recId = r.lastInsertRowid
+  const itens = Array.isArray(b.itens) ? b.itens : []
+  const ins = db.prepare(`INSERT INTO recebimento_itens(recebimento_id, pc_id, codigo_produto, descricao, quantidade_recebida) VALUES(?,?,?,?,?)`)
+  for (const it of itens) {
+    ins.run(recId, b.pc_id ?? null, it.codigo_produto ?? it.codigo ?? null, it.descricao ?? it.desc ?? null,
+            Number(it.quantidade_recebida ?? it.qtd_recebida ?? it.qtd ?? 0) || 0)
+  }
+  log(req.user.usuario_id, req.user.nome, 'Receber', 'recebimentos', `Recebimento NF ${b.nf_numero || '—'} (${itens.length} item(ns))`)
+  const rec = db.prepare(`SELECT * FROM recebimentos WHERE id = ?`).get(recId)
+  res.status(201).json(ok({ ...rec, itens: db.prepare(`SELECT * FROM recebimento_itens WHERE recebimento_id = ?`).all(recId) }))
+})
+
 // GATE DE PAGAMENTO: "nada paga sem lastro" + 3-way por item. Segregação: só
 // financeiro/admin. Bloqueios respondem 409 e ficam na trilha de auditoria.
 app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
@@ -826,7 +887,9 @@ app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'finan
   if (conta.pc_id && conciliarTresVias) {
     const itensPedido = db.prepare(`SELECT descricao, quantidade, valor_unitario, codigo_produto FROM pc_itens WHERE pc_id = ?`).all(conta.pc_id)
     const itensNota = (req.body && req.body.itens_nota) || []
-    const itensRecebidos = (req.body && req.body.itens_recebidos) || []
+    // Auto-feed: se o corpo não trouxer os recebidos, usa o acumulado do banco.
+    let itensRecebidos = (req.body && req.body.itens_recebidos) || []
+    if (!itensRecebidos.length) itensRecebidos = itensRecebidosAcumulados(conta.pc_id)
     if (itensNota.length) {
       const r = conciliarTresVias({ itensPedido, itensRecebidos, itensNota })
       if (!r.conforme) {
