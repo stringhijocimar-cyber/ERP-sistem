@@ -51,4 +51,13 @@ describe('LGPD — retenção', () => {
     expect(s.vencido).toBe(false)
     expect(s.limite).toBeNull()
   })
+
+  it('vencidosPorRetencao filtra apenas os além do período', () => {
+    const regs = [
+      { id: 1, created_at: '2018-01-01' }, // vencido (>60m)
+      { id: 2, created_at: '2025-06-01' }, // dentro
+    ]
+    const v = LGPD.vencidosPorRetencao(regs, { campoData: 'created_at', retencaoMeses: 60 }, '2026-06-16')
+    expect(v.map(r => r.id)).toEqual([1])
+  })
 })

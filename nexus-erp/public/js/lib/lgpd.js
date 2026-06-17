@@ -76,12 +76,25 @@
     };
   }
 
+  // Filtra registros cujo período de retenção venceu. opts: { campoData,
+  // retencaoMeses }. Retorna só os vencidos (para preview/expurgo).
+  function vencidosPorRetencao(registros, opts, hoje) {
+    opts = opts || {};
+    var campo = opts.campoData || 'created_at';
+    var meses = Number(opts.retencaoMeses) || 0;
+    return (registros || []).filter(function (r) {
+      var s = statusRetencao({ data_coleta: r[campo], retencao_meses: meses }, hoje);
+      return s.vencido;
+    });
+  }
+
   root.LGPD = {
     BASES_LEGAIS: BASES_LEGAIS,
     validarBaseLegal: validarBaseLegal,
     anonimizarCampo: anonimizarCampo,
     anonimizarRegistro: anonimizarRegistro,
     statusRetencao: statusRetencao,
+    vencidosPorRetencao: vencidosPorRetencao,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.LGPD;
 })(typeof window !== 'undefined' ? window : globalThis);

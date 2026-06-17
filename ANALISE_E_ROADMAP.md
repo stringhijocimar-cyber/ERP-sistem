@@ -120,6 +120,10 @@ posicionamento a perseguir.
   retenção, solicitações do titular (DSAR) e **anonimização irreversível** de
   dados pessoais de fornecedor (endpoint admin no Express e no Worker, com
   trilha de auditoria). Direito de eliminação operacional.
+- ✅ **Retenção automatizada**: preview (dry-run) + execução por política
+  (`RETENCAO_FORNECEDOR_MESES`, padrão 60m) — anonimiza fornecedores inativos
+  além do período de guarda, no Express e no Worker. UI com lista antes de
+  expurgar.
 
 ---
 
