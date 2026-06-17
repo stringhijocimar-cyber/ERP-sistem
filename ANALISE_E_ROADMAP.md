@@ -110,6 +110,10 @@ posicionamento a perseguir.
   encadeado no Express (`logs_sistema`) e no Worker (`audit_log`), com endpoint
   `GET /api/auditoria/verificar` e botão na página ISO. Detecta adulteração,
   remoção e reordenação. Express e Worker geram hashes idênticos.
+- ✅ **CAPA com workflow + ISO 14001** (`js/lib/capa.js` + página ISO): ciclo
+  Aberta → Em Ação → Verificação → Fechada, detecção de atraso por prazo e KPIs
+  (% no prazo). Aspectos/impactos ambientais (14001 §6.1) registráveis e
+  contados como evidência. CAPA e aspectos realimentam a cobertura ISO.
 - ⬜ **LGPD**: base legal, retenção e anonimização.
 
 ---
