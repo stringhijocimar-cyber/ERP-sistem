@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import './public/js/lib/auditoria.js' // define globalThis.Auditoria (hash encadeado)
 import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-way por item)
+import { consultarCredito } from './lib/credit_bureau.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -348,6 +349,16 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
 // ════════════════════════════════════════════════════════════
 // FORNECEDORES
 // ════════════════════════════════════════════════════════════
+// Consulta a bureau de crédito (provedor por env; mock por padrão).
+app.post('/api/credito/consultar', requireAuth, async (req, res) => {
+  try {
+    const data = await consultarCredito(req.body && req.body.cnpj, { provider: process.env.CREDIT_BUREAU_PROVIDER })
+    res.json(ok(data))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
 // Numeração atômica: POST /api/sequencia/PC → { numero: 'PC-2026-0001', ... }
 app.post('/api/sequencia/:tipo', requireAuth, (req, res) => {
   try {

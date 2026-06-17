@@ -331,6 +331,25 @@ async function reprovarMapaServer(env, id, user, motivo){
   await audit(env, user.sub, 'mapa_reprovar', 'mapas', id, { motivo });
   return J(rec);
 }
+// Consulta a bureau de crédito (provedor por env; mock determinístico padrão).
+function consultarCreditoBureau(cnpjRaw, provider){
+  const cnpj = String(cnpjRaw||'').replace(/\D/g,'');
+  if (cnpj.length !== 14) return E('CNPJ inválido (14 dígitos)', 400);
+  const prov = String(provider||'mock').toLowerCase();
+  if (prov !== 'mock') return E('Provedor de bureau não configurado: ' + prov, 400);
+  let h = 0; for (const ch of cnpj) h = (h*31 + (ch.charCodeAt(0)-48)) % 1000003;
+  const score = 300 + (h % 700);
+  return J({
+    cnpj, fonte:'mock',
+    situacao: (h % 13 === 0) ? 'INAPTA' : 'ATIVA',
+    score_externo: score,
+    score_0_100: Math.round(((score-300)/699)*100),
+    pendencias: (h % 7 === 0) ? (1 + (h % 3)) : 0,
+    protestos: (h % 11 === 0) ? 1 : 0,
+    faturamento_estimado: 120000 * (1 + (h % 60)),
+  });
+}
+
 // Numeração atômica por tipo/ano (UPSERT + RETURNING numa instrução).
 const TIPOS_SEQ = new Set(['PC','RC','RFQ','MAPA','CP']);
 async function proximaSequencia(env, tipoRaw, anoRaw){
@@ -538,6 +557,9 @@ export default {
 
       // Numeração atômica: POST /api/sequencia/PC → { numero: 'PC-2026-0001', ... }
       if (seg[0]==='sequencia' && seg[1] && method==='POST') return await proximaSequencia(env, seg[1], body && body.ano);
+
+      // Consulta a bureau de crédito: POST /api/credito/consultar { cnpj }
+      if (seg[0]==='credito' && seg[1]==='consultar' && method==='POST') return consultarCreditoBureau(body && body.cnpj, env.CREDIT_BUREAU_PROVIDER);
 
       // Trilha de auditoria imutável: GET /api/auditoria/verificar (admin)
       if (seg[0]==='auditoria' && seg[1]==='verificar' && method==='GET'){ requireRole(user,['admin']); return await verificarAuditoria(env); }

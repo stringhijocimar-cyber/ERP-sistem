@@ -71,8 +71,11 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
-- ⬜ **Fornecedores+**: consulta automática de situação fiscal/credit bureau real
-  (hoje a análise usa dados informados + CNPJ; integrar Serasa/SPC/Receita).
+- ✅ **Fornecedores+ / credit bureau**: adaptador server-side `lib/credit_bureau.js`
+  com provedor selecionável por env (mock determinístico por padrão, Serasa/SPC
+  plugáveis com credencial). Endpoint `/api/credito/consultar` (Express + Worker)
+  e botão "Consultar bureau" no cadastro, realimentando a análise de crédito
+  (situação, pendências/protestos, faturamento estimado).
 - ✅ **Numeração atômica no servidor** — endpoint `POST /api/sequencia/:tipo`
   (Express + Worker/D1) com UPSERT+RETURNING; **PC, RC e RFQ** usam, com
   fallback offline. Testado com 100 chamadas concorrentes → 100 números únicos.
