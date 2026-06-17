@@ -86,7 +86,9 @@ posicionamento a perseguir.
   de pedido: risco alto pede confirmação e fica no log de auditoria.
 - ⬜ **Sugestão de aprovação** (recomenda aprovar/revisar com base em histórico).
 - ⬜ **Previsão de prazo de entrega** por fornecedor/categoria.
-- ⬜ **Recomendação de fornecedor** em RFQ (custo × IDF × crédito × prazo).
+- ✅ **Recomendação de fornecedor** em RFQ (`js/lib/recomendador.js`): ranking
+  multicritério custo × IDF × crédito × prazo, explicável, ligado ao mapa de
+  cotações (botão "Aplicar recomendação"). Pesos configuráveis.
 
 ### P3 — Conformidade e governança
 - ✅ **Auditoria ISO integrada** (esqueleto): `js/lib/iso.js` + página `iso`.

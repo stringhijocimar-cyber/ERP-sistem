@@ -3056,6 +3056,50 @@ function abrirMatrizComparativa(rfqId) {
     return (tn > 0 && tn < bestTn) ? i : bestIdx;
   }, -1);
 
+  // \u2500\u2500 Recomenda\u00e7\u00e3o inteligente multicrit\u00e9rio (custo \u00d7 IDF \u00d7 cr\u00e9dito \u00d7 prazo) \u2500\u2500
+  // Auxiliar: nunca quebra o mapa. Usa os fornecedores (com cr\u00e9dito) + IDF.
+  window._rfqMapaAtualId = rfqId;
+  let recIAHtml = '';
+  try {
+    if (typeof window.recomendarFornecedor === 'function') {
+      const _forns = (typeof FA_FORNECEDORES !== 'undefined' && FA_FORNECEDORES) ? FA_FORNECEDORES : [];
+      const _achaForn = (ref) => _forns.find(f => f.id === ref || f.nome === ref || f.razao_social === ref || f.nome_fantasia === ref);
+      const _opcoes = cotacoes.map(c => {
+        const f = _achaForn(c.fornecedor) || {};
+        return {
+          forn_idx: c.forn_idx,
+          fornecedor_id: c.fornecedor,
+          fornecedor_nome: _rfqNomeForn(c.fornecedor),
+          preco: c.total_negociado != null ? c.total_negociado : c.total,
+          prazo_dias: parseFloat(c.prazo_entrega) || null,
+          idf: f.score_medio != null ? f.score_medio : (f.score != null ? f.score : null),
+          score_credito: f.score_credito,
+          classificacao_credito: f.classificacao_credito,
+          declinou: c.declinou,
+        };
+      });
+      const _rec = window.recomendarFornecedor(_opcoes);
+      if (_rec.recomendado) {
+        window._rfqUltimaRec = _rec;
+        const _top = _rec.ranking.slice(0, 3).map(r => {
+          const cor = r.recomendado ? '#16a34a' : 'var(--text-muted)';
+          return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:2px 0">
+            <span style="color:${cor}">${r.posicao}\u00ba ${r.fornecedor_nome}${r.recomendado ? ' \u2b50' : ''}</span>
+            <span style="font-weight:700;color:${cor}">${r.scoreFinal}/100</span></div>`;
+        }).join('');
+        const _f = _rec.recomendado.fatores;
+        recIAHtml = `
+        <div style="background:linear-gradient(135deg,rgba(16,185,129,0.08),rgba(37,99,235,0.05));border:1px solid rgba(16,185,129,0.3);border-radius:10px;padding:12px;margin-bottom:12px">
+          <div style="font-size:12px;font-weight:800;color:#16a34a;margin-bottom:6px"><i class="fas fa-brain"></i> RECOMENDA\u00c7\u00c3O INTELIGENTE (custo \u00d7 IDF \u00d7 cr\u00e9dito \u00d7 prazo)</div>
+          <div style="font-size:13px;margin-bottom:6px">${(window.explicarRecomendacao ? window.explicarRecomendacao(_rec) : '')}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Fatores do 1\u00ba: custo ${_f.custo} \u00b7 IDF ${_f.idf} \u00b7 cr\u00e9dito ${_f.credito} \u00b7 prazo ${_f.prazo}</div>
+          ${_top}
+          ${!isMapaAprovOuAprova ? `<button onclick="_rfqAplicarRecomendado()" class="btn btn-sm" style="margin-top:8px;background:#16a34a;color:#fff;border:none;padding:4px 12px;border-radius:6px;font-size:11px"><i class="fas fa-check"></i> Aplicar recomenda\u00e7\u00e3o</button>` : ''}
+        </div>`;
+      }
+    }
+  } catch (e) { /* recomenda\u00e7\u00e3o \u00e9 auxiliar */ }
+
   openModal('\ud83d\uddc2\ufe0f Mapa de Coleta de Pre\u00e7o \u2013 ' + rfq.numero_rfq, `
     <!-- CABe\u00c7ALHO ESTILO MAPA PROFISSIONAL -->
     <div style="border:1px solid var(--border-color);border-radius:10px;overflow:hidden;margin-bottom:14px">
@@ -3256,6 +3300,7 @@ function abrirMatrizComparativa(rfqId) {
       <div style="font-size:12px;font-weight:800;color:var(--text-primary);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.5px;display:flex;align-items:center;gap:8px">
         <i class="fas fa-gavel" style="color:var(--fa-teal)"></i> Crit\u00e9rio de Sele\u00e7\u00e3o e Recomenda\u00e7\u00e3o
       </div>
+      ${recIAHtml}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
         <div>
           <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px">Crit\u00e9rio Principal *</label>
@@ -3332,6 +3377,17 @@ function abrirMatrizComparativa(rfqId) {
 
 
 // ─── GERAR TEXTO DE RECOMENDAÇÃO COM IA (local, sem chamada externa) ───
+// Aplica a recomendação inteligente ao seletor de fornecedor recomendado.
+function _rfqAplicarRecomendado() {
+  const rec = window._rfqUltimaRec;
+  if (!rec || !rec.recomendado) return;
+  const sel = document.getElementById('matrizFornRecomendado');
+  if (sel) sel.value = String(rec.recomendado.forn_idx);
+  if (typeof _rfqGerarTextoIA === 'function' && window._rfqMapaAtualId) _rfqGerarTextoIA(window._rfqMapaAtualId);
+  if (typeof showToast === 'function') showToast('Recomendação aplicada: ' + (rec.recomendado.fornecedor_nome || ''), 'success');
+}
+window._rfqAplicarRecomendado = _rfqAplicarRecomendado;
+
 function _rfqGerarTextoIA(rfqId) {
   const rfqs = _getRFQs();
   const rfq  = rfqs.find(r => r.id === rfqId);
