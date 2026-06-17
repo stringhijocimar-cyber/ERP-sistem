@@ -20,6 +20,12 @@ describe('gerarEvidenciasAutomaticas', () => {
     const ev = gerarEvidenciasAutomaticas({ usuarios: [{}] })
     expect(ev.some(e => e.requisito_id === '45001-10.2')).toBe(false) // sem incidentes
   })
+
+  it('CAPAs e aspectos ambientais viram evidência (9001-10.2 e 14001-6.1)', () => {
+    const ev = gerarEvidenciasAutomaticas({ capas: [{}, {}], aspectos: [{}] })
+    expect(ev.some(e => e.requisito_id === '9001-10.2')).toBe(true)
+    expect(ev.some(e => e.requisito_id === '14001-6.1')).toBe(true)
+  })
 })
 
 describe('avaliarConformidade', () => {
