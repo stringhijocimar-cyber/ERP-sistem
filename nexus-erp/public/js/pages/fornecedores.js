@@ -835,6 +835,7 @@ function openNovoFornecedorCNPJ(cnpjPre) {
 // ─── CADASTRO DE NOVO FORNECEDOR ─────────────────────────────
 function openNovoFornecedor() {
   window._cnpjConsultaResult = null;
+  window._bureauResult = null;
   openModalWide('Cadastrar Novo Fornecedor', `
     <!-- Busca CNPJ rápida -->
     <div style="background:linear-gradient(135deg,rgba(79,70,229,0.06),rgba(124,58,237,0.04));border:1px solid rgba(79,70,229,0.2);border-radius:10px;padding:14px;margin-bottom:16px">
@@ -916,7 +917,10 @@ function openNovoFornecedor() {
       <button type="button" onclick="analisarCreditoNoCadastro()" class="btn btn-outline-primary btn-sm">
         <i class="fas fa-gauge-high"></i> Analisar crédito
       </button>
-      <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Calcula o score de risco com base na situação do CNPJ, porte e exposição.</span>
+      <button type="button" id="btn_bureau" onclick="consultarBureauNoCadastro()" class="btn btn-secondary btn-sm" style="margin-left:6px">
+        <i class="fas fa-building-columns"></i> Consultar bureau
+      </button>
+      <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Score interno + consulta externa (bureau) por CNPJ.</span>
       <div id="credito_result" style="display:none;margin-top:10px"></div>
     </div>
 
@@ -984,14 +988,35 @@ function mascararCNPJ(input) {
 // ─── ANÁLISE DE CRÉDITO (no cadastro) ────────────────────────
 function _coletarDadosCredito() {
   const consulta = window._cnpjConsultaResult || {};
+  const bureau = window._bureauResult || {};
   const statusCad = document.getElementById('nf_status')?.value || '';
   return {
-    situacaoCnpj:      consulta.situacao || (statusCad === 'Ativo' ? 'ATIVA' : ''),
+    situacaoCnpj:      bureau.situacao || consulta.situacao || (statusCad === 'Ativo' ? 'ATIVA' : ''),
     dataAbertura:      consulta.abertura || consulta.data_abertura || consulta.inicio_atividade || null,
-    faturamentoAnual:  parseFloat(document.getElementById('nf_faturamento')?.value) || 0,
+    faturamentoAnual:  parseFloat(document.getElementById('nf_faturamento')?.value) || bureau.faturamento_estimado || 0,
     limiteSolicitado:  parseFloat(document.getElementById('nf_limite')?.value) || 0,
     scoreInternoIDF:   null,
+    // Pendências/protestos do bureau penalizam o score interno.
+    pendenciasFinanceiras: (Number(bureau.pendencias) || 0) + (Number(bureau.protestos) || 0),
   };
+}
+
+// Consulta o bureau de crédito e realimenta a análise com os dados externos.
+async function consultarBureauNoCadastro() {
+  const cnpj = document.getElementById('nf_cnpj')?.value || '';
+  if (cnpj.replace(/\D/g, '').length !== 14) { showToast('Informe o CNPJ completo antes de consultar o bureau', 'warning'); return; }
+  if (!(window.DB && typeof DB.consultarCredito === 'function')) { showToast('Consulta de bureau indisponível.', 'error'); return; }
+  const btn = document.getElementById('btn_bureau');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Consultando...'; }
+  const r = await DB.consultarCredito(cnpj);
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-building-columns"></i> Consultar bureau'; }
+  if (!r) { showToast('Bureau indisponível no momento.', 'error'); return; }
+  window._bureauResult = r;
+  if (!document.getElementById('nf_faturamento').value && r.faturamento_estimado) {
+    document.getElementById('nf_faturamento').value = r.faturamento_estimado;
+  }
+  analisarCreditoNoCadastro(); // reavalia já com os dados do bureau
+  showToast(`Bureau (${r.fonte}): score ${r.score_externo} · ${r.situacao} · ${r.pendencias} pendência(s)`, 'info', 6000);
 }
 
 function _renderCreditoResult(res) {

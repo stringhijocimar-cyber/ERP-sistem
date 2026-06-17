@@ -485,6 +485,13 @@ window.DB = {
     catch (e) { return null; }
   },
 
+  // Consulta a bureau de crédito (servidor; mock por padrão). Retorna os dados
+  // normalizados ou null se indisponível.
+  async consultarCredito(cnpj) {
+    try { return await _apiFetch('/api/credito/consultar', { method: 'POST', body: JSON.stringify({ cnpj }) }); }
+    catch (e) { return null; }
+  },
+
   // Compatibilidade com código legado que usa logAction()
   log: (acao, modulo, desc) => Logs.registrar(acao, modulo, desc),
 };
