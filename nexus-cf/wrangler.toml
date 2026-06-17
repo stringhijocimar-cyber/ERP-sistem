@@ -1,0 +1,24 @@
+name = "nexus-erp"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Arquivos estaticos do front-end (a pasta public/ do NEXUS).
+# Caminho relativo a este wrangler.toml (nexus-cf/) -> ../nexus-erp/public.
+# Comportamento: se a URL casa com um arquivo, ele e servido; se nao casa
+# (ex.: /api/...), a requisicao vai para o Worker. /api SEMPRE chega no Worker.
+[assets]
+directory = "../nexus-erp/public"
+binding = "ASSETS"
+
+# Banco D1. Preencha database_id apos criar (ver PASSO A PASSO).
+[[d1_databases]]
+binding = "DB"
+database_name = "nexus-erp-db"
+database_id = "PREENCHER_APOS_CRIAR"
+
+# Regras do gate (pode relaxar para migrar dados antigos: "0" desliga).
+# JWT_SECRET e SEED_PASSWORD NAO vao aqui — sao secrets (ver passo a passo).
+[vars]
+ENFORCE_NF = "1"
+ENFORCE_ORIGIN = "1"
+ENFORCE_SOD = "1"

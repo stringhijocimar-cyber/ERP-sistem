@@ -1,0 +1,12 @@
+node_modules/
+nexus.db
+nexus.db-wal
+nexus.db-shm
+*.log
+.DS_Store
+dist/assets/*.png
+electron/icon.png
+public/NEXUS_ERP_CODIGO_FONTE.zip
+public/NEXUS_ERP_CODIGO_FONTE.pdf
+public/NEXUS_ERP_CODIGO_FONTE.txt
+public/nexus_erp_source_code.txt

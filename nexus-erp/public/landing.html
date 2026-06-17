@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpsCore ERP – Sistema de Gestão para Mineração e Construção</title>
+  <meta name="description" content="ERP SaaS especializado em mineração, construção pesada e serviços industriais. Contratos, OS, RFQ, IDF Fornecedores, SSMA e muito mais. Teste grátis por 14 dias.">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+    * { font-family: 'Inter', sans-serif; }
+
+    :root {
+      --orange: #e67e22;
+      --orange-dark: #ca6f1e;
+      --dark: #0d0e12;
+      --card: #14161c;
+      --border: rgba(255,255,255,0.08);
+    }
+
+    body { background: var(--dark); color: #e8e9ec; }
+
+    /* ── Gradientes ── */
+    .hero-bg {
+      background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(230,126,34,0.18) 0%, transparent 70%),
+                  radial-gradient(ellipse 60% 40% at 80% 60%, rgba(52,152,219,0.08) 0%, transparent 60%),
+                  var(--dark);
+    }
+    .grad-text {
+      background: linear-gradient(135deg, #e67e22, #f39c12, #e74c3c);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .grad-btn {
+      background: linear-gradient(135deg, #e67e22, #ca6f1e);
+      transition: all .2s;
+    }
+    .grad-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(230,126,34,0.4); }
+
+    /* ── Cards ── */
+    .feature-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      transition: all .25s;
+    }
+    .feature-card:hover {
+      border-color: rgba(230,126,34,0.4);
+      transform: translateY(-4px);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+    }
+
+    /* ── Planos ── */
+    .plan-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      transition: all .25s;
+      position: relative;
+    }
+    .plan-card.popular {
+      border-color: var(--orange);
+      box-shadow: 0 0 40px rgba(230,126,34,0.15);
+    }
+    .plan-card:hover { transform: translateY(-6px); }
+
+    /* ── Ticker / Números ── */
+    .stat-number {
+      font-size: 2.8rem; font-weight: 900;
+      background: linear-gradient(135deg, #e67e22, #f39c12);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* ── Nav ── */
+    .nav-glass {
+      background: rgba(13,14,18,0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* ── Checkmark ── */
+    .check { color: #2ecc71; }
+    .cross { color: #e74c3c; }
+
+    /* ── Módulo badge ── */
+    .mod-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(230,126,34,0.1); border: 1px solid rgba(230,126,34,0.2);
+      border-radius: 8px; padding: 4px 10px; font-size: 12px; color: #e67e22;
+      font-weight: 600;
+    }
+
+    /* ── FAQ accordion ── */
+    .faq-item { border-bottom: 1px solid var(--border); }
+    .faq-item summary {
+      cursor: pointer; padding: 18px 0;
+      font-weight: 600; font-size: 15px;
+      display: flex; justify-content: space-between; align-items: center;
+      list-style: none;
+    }
+    .faq-item summary::-webkit-details-marker { display: none; }
+    .faq-item[open] summary .faq-icon { transform: rotate(45deg); }
+    .faq-icon { transition: transform .2s; color: var(--orange); font-size: 20px; }
+    .faq-body { padding: 0 0 18px; color: #a0a3ae; font-size: 14px; line-height: 1.7; }
+
+    /* ── Testimonial ── */
+    .testi-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+      padding: 28px;
+    }
+    .stars { color: #f39c12; font-size: 14px; }
+
+    /* ── Timeline ── */
+    .timeline-step { position: relative; padding-left: 40px; }
+    .timeline-step::before {
+      content: ''; position: absolute; left: 14px; top: 28px;
+      width: 2px; height: calc(100% - 12px);
+      background: linear-gradient(to bottom, var(--orange), transparent);
+    }
+    .timeline-step:last-child::before { display: none; }
+    .step-dot {
+      position: absolute; left: 0; top: 4px;
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--orange); display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 800; color: #fff;
+    }
+
+    /* ── Scroll animations ── */
+    .fade-in { opacity: 0; transform: translateY(24px); transition: all .6s; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .stat-number { font-size: 2rem; }
+      .hero-title { font-size: 2.2rem !important; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════ NAVBAR ═══════════════════════════ -->
+<nav class="nav-glass fixed top-0 left-0 right-0 z-50">
+  <div class="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div style="width:36px;height:36px;background:linear-gradient(135deg,#e67e22,#ca6f1e);border-radius:10px;display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-industry" style="color:#fff;font-size:16px"></i>
+      </div>
+      <span style="font-size:18px;font-weight:800;color:#fff">Ops<span class="grad-text">Core</span> ERP</span>
+    </div>
+
+    <div class="hidden md:flex items-center gap-8">
+      <a href="#funcionalidades" class="text-sm text-gray-400 hover:text-white transition">Funcionalidades</a>
+      <a href="#planos" class="text-sm text-gray-400 hover:text-white transition">Planos</a>
+      <a href="#clientes" class="text-sm text-gray-400 hover:text-white transition">Clientes</a>
+      <a href="#faq" class="text-sm text-gray-400 hover:text-white transition">FAQ</a>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <a href="/index.html" class="text-sm text-gray-400 hover:text-white transition px-4 py-2">Entrar</a>
+      <a href="/onboarding.html" class="grad-btn text-white text-sm font-semibold px-5 py-2 rounded-xl">
+        Teste Grátis <i class="fas fa-arrow-right ml-1 text-xs"></i>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══════════════════════════ HERO ═══════════════════════════ -->
+<section class="hero-bg pt-28 pb-20 px-6">
+  <div class="max-w-5xl mx-auto text-center">
+
+    <div class="inline-flex items-center gap-2 bg-orange-500/10 border border-orange-500/20 rounded-full px-4 py-2 mb-6">
+      <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+      <span class="text-sm text-orange-300 font-medium">Novo: Integração com NF-e e SPED disponível</span>
+    </div>
+
+    <h1 class="hero-title text-5xl md:text-6xl font-black text-white leading-tight mb-6">
+      ERP feito para<br><span class="grad-text">Mineração, Construção</span><br>e Serviços Industriais
+    </h1>
+
+    <p class="text-lg text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed">
+      Gerencie contratos, ordens de serviço, compras, fornecedores, projetos Gantt e compliance SSMA 
+      em uma única plataforma. <strong class="text-white">14 dias grátis, sem cartão de crédito.</strong>
+    </p>
+
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
+      <a href="/onboarding.html" class="grad-btn text-white font-bold px-8 py-4 rounded-xl text-base w-full sm:w-auto text-center">
+        <i class="fas fa-rocket mr-2"></i> Começar Trial Gratuito
+      </a>
+      <a href="/index.html" class="flex items-center gap-2 text-gray-300 hover:text-white border border-white/10 hover:border-white/30 px-8 py-4 rounded-xl text-base transition w-full sm:w-auto justify-center">
+        <i class="fas fa-play-circle"></i> Ver Demo Ao Vivo
+      </a>
+    </div>
+
+    <!-- Preview screenshot simulado -->
+    <div class="relative max-w-4xl mx-auto">
+      <div style="background:linear-gradient(135deg,rgba(230,126,34,0.2),rgba(52,152,219,0.1));border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:3px">
+        <div style="background:#14161c;border-radius:14px;padding:20px 24px">
+          <!-- Barra topo mockup -->
+          <div class="flex items-center gap-3 mb-4">
+            <div class="flex gap-1.5">
+              <div class="w-3 h-3 rounded-full bg-red-500/60"></div>
+              <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+              <div class="w-3 h-3 rounded-full bg-green-500/60"></div>
+            </div>
+            <div style="flex:1;background:rgba(255,255,255,0.05);border-radius:6px;height:28px;display:flex;align-items:center;padding:0 12px">
+              <span style="color:#666;font-size:12px">app.opscore.com.br/dashboard</span>
+            </div>
+          </div>
+          <!-- KPIs mockup -->
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div style="background:rgba(230,126,34,0.08);border:1px solid rgba(230,126,34,0.2);border-radius:10px;padding:14px">
+              <div style="font-size:11px;color:#e67e22;font-weight:600;margin-bottom:4px">CONTRATOS ATIVOS</div>
+              <div style="font-size:24px;font-weight:800;color:#fff">47</div>
+              <div style="font-size:10px;color:#2ecc71">↑ 12% este mês</div>
+            </div>
+            <div style="background:rgba(52,152,219,0.08);border:1px solid rgba(52,152,219,0.2);border-radius:10px;padding:14px">
+              <div style="font-size:11px;color:#3498db;font-weight:600;margin-bottom:4px">OS ABERTAS</div>
+              <div style="font-size:24px;font-weight:800;color:#fff">23</div>
+              <div style="font-size:10px;color:#f39c12">⚠ 5 em prazo</div>
+            </div>
+            <div style="background:rgba(46,204,113,0.08);border:1px solid rgba(46,204,113,0.2);border-radius:10px;padding:14px">
+              <div style="font-size:11px;color:#2ecc71;font-weight:600;margin-bottom:4px">VOLUME COMPRAS</div>
+              <div style="font-size:24px;font-weight:800;color:#fff">R$2.4M</div>
+              <div style="font-size:10px;color:#2ecc71">↑ 8% vs mês ant.</div>
+            </div>
+            <div style="background:rgba(155,89,182,0.08);border:1px solid rgba(155,89,182,0.2);border-radius:10px;padding:14px">
+              <div style="font-size:11px;color:#9b59b6;font-weight:600;margin-bottom:4px">FORNECEDORES</div>
+              <div style="font-size:24px;font-weight:800;color:#fff">134</div>
+              <div style="font-size:10px;color:#a0a3ae">87% homologados</div>
+            </div>
+          </div>
+          <!-- Pipeline simulado -->
+          <div style="background:rgba(255,255,255,0.03);border-radius:10px;padding:14px;display:flex;gap:8px;overflow:hidden">
+            <div style="flex:1;background:rgba(230,126,34,0.1);border-radius:8px;padding:10px;min-height:60px">
+              <div style="font-size:10px;color:#e67e22;font-weight:700;margin-bottom:6px">OS → RC</div>
+              <div style="font-size:11px;color:#ddd">8 pendentes</div>
+            </div>
+            <div style="color:#555;align-self:center">→</div>
+            <div style="flex:1;background:rgba(52,152,219,0.1);border-radius:8px;padding:10px">
+              <div style="font-size:10px;color:#3498db;font-weight:700;margin-bottom:6px">RC → RFQ</div>
+              <div style="font-size:11px;color:#ddd">5 em cotação</div>
+            </div>
+            <div style="color:#555;align-self:center">→</div>
+            <div style="flex:1;background:rgba(46,204,113,0.1);border-radius:8px;padding:10px">
+              <div style="font-size:10px;color:#2ecc71;font-weight:700;margin-bottom:6px">RFQ → Pedido</div>
+              <div style="font-size:11px;color:#ddd">3 aprovados</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Glow effect -->
+      <div style="position:absolute;inset:0;border-radius:16px;box-shadow:0 40px 80px rgba(230,126,34,0.1);pointer-events:none"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ STATS ═══════════════════════════ -->
+<section style="background:rgba(255,255,255,0.02);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+  <div class="max-w-5xl mx-auto px-6 py-14 grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+    <div class="fade-in">
+      <div class="stat-number">14</div>
+      <div class="text-gray-400 text-sm mt-1">dias de trial gratuito</div>
+    </div>
+    <div class="fade-in">
+      <div class="stat-number">20+</div>
+      <div class="text-gray-400 text-sm mt-1">módulos integrados</div>
+    </div>
+    <div class="fade-in">
+      <div class="stat-number">99.9%</div>
+      <div class="text-gray-400 text-sm mt-1">uptime garantido</div>
+    </div>
+    <div class="fade-in">
+      <div class="stat-number">BR</div>
+      <div class="text-gray-400 text-sm mt-1">dados no Brasil (LGPD)</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ MÓDULOS ═══════════════════════════ -->
+<section id="funcionalidades" class="py-24 px-6">
+  <div class="max-w-7xl mx-auto">
+    <div class="text-center mb-16 fade-in">
+      <span class="mod-badge mb-4"><i class="fas fa-cubes"></i> Plataforma Completa</span>
+      <h2 class="text-3xl md:text-4xl font-black text-white mt-4 mb-4">Tudo que sua operação precisa</h2>
+      <p class="text-gray-400 max-w-xl mx-auto">20 módulos integrados, do contrato ao pagamento, em uma única plataforma.</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(230,126,34,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-file-contract" style="color:#e67e22;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">Gestão de Contratos</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Controle completo do ciclo de vida dos contratos, alertas de vencimento, aditivos e medições vinculadas.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">Medições</span>
+          <span class="mod-badge text-xs">Aditivos</span>
+          <span class="mod-badge text-xs">Alertas</span>
+        </div>
+      </div>
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(52,152,219,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-wrench" style="color:#3498db;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">Ordens de Serviço</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Emissão, aprovação em múltiplos estágios, controle de SLA, fluxo de compras integrado e histórico completo.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">Fluxo Aprovação</span>
+          <span class="mod-badge text-xs">SLA</span>
+        </div>
+      </div>
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(46,204,113,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-shopping-cart" style="color:#2ecc71;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">Ciclo de Compras Completo</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">RC → RFQ → Mapa Comparativo → Pedido de Compra → Recebimento. Rastreabilidade total do processo.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">RC</span>
+          <span class="mod-badge text-xs">RFQ</span>
+          <span class="mod-badge text-xs">Cotação</span>
+        </div>
+      </div>
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(155,89,182,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-award" style="color:#9b59b6;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">IDF Fornecedores</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Índice de Desempenho de Fornecedores com critérios ponderados, histórico de avaliações e recomendações automáticas.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">Score IDF</span>
+          <span class="mod-badge text-xs">Ranking</span>
+        </div>
+      </div>
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(231,76,60,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-hard-hat" style="color:#e74c3c;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">SSMA Integrado</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Segurança, Saúde, Meio Ambiente e qualidade. Gestão de incidentes, DDS, indicadores e auditorias.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">Incidentes</span>
+          <span class="mod-badge text-xs">DDS</span>
+          <span class="mod-badge text-xs">Auditoria</span>
+        </div>
+      </div>
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(243,156,18,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-project-diagram" style="color:#f39c12;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">Projetos & Gantt</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Gestão de projetos com gráfico de Gantt interativo, WBS, recursos, baseline e rastreabilidade ao contrato.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">Gantt</span>
+          <span class="mod-badge text-xs">WBS</span>
+          <span class="mod-badge text-xs">Baseline</span>
+        </div>
+      </div>
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(26,188,156,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-chart-line" style="color:#1abc9c;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">Financeiro & Contas a Pagar</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Contas a pagar integradas ao ciclo de compras, DRE simplificado, fluxo de caixa e relatórios gerenciais.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">Contas a Pagar</span>
+          <span class="mod-badge text-xs">DRE</span>
+        </div>
+      </div>
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(52,73,94,0.5);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-users" style="color:#bdc3c7;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">CRM & Propostas Comerciais</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Pipeline de vendas, gestão de leads, elaboração de propostas comerciais e conversão para contratos.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">Pipeline</span>
+          <span class="mod-badge text-xs">Propostas</span>
+        </div>
+      </div>
+
+      <div class="feature-card p-6 fade-in">
+        <div style="width:44px;height:44px;background:rgba(230,126,34,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <i class="fas fa-shield-alt" style="color:#e67e22;font-size:18px"></i>
+        </div>
+        <h3 class="text-white font-bold text-base mb-2">Controle de Acesso & Auditoria</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Perfis por função (Admin, Diretor, Compras, Operação, SSMA), log completo de ações e controle granular.</p>
+        <div class="flex flex-wrap gap-1 mt-4">
+          <span class="mod-badge text-xs">RBAC</span>
+          <span class="mod-badge text-xs">Audit Trail</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ COMO FUNCIONA ═══════════════════════════ -->
+<section style="background:rgba(255,255,255,0.02);border-top:1px solid var(--border)" class="py-24 px-6">
+  <div class="max-w-4xl mx-auto">
+    <div class="text-center mb-16 fade-in">
+      <h2 class="text-3xl md:text-4xl font-black text-white mb-4">Comece em 3 passos simples</h2>
+      <p class="text-gray-400">Em menos de 15 minutos sua empresa estará operando no sistema.</p>
+    </div>
+    <div class="space-y-10">
+      <div class="timeline-step fade-in">
+        <div class="step-dot">1</div>
+        <div class="pl-4">
+          <h3 class="text-white font-bold text-lg mb-1">Crie sua conta grátis</h3>
+          <p class="text-gray-400 text-sm">Preencha os dados da empresa, escolha o plano e ative o trial de 14 dias. Sem cartão de crédito.</p>
+        </div>
+      </div>
+      <div class="timeline-step fade-in">
+        <div class="step-dot">2</div>
+        <div class="pl-4">
+          <h3 class="text-white font-bold text-lg mb-1">Configure sua operação</h3>
+          <p class="text-gray-400 text-sm">Importe fornecedores, cadastre contratos e configure os fluxos de aprovação conforme sua hierarquia.</p>
+        </div>
+      </div>
+      <div class="timeline-step fade-in">
+        <div class="step-dot">3</div>
+        <div class="pl-4">
+          <h3 class="text-white font-bold text-lg mb-1">Convide sua equipe</h3>
+          <p class="text-gray-400 text-sm">Adicione usuários com perfis específicos. Sistema pronto em minutos, suporte em português sempre disponível.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ PLANOS ═══════════════════════════ -->
+<section id="planos" class="py-24 px-6">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-16 fade-in">
+      <span class="mod-badge mb-4"><i class="fas fa-tag"></i> Preços transparentes</span>
+      <h2 class="text-3xl md:text-4xl font-black text-white mt-4 mb-4">Planos para cada tamanho de operação</h2>
+      <p class="text-gray-400">Todos os planos incluem 14 dias grátis. Cancele quando quiser.</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+      <!-- Starter -->
+      <div class="plan-card p-8 fade-in">
+        <div class="mb-6">
+          <div class="text-sm font-semibold text-orange-400 mb-2">STARTER</div>
+          <div class="flex items-end gap-1 mb-1">
+            <span class="text-4xl font-black text-white">R$890</span>
+            <span class="text-gray-400 text-sm mb-1">/mês</span>
+          </div>
+          <p class="text-gray-500 text-xs">Até 5 usuários · ideal para pequenas empreiteiras</p>
+        </div>
+        <ul class="space-y-3 mb-8">
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Contratos, OS e Compras
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Fornecedores e IDF
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> 5 usuários inclusos
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> 5 GB de armazenamento
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Suporte por email
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-400">
+            <i class="fas fa-times cross mt-0.5"></i> Gantt e Projetos
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-400">
+            <i class="fas fa-times cross mt-0.5"></i> API pública
+          </li>
+        </ul>
+        <a href="/onboarding.html" class="block text-center border border-orange-500/40 text-orange-400 hover:bg-orange-500/10 rounded-xl py-3 font-semibold text-sm transition">
+          Começar Trial Grátis
+        </a>
+      </div>
+
+      <!-- Professional (popular) -->
+      <div class="plan-card popular p-8 fade-in">
+        <div class="absolute -top-3 left-1/2 -translate-x-1/2">
+          <span style="background:linear-gradient(135deg,#e67e22,#ca6f1e);color:#fff;font-size:11px;font-weight:800;padding:4px 14px;border-radius:20px;white-space:nowrap">MAIS POPULAR</span>
+        </div>
+        <div class="mb-6">
+          <div class="text-sm font-semibold text-orange-400 mb-2">PROFESSIONAL</div>
+          <div class="flex items-end gap-1 mb-1">
+            <span class="text-4xl font-black text-white">R$2.490</span>
+            <span class="text-gray-400 text-sm mb-1">/mês</span>
+          </div>
+          <p class="text-gray-500 text-xs">Até 20 usuários · ideal para mineradoras médias</p>
+        </div>
+        <ul class="space-y-3 mb-8">
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Tudo do Starter
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Gantt e Projetos completos
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> SSMA completo
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> CRM & Propostas Comerciais
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> 20 usuários inclusos
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> 50 GB armazenamento
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Suporte via chat e email
+          </li>
+        </ul>
+        <a href="/onboarding.html" class="grad-btn block text-center text-white rounded-xl py-3 font-semibold text-sm">
+          Começar Trial Grátis
+        </a>
+      </div>
+
+      <!-- Enterprise -->
+      <div class="plan-card p-8 fade-in">
+        <div class="mb-6">
+          <div class="text-sm font-semibold text-orange-400 mb-2">ENTERPRISE</div>
+          <div class="flex items-end gap-1 mb-1">
+            <span class="text-4xl font-black text-white">R$6.900</span>
+            <span class="text-gray-400 text-sm mb-1">/mês</span>
+          </div>
+          <p class="text-gray-500 text-xs">Usuários ilimitados · grandes grupos industriais</p>
+        </div>
+        <ul class="space-y-3 mb-8">
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Tudo do Professional
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Usuários ilimitados
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> API pública + webhooks
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> SSO (Google, AD)
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> White-label (domínio próprio)
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> SLA garantido 99.9%
+          </li>
+          <li class="flex items-start gap-2 text-sm text-gray-300">
+            <i class="fas fa-check check mt-0.5"></i> Gerente de conta dedicado
+          </li>
+        </ul>
+        <a href="mailto:vendas@opscore.com.br" class="block text-center border border-orange-500/40 text-orange-400 hover:bg-orange-500/10 rounded-xl py-3 font-semibold text-sm transition">
+          Falar com Vendas
+        </a>
+      </div>
+    </div>
+
+    <!-- Nota LGPD -->
+    <div class="mt-8 text-center text-gray-500 text-xs fade-in">
+      <i class="fas fa-lock mr-1 text-green-500"></i>
+      Dados armazenados no Brasil (São Paulo) · Conformidade LGPD · Criptografia em trânsito e em repouso
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ DEPOIMENTOS ═══════════════════════════ -->
+<section id="clientes" style="background:rgba(255,255,255,0.02);border-top:1px solid var(--border)" class="py-24 px-6">
+  <div class="max-w-5xl mx-auto">
+    <div class="text-center mb-16 fade-in">
+      <h2 class="text-3xl md:text-4xl font-black text-white mb-4">O que nossos clientes dizem</h2>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+
+      <div class="testi-card fade-in">
+        <div class="stars mb-3">★★★★★</div>
+        <p class="text-gray-300 text-sm leading-relaxed mb-4">
+          "Reduzimos o tempo de ciclo de compras em 60%. O fluxo OS→RC→RFQ→Pedido ficou totalmente rastreável."
+        </p>
+        <div class="flex items-center gap-3">
+          <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#e67e22,#ca6f1e);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:13px">R</div>
+          <div>
+            <div class="text-white font-semibold text-sm">Ricardo M.</div>
+            <div class="text-gray-500 text-xs">Gerente de Compras · Mineradora Tocantins</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="testi-card fade-in">
+        <div class="stars mb-3">★★★★★</div>
+        <p class="text-gray-300 text-sm leading-relaxed mb-4">
+          "O módulo SSMA integrado ao controle de OS é um diferencial que não encontramos em nenhum outro sistema no Brasil."
+        </p>
+        <div class="flex items-center gap-3">
+          <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#3498db,#2980b9);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:13px">A</div>
+          <div>
+            <div class="text-white font-semibold text-sm">Ana P.</div>
+            <div class="text-gray-500 text-xs">Coordenadora SSMA · Construtora Horizonte</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="testi-card fade-in">
+        <div class="stars mb-3">★★★★★</div>
+        <p class="text-gray-300 text-sm leading-relaxed mb-4">
+          "Implementamos em 3 dias. A equipe começou a usar sem treinamento. O IDF de fornecedores salvou R$180k numa cotação."
+        </p>
+        <div class="flex items-center gap-3">
+          <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#2ecc71,#27ae60);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:13px">C</div>
+          <div>
+            <div class="text-white font-semibold text-sm">Carlos E.</div>
+            <div class="text-gray-500 text-xs">Diretor de Operações · Infraserv Engenharia</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ FAQ ═══════════════════════════ -->
+<section id="faq" class="py-24 px-6">
+  <div class="max-w-3xl mx-auto">
+    <div class="text-center mb-16 fade-in">
+      <h2 class="text-3xl md:text-4xl font-black text-white mb-4">Perguntas frequentes</h2>
+    </div>
+
+    <details class="faq-item fade-in">
+      <summary>Os dados ficam no Brasil? <span class="faq-icon">+</span></summary>
+      <div class="faq-body">Sim. Todos os dados são armazenados em servidores na região de São Paulo (AWS sa-east-1), em conformidade com a LGPD. Nunca transferimos dados para fora do Brasil sem sua autorização.</div>
+    </details>
+
+    <details class="faq-item fade-in">
+      <summary>Posso migrar minha base de fornecedores existente? <span class="faq-icon">+</span></summary>
+      <div class="faq-body">Sim. Oferecemos importação em massa via planilha Excel (.xlsx) ou CSV. Nossa equipe auxilia na migração de dados sem custo adicional nos planos Professional e Enterprise.</div>
+    </details>
+
+    <details class="faq-item fade-in">
+      <summary>O sistema funciona no celular e tablet? <span class="faq-icon">+</span></summary>
+      <div class="faq-body">Sim. O sistema é totalmente responsivo e se adapta automaticamente a qualquer tela – celular, tablet, notebook ou desktop. Não é necessário instalar nada, funciona direto no navegador.</div>
+    </details>
+
+    <details class="faq-item fade-in">
+      <summary>Como funciona o trial de 14 dias? <span class="faq-icon">+</span></summary>
+      <div class="faq-body">Você tem acesso completo ao plano Professional durante 14 dias, sem limite de funcionalidades e sem precisar informar cartão de crédito. Ao final do período, você escolhe o plano ou cancela sem custo.</div>
+    </details>
+
+    <details class="faq-item fade-in">
+      <summary>Tem integração com nota fiscal eletrônica (NF-e)? <span class="faq-icon">+</span></summary>
+      <div class="faq-body">Sim, a integração com NF-e e SPED está disponível nos planos Professional e Enterprise. Também suportamos consulta de CNPJ via Receita Federal para cadastro automático de fornecedores.</div>
+    </details>
+
+    <details class="faq-item fade-in">
+      <summary>Posso personalizar os fluxos de aprovação? <span class="faq-icon">+</span></summary>
+      <div class="faq-body">Completamente. Você define quantos estágios de aprovação desejar (Supervisor, Gerente, Diretor...), configura limites de valor para cada nível e personaliza as notificações por perfil.</div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ═══════════════════════════ REGISTRO / CTA ═══════════════════════════ -->
+<section id="registro" style="background:linear-gradient(135deg,rgba(230,126,34,0.12),rgba(52,152,219,0.06));border-top:1px solid rgba(230,126,34,0.2)" class="py-24 px-6">
+  <div class="max-w-2xl mx-auto text-center">
+    <h2 class="text-3xl md:text-4xl font-black text-white mb-4 fade-in">Pronto para transformar sua operação?</h2>
+    <p class="text-gray-400 mb-10 fade-in">Preencha abaixo e sua conta estará pronta em menos de 2 minutos.</p>
+
+    <div id="registroForm" class="feature-card p-8 text-left fade-in">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label class="block text-xs text-gray-400 font-semibold mb-1.5 uppercase tracking-wide">Nome completo *</label>
+          <input id="regNome" type="text" placeholder="João Silva"
+            class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-orange-500/50 focus:bg-white/8 transition placeholder-gray-600">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 font-semibold mb-1.5 uppercase tracking-wide">Email corporativo *</label>
+          <input id="regEmail" type="email" placeholder="joao@empresa.com.br"
+            class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-orange-500/50 transition placeholder-gray-600">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 font-semibold mb-1.5 uppercase tracking-wide">Nome da Empresa *</label>
+          <input id="regEmpresa" type="text" placeholder="Mineradora Exemplo S.A."
+            class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-orange-500/50 transition placeholder-gray-600">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 font-semibold mb-1.5 uppercase tracking-wide">Segmento *</label>
+          <select id="regSegmento"
+            class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-gray-300 text-sm focus:outline-none focus:border-orange-500/50 transition"
+            style="background-color:#1a1c24">
+            <option value="">Selecione...</option>
+            <option>Mineração</option>
+            <option>Construção Pesada</option>
+            <option>Serviços Industriais</option>
+            <option>Infraestrutura</option>
+            <option>Petróleo & Gás</option>
+            <option>Outro</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 font-semibold mb-1.5 uppercase tracking-wide">Telefone</label>
+          <input id="regTelefone" type="tel" placeholder="(31) 99999-9999"
+            class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-orange-500/50 transition placeholder-gray-600">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 font-semibold mb-1.5 uppercase tracking-wide">Plano desejado</label>
+          <select id="regPlano"
+            class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-gray-300 text-sm focus:outline-none focus:border-orange-500/50 transition"
+            style="background-color:#1a1c24">
+            <option value="trial">Trial gratuito 14 dias</option>
+            <option value="starter">Starter – R$890/mês</option>
+            <option value="professional">Professional – R$2.490/mês</option>
+            <option value="enterprise">Enterprise – R$6.900/mês</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- LGPD consent -->
+      <div class="flex items-start gap-3 mb-6 p-4 rounded-xl" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06)">
+        <input id="regLgpd" type="checkbox" class="mt-0.5 accent-orange-500 w-4 h-4 flex-shrink-0">
+        <label for="regLgpd" class="text-xs text-gray-400 leading-relaxed cursor-pointer">
+          Concordo com a <a href="#lgpd" onclick="abrirPolitica()" class="text-orange-400 hover:underline">Política de Privacidade</a> e 
+          autorizo o uso dos meus dados para contato comercial conforme a <strong class="text-gray-300">LGPD (Lei 13.709/2018)</strong>. 
+          Você pode solicitar a exclusão dos seus dados a qualquer momento.
+        </label>
+      </div>
+
+      <button onclick="enviarRegistro()" class="grad-btn w-full text-white font-bold py-4 rounded-xl text-base">
+        <i class="fas fa-rocket mr-2"></i> Ativar Conta Grátis — 14 dias sem cobrança
+      </button>
+
+      <p class="text-center text-gray-600 text-xs mt-4">
+        <i class="fas fa-lock mr-1 text-green-500"></i>
+        Sem cartão de crédito · Cancele quando quiser · Dados seguros (LGPD)
+      </p>
+    </div>
+
+    <!-- Mensagem de sucesso -->
+    <div id="registroSucesso" class="feature-card p-10 text-center hidden">
+      <div style="width:72px;height:72px;background:rgba(46,204,113,0.15);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px">
+        <i class="fas fa-check-circle" style="color:#2ecc71;font-size:36px"></i>
+      </div>
+      <h3 class="text-white text-2xl font-black mb-3">Solicitação Recebida!</h3>
+      <p class="text-gray-400 text-sm leading-relaxed mb-6">
+        Obrigado! Nossa equipe entrará em contato em até <strong class="text-white">2 horas úteis</strong> 
+        para ativar sua conta e fazer o onboarding personalizado.
+      </p>
+      <a href="/index.html" class="grad-btn inline-block text-white font-semibold px-8 py-3 rounded-xl">
+        Acessar Demo Agora <i class="fas fa-arrow-right ml-1"></i>
+      </a>
+    </div>
+
+  </div>
+</section>
+
+<!-- ═══════════════════════════ FOOTER ═══════════════════════════ -->
+<footer style="border-top:1px solid var(--border)" class="py-12 px-6">
+  <div class="max-w-6xl mx-auto">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-8 mb-10">
+      <div>
+        <div class="flex items-center gap-2 mb-4">
+          <div style="width:28px;height:28px;background:linear-gradient(135deg,#e67e22,#ca6f1e);border-radius:8px;display:flex;align-items:center;justify-content:center">
+            <i class="fas fa-industry" style="color:#fff;font-size:12px"></i>
+          </div>
+          <span class="font-bold text-white text-sm">OpsCore ERP</span>
+        </div>
+        <p class="text-gray-500 text-xs leading-relaxed">Sistema de gestão especializado para mineração, construção e serviços industriais.</p>
+      </div>
+      <div>
+        <div class="text-gray-300 font-semibold text-sm mb-4">Produto</div>
+        <ul class="space-y-2 text-xs text-gray-500">
+          <li><a href="#funcionalidades" class="hover:text-gray-300 transition">Funcionalidades</a></li>
+          <li><a href="#planos" class="hover:text-gray-300 transition">Planos e Preços</a></li>
+          <li><a href="/index.html" class="hover:text-gray-300 transition">Demo ao Vivo</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="text-gray-300 font-semibold text-sm mb-4">Empresa</div>
+        <ul class="space-y-2 text-xs text-gray-500">
+          <li><a href="mailto:contato@opscore.com.br" class="hover:text-gray-300 transition">Contato</a></li>
+          <li><a href="mailto:vendas@opscore.com.br" class="hover:text-gray-300 transition">Vendas</a></li>
+          <li><a href="mailto:suporte@opscore.com.br" class="hover:text-gray-300 transition">Suporte</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="text-gray-300 font-semibold text-sm mb-4">Legal</div>
+        <ul class="space-y-2 text-xs text-gray-500">
+          <li><a href="#" onclick="abrirPolitica()" class="hover:text-gray-300 transition">Política de Privacidade</a></li>
+          <li><a href="#" class="hover:text-gray-300 transition">Termos de Uso</a></li>
+          <li><a href="#" class="hover:text-gray-300 transition">LGPD – Seus Direitos</a></li>
+        </ul>
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--border)" class="pt-6 flex flex-col md:flex-row items-center justify-between gap-4">
+      <p class="text-gray-600 text-xs">© 2026 OpsCore ERP. Todos os direitos reservados.</p>
+      <p class="text-gray-600 text-xs">
+        <i class="fas fa-shield-alt text-green-500 mr-1"></i>
+        Dados armazenados no Brasil · Conformidade LGPD · ISO 27001
+      </p>
+    </div>
+  </div>
+</footer>
+
+<!-- ═══════════════════════════ MODAL LGPD ═══════════════════════════ -->
+<div id="modalLgpd" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9999;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#14161c;border:1px solid rgba(255,255,255,0.1);border-radius:20px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;padding:32px">
+    <div class="flex items-center justify-between mb-6">
+      <h3 class="text-white font-bold text-lg">Política de Privacidade</h3>
+      <button onclick="document.getElementById('modalLgpd').style.display='none'" class="text-gray-500 hover:text-white text-2xl">&times;</button>
+    </div>
+    <div class="text-gray-400 text-sm space-y-4 leading-relaxed">
+      <p><strong class="text-white">1. Responsável pelo Tratamento</strong><br>
+      OpsCore ERP, CNPJ 00.000.000/0001-00, e-mail: privacidade@opscore.com.br</p>
+      <p><strong class="text-white">2. Dados Coletados</strong><br>
+      Coletamos nome, e-mail corporativo, nome da empresa, telefone e dados de uso do sistema para prestação do serviço contratado.</p>
+      <p><strong class="text-white">3. Finalidade</strong><br>
+      Os dados são utilizados para: (a) prestação do serviço ERP; (b) suporte técnico; (c) comunicações sobre o produto; (d) cumprimento de obrigações legais.</p>
+      <p><strong class="text-white">4. Compartilhamento</strong><br>
+      Não vendemos seus dados. Podemos compartilhar apenas com prestadores de serviço essenciais (infraestrutura de nuvem) sob contrato de confidencialidade.</p>
+      <p><strong class="text-white">5. Armazenamento</strong><br>
+      Dados armazenados em servidores na região de São Paulo, Brasil (AWS sa-east-1), com criptografia AES-256 em repouso e TLS 1.3 em trânsito.</p>
+      <p><strong class="text-white">6. Seus Direitos (LGPD Art. 18)</strong><br>
+      Você tem direito a: confirmar tratamento, acessar dados, corrigir dados, portabilidade, eliminação, revogação do consentimento e oposição ao tratamento.
+      Para exercer seus direitos: privacidade@opscore.com.br</p>
+      <p><strong class="text-white">7. Retenção</strong><br>
+      Dados são mantidos pelo período da contratação e por até 5 anos após o encerramento, conforme obrigações legais. Após, são eliminados com segurança.</p>
+      <p><strong class="text-white">8. DPO</strong><br>
+      Encarregado de Proteção de Dados: dpo@opscore.com.br</p>
+    </div>
+    <button onclick="document.getElementById('modalLgpd').style.display='none'"
+      class="grad-btn w-full text-white font-semibold py-3 rounded-xl mt-6 text-sm">
+      Entendido
+    </button>
+  </div>
+</div>
+
+<script>
+// Scroll animations
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+}, { threshold: 0.1 });
+document.querySelectorAll('.fade-in').forEach(el => obs.observe(el));
+
+// Smooth scroll
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    const id = a.getAttribute('href').slice(1);
+    const el = document.getElementById(id);
+    if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  });
+});
+
+function abrirPolitica() {
+  const m = document.getElementById('modalLgpd');
+  m.style.display = 'flex';
+}
+
+function enviarRegistro() {
+  const nome    = document.getElementById('regNome').value.trim();
+  const email   = document.getElementById('regEmail').value.trim();
+  const empresa = document.getElementById('regEmpresa').value.trim();
+  const seg     = document.getElementById('regSegmento').value;
+  const lgpd    = document.getElementById('regLgpd').checked;
+
+  if (!nome || !email || !empresa || !seg) {
+    alert('Por favor, preencha todos os campos obrigatórios.');
+    return;
+  }
+  if (!lgpd) {
+    alert('É necessário concordar com a Política de Privacidade (LGPD) para prosseguir.');
+    return;
+  }
+  if (!/\S+@\S+\.\S+/.test(email)) {
+    alert('Por favor, informe um e-mail válido.');
+    return;
+  }
+
+  // Salva lead no localStorage (em produção: enviar para API/CRM)
+  const lead = {
+    id: 'lead-' + Date.now(),
+    nome, email, empresa, segmento: seg,
+    telefone: document.getElementById('regTelefone').value,
+    plano: document.getElementById('regPlano').value,
+    lgpd_aceito: true,
+    lgpd_data: new Date().toISOString(),
+    criado_em: new Date().toISOString()
+  };
+
+  try {
+    const leads = JSON.parse(localStorage.getItem('opscore_leads') || '[]');
+    leads.push(lead);
+    localStorage.setItem('opscore_leads', JSON.stringify(leads));
+  } catch(e) {}
+
+  // Envia para API
+  fetch('/api/leads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(lead)
+  }).catch(() => {}); // silencia erros de rede
+
+  document.getElementById('registroForm').classList.add('hidden');
+  document.getElementById('registroSucesso').classList.remove('hidden');
+  document.getElementById('registroSucesso').scrollIntoView({ behavior: 'smooth' });
+}
+</script>
+</body>
+</html>

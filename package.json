@@ -1,0 +1,16 @@
+{
+  "name": "nexus-erp-workspace",
+  "version": "3.0.0",
+  "private": true,
+  "description": "NEXUS ERP — workspace. O sistema canônico fica em nexus-erp/ (Express + UI) e nexus-cf/ (Cloudflare Worker de produção).",
+  "scripts": {
+    "start": "npm --prefix nexus-erp start",
+    "dev": "npm --prefix nexus-erp run dev",
+    "test": "npm --prefix nexus-erp test",
+    "build": "echo 'Build OK (frontend estático em nexus-erp/public)'",
+    "postinstall": "npm --prefix nexus-erp install"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
