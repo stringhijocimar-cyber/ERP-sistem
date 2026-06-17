@@ -114,7 +114,10 @@ posicionamento a perseguir.
   Aberta → Em Ação → Verificação → Fechada, detecção de atraso por prazo e KPIs
   (% no prazo). Aspectos/impactos ambientais (14001 §6.1) registráveis e
   contados como evidência. CAPA e aspectos realimentam a cobertura ISO.
-- ⬜ **LGPD**: base legal, retenção e anonimização.
+- ✅ **LGPD** (`js/lib/lgpd.js` + página `lgpd`): RoPA com base legal (art. 7) e
+  retenção, solicitações do titular (DSAR) e **anonimização irreversível** de
+  dados pessoais de fornecedor (endpoint admin no Express e no Worker, com
+  trilha de auditoria). Direito de eliminação operacional.
 
 ---
 

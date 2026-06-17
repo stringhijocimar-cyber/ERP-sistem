@@ -331,6 +331,30 @@ async function reprovarMapaServer(env, id, user, motivo){
   await audit(env, user.sub, 'mapa_reprovar', 'mapas', id, { motivo });
   return J(rec);
 }
+// LGPD — anonimização (mesma lógica de js/lib/lgpd.js).
+function _anonimizarCampo(valor, tipo){
+  if (valor == null || valor === '') return valor;
+  const s = String(valor);
+  if (tipo === 'email'){ const p = s.split('@'); return p.length===2 ? (s.charAt(0)+'•••@'+p[1]) : '•••'; }
+  if (tipo === 'telefone'){ const d = s.replace(/\D/g,''); const ddd = d.slice(0,2); return ddd ? ('('+ddd+') •••••-••••') : '•••••'; }
+  if (tipo === 'nome'){ return s.trim().split(/\s+/).map(w => w ? w.charAt(0).toUpperCase()+'.' : '').join(' ').trim(); }
+  return '•••';
+}
+async function anonimizarFornecedor(env, id, user){
+  requireRole(user, ['admin']);
+  const f = await getDoc(env, 'fornecedores', id);
+  if (!f) return E('Fornecedor não encontrado', 404);
+  const patch = {
+    contato_nome: _anonimizarCampo(f.contato_nome || f.contato, 'nome'),
+    email: _anonimizarCampo(f.email, 'email'),
+    telefone: _anonimizarCampo(f.telefone, 'telefone'),
+    anonimizado: 1,
+  };
+  const rec = await updateDoc(env, 'fornecedores', id, patch);
+  await audit(env, user.sub, 'lgpd_anonimizar', 'fornecedores', id, {});
+  return rec ? J(rec) : E('falha ao anonimizar', 500);
+}
+
 // Consulta a bureau de crédito (provedor por env; mock determinístico padrão).
 function consultarCreditoBureau(cnpjRaw, provider){
   const cnpj = String(cnpjRaw||'').replace(/\D/g,'');
@@ -560,6 +584,9 @@ export default {
 
       // Consulta a bureau de crédito: POST /api/credito/consultar { cnpj }
       if (seg[0]==='credito' && seg[1]==='consultar' && method==='POST') return consultarCreditoBureau(body && body.cnpj, env.CREDIT_BUREAU_PROVIDER);
+
+      // LGPD — anonimizar fornecedor: POST /api/lgpd/anonimizar/fornecedores/:id
+      if (seg[0]==='lgpd' && seg[1]==='anonimizar' && seg[2]==='fornecedores' && seg[3] && method==='POST') return await anonimizarFornecedor(env, seg[3], user);
 
       // Trilha de auditoria imutável: GET /api/auditoria/verificar (admin)
       if (seg[0]==='auditoria' && seg[1]==='verificar' && method==='GET'){ requireRole(user,['admin']); return await verificarAuditoria(env); }
