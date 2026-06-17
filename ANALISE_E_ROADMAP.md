@@ -77,7 +77,10 @@ posicionamento a perseguir.
   (Express + Worker/D1) com UPSERT+RETURNING; PC já usa, com fallback offline.
   Testado com 100 chamadas concorrentes → 100 números únicos. RC/RFQ/MAPA
   podem usar o mesmo helper (`DB.sequencia`).
-- ⬜ **Recebimento ↔ 3-way match completo** (qtd e preço por item, não só total).
+- ✅ **3-way match por item** (`js/lib/three_way.js`): confere a nota contra o
+  pedido e o recebimento item a item (qtd e preço, com tolerância). Integrado
+  ao gate de pagamento no Worker e no Express (rota `/pagar` com gate completo,
+  que antes só existia no Worker). Bloqueios respondem 409 e vão à auditoria.
 - ⬜ **Almoxarifado**: movimentação atômica de estoque no servidor.
 
 ### P2 — Inteligência adaptativa
