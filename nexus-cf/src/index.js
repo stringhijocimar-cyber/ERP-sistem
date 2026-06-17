@@ -64,12 +64,38 @@ function requireRole(user, roles){
   if (!roles.includes(user.role)) throw { code:403, msg:'papel sem permissao para esta acao' };
 }
 
-// ===== Auditoria (append-only) =====
+// ===== Auditoria (append-only + hash encadeado, tamper-evident) =====
+async function sha256hex(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// Mesmo canônico do motor js/lib/auditoria.js (ator|acao|entity|payload|created_at).
+function _canonicalAudit(r){
+  return [r.actor_id ?? '', r.action ?? '', r.entity ?? '', r.payload ?? '', r.created_at ?? ''].join('|');
+}
 async function audit(env, actorId, action, entity, entityId, payloadObj){
   try {
-    await env.DB.prepare('INSERT INTO audit_log (actor_id, action, entity, entity_id, payload) VALUES (?,?,?,?,?)')
-      .bind(actorId||null, action, entity||null, entityId||null, payloadObj?JSON.stringify(payloadObj):null).run();
+    const created_at = new Date().toISOString();
+    const payload = payloadObj ? JSON.stringify(payloadObj) : null;
+    const last = await env.DB.prepare('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1').first();
+    const prev = (last && last.hash) ? last.hash : 'GENESIS';
+    const hash = await sha256hex(prev + '|' + _canonicalAudit({ actor_id: actorId, action, entity, payload, created_at }));
+    await env.DB.prepare('INSERT INTO audit_log (actor_id, action, entity, entity_id, payload, created_at, hash, hash_anterior) VALUES (?,?,?,?,?,?,?,?)')
+      .bind(actorId||null, action, entity||null, entityId||null, payload, created_at, hash, prev).run();
   } catch(e){ /* nunca quebra a operacao por causa do log */ }
+}
+async function verificarAuditoria(env){
+  const rs = await env.DB.prepare('SELECT id, actor_id, action, entity, payload, created_at, hash, hash_anterior FROM audit_log ORDER BY id ASC').all();
+  // Ignora registros legados sem hash (anteriores à ativação da trilha).
+  const rows = (rs.results || []).filter(r => r && r.hash);
+  let prev = rows.length ? (rows[0].hash_anterior || 'GENESIS') : 'GENESIS';
+  for (const r of rows){
+    if ((r.hash_anterior || 'GENESIS') !== prev) return J({ integra:false, total:rows.length, quebraEm:r.id, motivo:'elo quebrado (remoção/reordenação)' });
+    const esperado = await sha256hex((r.hash_anterior || 'GENESIS') + '|' + _canonicalAudit(r));
+    if (r.hash !== esperado) return J({ integra:false, total:rows.length, quebraEm:r.id, motivo:'conteúdo adulterado' });
+    prev = r.hash;
+  }
+  return J({ integra:true, total:rows.length, quebraEm:null, motivo:'' });
 }
 
 // ===== CRUD generico (entidades "documento") =====
@@ -476,6 +502,9 @@ export default {
 
       // Numeração atômica: POST /api/sequencia/PC → { numero: 'PC-2026-0001', ... }
       if (seg[0]==='sequencia' && seg[1] && method==='POST') return await proximaSequencia(env, seg[1], body && body.ano);
+
+      // Trilha de auditoria imutável: GET /api/auditoria/verificar (admin)
+      if (seg[0]==='auditoria' && seg[1]==='verificar' && method==='GET'){ requireRole(user,['admin']); return await verificarAuditoria(env); }
 
 
       // CRUD generico

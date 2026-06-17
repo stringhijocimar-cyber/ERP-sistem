@@ -13,7 +13,9 @@ import Database from 'better-sqlite3'
 import { readFileSync, existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import './public/js/lib/auditoria.js' // define globalThis.Auditoria (hash encadeado)
 
+const Auditoria = globalThis.Auditoria
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 3002
 const DB_PATH = process.env.DB_PATH || join(__dirname, 'nexus.db')
@@ -80,6 +82,11 @@ ensureColumns('fornecedores', [
   ['classificacao_credito', 'classificacao_credito TEXT'],
   ['analise_credito', 'analise_credito TEXT'],
   ['status', "status TEXT DEFAULT 'Em Homologação'"],
+])
+// Trilha de auditoria imutável: hash do registro + hash do anterior.
+ensureColumns('logs_sistema', [
+  ['hash', 'hash TEXT'],
+  ['hash_anterior', 'hash_anterior TEXT'],
 ])
 
 // ─── Sequências atômicas (numeração sem corrida) ──────────────
@@ -208,9 +215,17 @@ function requireRole(...roles) {
 
 function log(userId, userName, acao, modulo, descricao) {
   try {
+    // Encadeia ao hash do último registro (tamper-evident). Em Node (single
+    // thread + better-sqlite3 síncrono) a leitura do último + insert é atômica.
+    const created_at = new Date().toISOString()
+    const ult = db.prepare(`SELECT hash FROM logs_sistema ORDER BY id DESC LIMIT 1`).get()
+    const hash_anterior = (ult && ult.hash) ? ult.hash : Auditoria.GENESIS
+    const reg = { usuario_id: userId, acao, modulo, descricao, created_at }
+    const hash = Auditoria.hashRegistro(reg, hash_anterior)
     db.prepare(
-      `INSERT INTO logs_sistema(usuario_id, usuario_nome, acao, modulo, descricao) VALUES(?,?,?,?,?)`
-    ).run(userId, userName, acao, modulo, descricao)
+      `INSERT INTO logs_sistema(usuario_id, usuario_nome, acao, modulo, descricao, created_at, hash, hash_anterior)
+       VALUES(?,?,?,?,?,?,?,?)`
+    ).run(userId, userName, acao, modulo, descricao, created_at, hash, hash_anterior)
   } catch {}
 }
 
@@ -971,6 +986,13 @@ app.put('/api/usuarios/:id', requireAuth, requireRole('admin'), (req, res) => {
 app.get('/api/logs', requireAuth, (req, res) => {
   const rows = db.prepare(`SELECT * FROM logs_sistema ORDER BY created_at DESC LIMIT 200`).all()
   res.json(ok(rows))
+})
+
+// Verifica a integridade da trilha (recomputa a cadeia de hash). Admin.
+app.get('/api/auditoria/verificar', requireAuth, requireRole('admin'), (req, res) => {
+  const rows = db.prepare(`SELECT id, usuario_id, acao, modulo, descricao, created_at, hash, hash_anterior
+                           FROM logs_sistema ORDER BY id ASC`).all()
+  res.json(ok(Auditoria.verificarCadeia(rows)))
 })
 
 // ════════════════════════════════════════════════════════════

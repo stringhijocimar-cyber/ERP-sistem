@@ -96,7 +96,10 @@ posicionamento a perseguir.
 - ✅ **Auditoria ISO integrada** (esqueleto): `js/lib/iso.js` + página `iso`.
   Evidências derivadas automaticamente de IDF/SSMA/RBAC/logs/documentos,
   cobertura por norma (9001/14001/45001/27001), lacunas e CAPA. Ver §6.
-- ⬜ **Trilha de auditoria imutável** (hash encadeado em `audit_log`).
+- ✅ **Trilha de auditoria imutável** (`js/lib/auditoria.js`): hash SHA-256
+  encadeado no Express (`logs_sistema`) e no Worker (`audit_log`), com endpoint
+  `GET /api/auditoria/verificar` e botão na página ISO. Detecta adulteração,
+  remoção e reordenação. Express e Worker geram hashes idênticos.
 - ⬜ **LGPD**: base legal, retenção e anonimização.
 
 ---
