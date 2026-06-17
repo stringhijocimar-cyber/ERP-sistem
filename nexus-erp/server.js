@@ -15,10 +15,12 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import './public/js/lib/auditoria.js' // define globalThis.Auditoria (hash encadeado)
 import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-way por item)
+import './public/js/lib/lgpd.js'      // define globalThis.LGPD (anonimização/retenção)
 import { consultarCredito } from './lib/credit_bureau.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
+const LGPD = globalThis.LGPD
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 3002
 const DB_PATH = process.env.DB_PATH || join(__dirname, 'nexus.db')
@@ -349,6 +351,21 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
 // ════════════════════════════════════════════════════════════
 // FORNECEDORES
 // ════════════════════════════════════════════════════════════
+// LGPD — anonimiza os dados pessoais de um fornecedor (direito de eliminação).
+// Admin apenas. Irreversível: contato/email/telefone viram máscaras.
+app.post('/api/lgpd/anonimizar/fornecedores/:id', requireAuth, requireRole('admin'), (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  const novo = LGPD.anonimizarRegistro(
+    { contato: f.contato, email: f.email, telefone: f.telefone },
+    { contato: 'nome', email: 'email', telefone: 'telefone' }
+  )
+  db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, updated_at=datetime('now') WHERE id=?`)
+    .run(novo.contato, novo.email, novo.telefone, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'LGPD anonimizar', 'fornecedores', `Dados pessoais anonimizados: fornecedor ${req.params.id}`)
+  res.json(ok({ ...db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id), anonimizado: 1 }))
+})
+
 // Consulta a bureau de crédito (provedor por env; mock por padrão).
 app.post('/api/credito/consultar', requireAuth, async (req, res) => {
   try {
