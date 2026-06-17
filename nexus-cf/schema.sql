@@ -55,3 +55,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_logs_modulo  ON logs(modulo, criado_em);
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_actor  ON audit_log(actor_id, created_at);
+
+-- Sequências atômicas (numeração sem corrida): PC/RC/RFQ/MAPA/CP por ano
+CREATE TABLE IF NOT EXISTS sequences (
+  tipo  TEXT NOT NULL,
+  ano   INTEGER NOT NULL,
+  valor INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tipo, ano)
+);

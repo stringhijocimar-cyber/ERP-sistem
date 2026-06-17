@@ -478,6 +478,13 @@ window.DB = {
   // Caminho do dinheiro autoritativo no servidor quando ligado.
   serverMode: { get: _serverMode, set: (v) => { window.NEXUS_SERVER_MODE = v === true; } },
 
+  // Numeração atômica no servidor (sem corrida do length+1). Retorna
+  // { numero, valor, tipo, ano } ou null se o servidor estiver indisponível.
+  async sequencia(tipo, ano) {
+    try { return await _apiFetch('/api/sequencia/' + tipo, { method: 'POST', body: JSON.stringify({ ano: ano || null }) }); }
+    catch (e) { return null; }
+  },
+
   // Compatibilidade com código legado que usa logAction()
   log: (acao, modulo, desc) => Logs.registrar(acao, modulo, desc),
 };

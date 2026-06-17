@@ -82,6 +82,28 @@ ensureColumns('fornecedores', [
   ['status', "status TEXT DEFAULT 'Em Homologação'"],
 ])
 
+// ─── Sequências atômicas (numeração sem corrida) ──────────────
+// Substitui o `length+1` do cliente por um contador no servidor, incrementado
+// atomicamente (UPSERT + RETURNING numa única instrução — sem race condition).
+db.exec(`CREATE TABLE IF NOT EXISTS sequences (
+  tipo TEXT NOT NULL,
+  ano INTEGER NOT NULL,
+  valor INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tipo, ano)
+)`)
+const TIPOS_SEQ = new Set(['PC', 'RC', 'RFQ', 'MAPA', 'CP'])
+function proximaSequencia(tipoRaw, anoRaw) {
+  const tipo = String(tipoRaw || '').toUpperCase().replace(/[^A-Z]/g, '')
+  if (!TIPOS_SEQ.has(tipo)) throw new Error('Tipo de sequência inválido')
+  const ano = parseInt(anoRaw) || new Date().getFullYear()
+  const row = db.prepare(
+    `INSERT INTO sequences(tipo, ano, valor) VALUES(?, ?, 1)
+     ON CONFLICT(tipo, ano) DO UPDATE SET valor = valor + 1
+     RETURNING valor`
+  ).get(tipo, ano)
+  return { tipo, ano, valor: row.valor, numero: `${tipo}-${ano}-${String(row.valor).padStart(4, '0')}` }
+}
+
 // ─── Bootstrap de admin ───────────────────────────────────────
 // Garante que exista um usuário admin com hash bcrypt real, mesmo que o seed
 // SQL falhe (schemas divergentes). Idempotente: identifica pelo email.
@@ -275,6 +297,16 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
 // ════════════════════════════════════════════════════════════
 // FORNECEDORES
 // ════════════════════════════════════════════════════════════
+// Numeração atômica: POST /api/sequencia/PC → { numero: 'PC-2026-0001', ... }
+app.post('/api/sequencia/:tipo', requireAuth, (req, res) => {
+  try {
+    const r = proximaSequencia(req.params.tipo, req.body && req.body.ano)
+    res.json(ok(r))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
 app.get('/api/fornecedores', requireAuth, (req, res) => {
   const { q = '', ativo = '1', limit = 100, offset = 0 } = req.query
   let sql = `SELECT f.*, COALESCE(ROUND(AVG(a.nota_media), 1), 0) as score_calculado, COUNT(a.id) as total_avaliacoes

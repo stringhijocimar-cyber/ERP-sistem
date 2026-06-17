@@ -269,6 +269,20 @@ async function reprovarMapaServer(env, id, user, motivo){
   await audit(env, user.sub, 'mapa_reprovar', 'mapas', id, { motivo });
   return J(rec);
 }
+// Numeração atômica por tipo/ano (UPSERT + RETURNING numa instrução).
+const TIPOS_SEQ = new Set(['PC','RC','RFQ','MAPA','CP']);
+async function proximaSequencia(env, tipoRaw, anoRaw){
+  const tipo = String(tipoRaw||'').toUpperCase().replace(/[^A-Z]/g,'');
+  if (!TIPOS_SEQ.has(tipo)) return E('Tipo de sequência inválido', 400);
+  const ano = parseInt(anoRaw) || new Date().getFullYear();
+  const row = await env.DB.prepare(
+    `INSERT INTO sequences(tipo,ano,valor) VALUES(?,?,1)
+     ON CONFLICT(tipo,ano) DO UPDATE SET valor=valor+1 RETURNING valor`
+  ).bind(tipo, ano).first();
+  const valor = row.valor;
+  return J({ tipo, ano, valor, numero: `${tipo}-${ano}-${String(valor).padStart(4,'0')}` });
+}
+
 async function emitirPCdoMapa(env, id, user){
   const cfg = await getAprovConfig(env);
   const m = await getDoc(env, 'mapas', id);
@@ -459,6 +473,10 @@ export default {
       if (seg[0]==='mapas' && seg[2]==='aprovar'   && method==='POST') return await aprovarEstagioMapa(env, seg[1], user);
       if (seg[0]==='mapas' && seg[2]==='reprovar'  && method==='POST') return await reprovarMapaServer(env, seg[1], user, body.motivo);
       if (seg[0]==='mapas' && seg[2]==='emitir-pc' && method==='POST') return await emitirPCdoMapa(env, seg[1], user);
+
+      // Numeração atômica: POST /api/sequencia/PC → { numero: 'PC-2026-0001', ... }
+      if (seg[0]==='sequencia' && seg[1] && method==='POST') return await proximaSequencia(env, seg[1], body && body.ano);
+
 
       // CRUD generico
       if (TABLES[seg[0]]){
