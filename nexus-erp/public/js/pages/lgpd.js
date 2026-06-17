@@ -67,6 +67,15 @@ function renderLGPD() {
         <tbody>${solRows}</tbody>
       </table>` : '<p style="font-size:12px;color:var(--text-muted);margin-top:8px">Nenhuma solicitação registrada. Use "Solicitação do titular" para registrar pedidos de acesso, correção, eliminação ou portabilidade.</p>'}
     </div>
+
+    <div class="info-card" style="padding:16px;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <strong style="font-size:14px"><i class="fas fa-clock-rotate-left" style="margin-right:6px"></i>Retenção e expurgo</strong>
+        <button class="btn btn-secondary btn-sm" onclick="lgpdPreviewRetencao()"><i class="fas fa-search"></i> Ver vencidos</button>
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Anonimiza, de forma irreversível, os dados pessoais de fornecedores <strong>inativos</strong> além do período de retenção. Veja a lista antes de executar.</p>
+      <div id="lgpd_retencao_result" style="margin-top:8px"></div>
+    </div>
   `;
 }
 
@@ -130,7 +139,39 @@ async function lgpdConfirmarAnonimizar() {
   }
 }
 
+async function lgpdPreviewRetencao() {
+  const box = document.getElementById('lgpd_retencao_result');
+  if (!box || typeof apiAuth !== 'function') { showToast('Indisponível offline.', 'warning'); return; }
+  box.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Buscando vencidos...';
+  try {
+    const r = await apiAuth('/api/lgpd/retencao/fornecedores');
+    if (!r.total) { box.innerHTML = `<div style="font-size:12px;color:#16a34a"><i class="fas fa-check"></i> Nenhum fornecedor vencido (política: ${r.politica_meses} meses).</div>`; return; }
+    box.innerHTML = `
+      <div style="font-size:12px;margin-bottom:6px"><strong>${r.total}</strong> fornecedor(es) vencido(s) (política: ${r.politica_meses} meses):</div>
+      <ul style="font-size:12px;color:var(--text-muted);margin:0 0 8px;padding-left:18px">
+        ${r.fornecedores.slice(0, 20).map(f => `<li>#${f.id} — ${(f.nome || '').replace(/</g, '&lt;')} (desde ${String(f.created_at || '').slice(0, 10)})</li>`).join('')}
+      </ul>
+      <button class="btn btn-danger btn-sm" onclick="lgpdExecutarRetencao()"><i class="fas fa-user-slash"></i> Anonimizar ${r.total} agora</button>`;
+  } catch (e) {
+    box.innerHTML = `<div style="font-size:12px;color:#dc2626">Erro: ${e.message}</div>`;
+  }
+}
+
+async function lgpdExecutarRetencao() {
+  if (typeof apiAuth !== 'function') return;
+  if (!window.confirm('Anonimizar TODOS os fornecedores vencidos? Ação irreversível e auditada.')) return;
+  try {
+    const r = await apiAuth('/api/lgpd/retencao/fornecedores/executar', { method: 'POST' });
+    showToast(`${r.anonimizados} fornecedor(es) anonimizado(s) por retenção.`, 'success', 5000);
+    lgpdPreviewRetencao();
+  } catch (e) {
+    showToast('Falha na execução: ' + e.message, 'error');
+  }
+}
+
 window.renderLGPD = renderLGPD;
+window.lgpdPreviewRetencao = lgpdPreviewRetencao;
+window.lgpdExecutarRetencao = lgpdExecutarRetencao;
 window.lgpdNovaSolicitacao = lgpdNovaSolicitacao;
 window.lgpdSalvarSolicitacao = lgpdSalvarSolicitacao;
 window.lgpdAnonimizarFornecedor = lgpdAnonimizarFornecedor;

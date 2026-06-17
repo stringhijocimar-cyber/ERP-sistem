@@ -377,6 +377,43 @@ async function anonimizarFornecedor(env, id, user){
   return rec ? J(rec) : E('falha ao anonimizar', 500);
 }
 
+// LGPD retenção: fornecedores inativos, além da retenção e não anonimizados.
+async function _fornecedoresVencidosRetencao(env){
+  const meses = parseInt(env.RETENCAO_FORNECEDOR_MESES) || 60;
+  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - meses);
+  const cut = cutoff.toISOString().slice(0, 19).replace('T', ' ');
+  const rs = await env.DB.prepare("SELECT id, payload, created_at FROM fornecedores WHERE created_at < ?").bind(cut).all();
+  const out = [];
+  for (const row of (rs.results || [])){
+    let p; try { p = JSON.parse(row.payload); } catch(e){ continue; }
+    if ((p.ativo === 0 || p.ativo === '0') && !p.anonimizado) out.push({ id: row.id, nome: p.nome, created_at: row.created_at });
+  }
+  return { meses, vencidos: out };
+}
+async function retencaoPreviewFornecedores(env, user){
+  requireRole(user, ['admin']);
+  const r = await _fornecedoresVencidosRetencao(env);
+  return J({ politica_meses: r.meses, total: r.vencidos.length, fornecedores: r.vencidos });
+}
+async function retencaoExecutarFornecedores(env, user){
+  requireRole(user, ['admin']);
+  const r = await _fornecedoresVencidosRetencao(env);
+  let n = 0;
+  for (const v of r.vencidos){
+    const f = await getDoc(env, 'fornecedores', v.id);
+    if (!f) continue;
+    await updateDoc(env, 'fornecedores', v.id, {
+      contato_nome: _anonimizarCampo(f.contato_nome || f.contato, 'nome'),
+      email: _anonimizarCampo(f.email, 'email'),
+      telefone: _anonimizarCampo(f.telefone, 'telefone'),
+      anonimizado: 1,
+    });
+    n++;
+  }
+  if (n) await audit(env, user.sub, 'lgpd_retencao', 'fornecedores', null, { anonimizados: n });
+  return J({ anonimizados: n, politica_meses: r.meses });
+}
+
 // Consulta a bureau de crédito (provedor por env; mock determinístico padrão).
 function consultarCreditoBureau(cnpjRaw, provider){
   const cnpj = String(cnpjRaw||'').replace(/\D/g,'');
@@ -609,6 +646,9 @@ export default {
 
       // LGPD — anonimizar fornecedor: POST /api/lgpd/anonimizar/fornecedores/:id
       if (seg[0]==='lgpd' && seg[1]==='anonimizar' && seg[2]==='fornecedores' && seg[3] && method==='POST') return await anonimizarFornecedor(env, seg[3], user);
+      // LGPD — retenção: preview (GET) e execução (POST)
+      if (seg[0]==='lgpd' && seg[1]==='retencao' && seg[2]==='fornecedores' && seg[3]==='executar' && method==='POST') return await retencaoExecutarFornecedores(env, user);
+      if (seg[0]==='lgpd' && seg[1]==='retencao' && seg[2]==='fornecedores' && method==='GET') return await retencaoPreviewFornecedores(env, user);
 
       // Trilha de auditoria imutável: GET /api/auditoria/verificar (admin)
       if (seg[0]==='auditoria' && seg[1]==='verificar' && method==='GET'){ requireRole(user,['admin']); return await verificarAuditoria(env); }

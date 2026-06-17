@@ -87,6 +87,7 @@ ensureColumns('fornecedores', [
   ['classificacao_credito', 'classificacao_credito TEXT'],
   ['analise_credito', 'analise_credito TEXT'],
   ['status', "status TEXT DEFAULT 'Em Homologação'"],
+  ['anonimizado', 'anonimizado INTEGER DEFAULT 0'],
 ])
 // Trilha de auditoria imutável: hash do registro + hash do anterior.
 ensureColumns('logs_sistema', [
@@ -360,10 +361,40 @@ app.post('/api/lgpd/anonimizar/fornecedores/:id', requireAuth, requireRole('admi
     { contato: f.contato, email: f.email, telefone: f.telefone },
     { contato: 'nome', email: 'email', telefone: 'telefone' }
   )
-  db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, updated_at=datetime('now') WHERE id=?`)
+  db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, anonimizado=1, updated_at=datetime('now') WHERE id=?`)
     .run(novo.contato, novo.email, novo.telefone, req.params.id)
   log(req.user.usuario_id, req.user.nome, 'LGPD anonimizar', 'fornecedores', `Dados pessoais anonimizados: fornecedor ${req.params.id}`)
-  res.json(ok({ ...db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id), anonimizado: 1 }))
+  res.json(ok(db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)))
+})
+
+// LGPD — retenção: política de guarda dos dados pessoais de fornecedor.
+const RETENCAO_FORNECEDOR_MESES = parseInt(process.env.RETENCAO_FORNECEDOR_MESES) || 60
+function _fornecedoresVencidos() {
+  // Conservador: inativos, além da retenção e ainda não anonimizados.
+  const cands = db.prepare(
+    `SELECT * FROM fornecedores WHERE ativo = 0 AND COALESCE(anonimizado,0) = 0`
+  ).all()
+  return LGPD.vencidosPorRetencao(cands, { campoData: 'created_at', retencaoMeses: RETENCAO_FORNECEDOR_MESES })
+}
+
+// Preview (dry-run): quem SERIA anonimizado pela política, sem alterar nada.
+app.get('/api/lgpd/retencao/fornecedores', requireAuth, requireRole('admin'), (req, res) => {
+  const vencidos = _fornecedoresVencidos().map(f => ({ id: f.id, nome: f.nome, created_at: f.created_at, ativo: f.ativo }))
+  res.json(ok({ politica_meses: RETENCAO_FORNECEDOR_MESES, total: vencidos.length, fornecedores: vencidos }))
+})
+
+// Execução: anonimiza todos os vencidos pela política (admin).
+app.post('/api/lgpd/retencao/fornecedores/executar', requireAuth, requireRole('admin'), (req, res) => {
+  const vencidos = _fornecedoresVencidos()
+  const upd = db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, anonimizado=1, updated_at=datetime('now') WHERE id=?`)
+  let n = 0
+  for (const f of vencidos) {
+    const a = LGPD.anonimizarRegistro({ contato: f.contato, email: f.email, telefone: f.telefone }, { contato: 'nome', email: 'email', telefone: 'telefone' })
+    upd.run(a.contato, a.email, a.telefone, f.id)
+    n++
+  }
+  if (n) log(req.user.usuario_id, req.user.nome, 'LGPD retenção', 'fornecedores', `${n} fornecedor(es) anonimizado(s) por retenção (${RETENCAO_FORNECEDOR_MESES}m)`)
+  res.json(ok({ anonimizados: n, politica_meses: RETENCAO_FORNECEDOR_MESES }))
 })
 
 // Consulta a bureau de crédito (provedor por env; mock por padrão).
