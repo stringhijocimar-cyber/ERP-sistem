@@ -14,8 +14,10 @@ import { readFileSync, existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import './public/js/lib/auditoria.js' // define globalThis.Auditoria (hash encadeado)
+import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-way por item)
 
 const Auditoria = globalThis.Auditoria
+const conciliarTresVias = globalThis.conciliarTresVias
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 3002
 const DB_PATH = process.env.DB_PATH || join(__dirname, 'nexus.db')
@@ -87,6 +89,11 @@ ensureColumns('fornecedores', [
 ensureColumns('logs_sistema', [
   ['hash', 'hash TEXT'],
   ['hash_anterior', 'hash_anterior TEXT'],
+])
+// Gate de pagamento precisa de NF e origem na conta a pagar.
+ensureColumns('contas_pagar', [
+  ['nota_fiscal', 'nota_fiscal TEXT'],
+  ['contrato_id', 'contrato_id TEXT'],
 ])
 
 // ─── Sequências atômicas (numeração sem corrida) ──────────────
@@ -796,6 +803,48 @@ app.put('/api/contas-pagar/:id', requireAuth, requireRole('admin', 'financeiro')
   db.prepare(`UPDATE contas_pagar SET status=?,data_pagamento=?,forma_pagamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
     .run(status, data_pagamento, forma_pagamento, observacoes, req.params.id)
   res.json(ok(db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)))
+})
+
+// GATE DE PAGAMENTO: "nada paga sem lastro" + 3-way por item. Segregação: só
+// financeiro/admin. Bloqueios respondem 409 e ficam na trilha de auditoria.
+app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
+  const conta = db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)
+  if (!conta) return res.status(404).json(err('Conta não encontrada'))
+
+  const motivos = []
+  if (conta.data_pagamento || conta.status === 'Pago') motivos.push('conta já paga (duplicidade)')
+  if (!['Aprovado', 'Aprovada', 'Liberado'].includes(conta.status)) motivos.push('não aprovada no fluxo')
+  if (!conta.nota_fiscal || conta.nota_fiscal === '—') motivos.push('sem nota fiscal')
+  const origem = conta.pc_id || (conta.contrato_id && conta.contrato_id !== 'Geral' && conta.contrato_id !== '—')
+  if (!origem) motivos.push('sem pedido ou contrato de origem (lastro)')
+  if (motivos.length) {
+    log(req.user.usuario_id, req.user.nome, 'payment_blocked', 'contas_pagar', `Bloqueio: ${motivos.join('; ')}`)
+    return res.status(409).json(err('Pagamento bloqueado: ' + motivos.join('; ')))
+  }
+
+  // 3-way por item: confere a nota contra o pedido (e recebimento, se houver).
+  if (conta.pc_id && conciliarTresVias) {
+    const itensPedido = db.prepare(`SELECT descricao, quantidade, valor_unitario, codigo_produto FROM pc_itens WHERE pc_id = ?`).all(conta.pc_id)
+    const itensNota = (req.body && req.body.itens_nota) || []
+    const itensRecebidos = (req.body && req.body.itens_recebidos) || []
+    if (itensNota.length) {
+      const r = conciliarTresVias({ itensPedido, itensRecebidos, itensNota })
+      if (!r.conforme) {
+        log(req.user.usuario_id, req.user.nome, 'payment_blocked', 'contas_pagar', `Bloqueio 3-way: ${r.divergencias.map(d => d.tipo).join(',')}`)
+        return res.status(409).json(err('Pagamento bloqueado (3-way): ' + r.divergencias.map(d => d.detalhe).join('; ')))
+      }
+    }
+    // Fallback de total: a conta não pode exceder o pedido (+2%).
+    const ped = db.prepare(`SELECT valor_total FROM pedidos_compra WHERE id = ?`).get(conta.pc_id)
+    if (ped && typeof conta.valor === 'number' && conta.valor > ped.valor_total * 1.02) {
+      return res.status(409).json(err('Pagamento bloqueado: valor acima do pedido de origem'))
+    }
+  }
+
+  const data_pagamento = new Date().toISOString().split('T')[0]
+  db.prepare(`UPDATE contas_pagar SET status='Pago', data_pagamento=?, updated_at=datetime('now') WHERE id=?`).run(data_pagamento, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'Pagar', 'contas_pagar', `Pagamento liberado: ${conta.descricao} (R$ ${conta.valor})`)
+  res.json(ok({ id: conta.id, status: 'Pago', data_pagamento }))
 })
 
 // ════════════════════════════════════════════════════════════

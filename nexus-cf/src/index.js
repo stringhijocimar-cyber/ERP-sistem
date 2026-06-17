@@ -159,6 +159,29 @@ function gateContaPagar(c, env){
   }
   return { ok: motivos.length === 0, motivos };
 }
+// Conciliação 3-way por item (mesma lógica de js/lib/three_way.js).
+function conciliarTresVias(dados, opts){
+  const cfg = Object.assign({ tolPreco:0.02, tolQtd:0 }, opts||{});
+  const itensNota = dados.itensNota || [];
+  if (!itensNota.length) return { conforme:true, divergencias:[], aviso:'sem itens de nota' };
+  const num = v => { const n=Number(v); return isFinite(n)?n:0; };
+  const chave = it => String(it.codigo||it.codigo_produto||it.sku||it.descricao||it.desc||'').trim().toLowerCase();
+  const qtd = it => num(it.qtd!=null?it.qtd:(it.quantidade!=null?it.quantidade:it.quantidade_recebida));
+  const preco = it => num(it.preco!=null?it.preco:(it.preco_unit!=null?it.preco_unit:(it.valor_unitario!=null?it.valor_unitario:it.valor_unit)));
+  const idx = arr => { const m={}; (arr||[]).forEach(it=>{ const k=chave(it); if(!k)return; if(m[k])m[k].qtd+=qtd(it); else m[k]={qtd:qtd(it),preco:preco(it),desc:it.descricao||it.desc||k}; }); return m; };
+  const ped = idx(dados.itensPedido), rec = idx(dados.itensRecebidos);
+  const temRec = Array.isArray(dados.itensRecebidos) && dados.itensRecebidos.length>0;
+  const divergencias = [];
+  itensNota.forEach(itn => {
+    const k=chave(itn), qn=qtd(itn), pn=preco(itn), p=ped[k];
+    if (!p) { divergencias.push({tipo:'item_sem_pedido', detalhe:'Item faturado sem correspondência no pedido'}); return; }
+    if (pn>0 && p.preco>0 && pn > p.preco*(1+cfg.tolPreco)) divergencias.push({tipo:'preco_acima_pedido', detalhe:`Preço ${pn} acima do pedido ${p.preco}`});
+    if (qn > p.qtd*(1+cfg.tolQtd)) divergencias.push({tipo:'faturado_acima_pedido', detalhe:`Qtd ${qn} acima do pedido ${p.qtd}`});
+    if (temRec){ const r=rec[k]; if(!r) divergencias.push({tipo:'item_nao_recebido', detalhe:'Sem recebimento'}); else if (qn > r.qtd*(1+cfg.tolQtd)) divergencias.push({tipo:'faturado_acima_recebido', detalhe:`Qtd ${qn} acima da recebida ${r.qtd}`}); }
+  });
+  return { conforme: divergencias.length===0, divergencias };
+}
+function _parseItens(v){ if (Array.isArray(v)) return v; if (typeof v==='string'){ try { const p=JSON.parse(v); return Array.isArray(p)?p:[]; } catch(e){ return []; } } return []; }
 async function pagarConta(env, id, user){
   requireRole(user, ['financeiro','admin']);            // segregacao de funcoes
   const conta = await getDoc(env, 'contas_pagar', id);
@@ -169,9 +192,22 @@ async function pagarConta(env, id, user){
     await audit(env, user.sub, 'payment_blocked', 'contas_pagar', id, { motivos: g.motivos });
     return E('Pagamento bloqueado: ' + g.motivos.join('; '), 409);
   }
-  // 3-way basico: se ha pedido de origem, valor nao pode exceder o do pedido (+2%).
+  // 3-way por item + checagem de total. Se houver itens de nota, confere a nota
+  // contra o pedido (e recebimento). Senão, cai para o total (<= pedido +2%).
   if (conta.pedido_id){
     const ped = await getDoc(env, 'pedidos', conta.pedido_id);
+    const itensNota = _parseItens(conta.itens_nota);
+    if (itensNota.length){
+      const r = conciliarTresVias({
+        itensPedido: _parseItens(ped && ped.itens),
+        itensRecebidos: _parseItens(conta.itens_recebidos),
+        itensNota
+      });
+      if (!r.conforme){
+        await audit(env, user.sub, 'payment_blocked', 'contas_pagar', id, { motivo:'3-way', divergencias:r.divergencias });
+        return E('Pagamento bloqueado (3-way): ' + r.divergencias.map(d=>d.detalhe).join('; '), 409);
+      }
+    }
     if (ped && typeof ped.valor === 'number' && typeof conta.valor === 'number' && conta.valor > ped.valor * 1.02){
       await audit(env, user.sub, 'payment_blocked', 'contas_pagar', id, { motivo:'valor acima do pedido' });
       return E('Pagamento bloqueado: valor acima do pedido de origem', 409);
