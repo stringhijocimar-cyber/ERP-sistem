@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS logs (
 CREATE TABLE IF NOT EXISTS audit_log (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_id   TEXT, action TEXT NOT NULL, entity TEXT, entity_id TEXT,
-  payload    TEXT, created_at TEXT DEFAULT (datetime('now'))
+  payload    TEXT, created_at TEXT DEFAULT (datetime('now')),
+  hash       TEXT, hash_anterior TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_modulo  ON logs(modulo, criado_em);

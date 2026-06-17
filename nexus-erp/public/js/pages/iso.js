@@ -65,7 +65,10 @@ function renderISO() {
         <h2><i class="fas fa-certificate" style="color:var(--fa-teal);margin-right:10px"></i>Auditoria ISO / Conformidade</h2>
         <p>Evidências derivadas automaticamente de IDF, SSMA, RBAC, logs e documentos. ISO 9001 · 14001 · 45001 · 27001.</p>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="isoRegistrarNC()"><i class="fas fa-triangle-exclamation"></i> Registrar não conformidade</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" onclick="isoVerificarTrilha()" title="ISO 27001 A.12.4 — trilha imutável"><i class="fas fa-shield-halved"></i> Verificar trilha</button>
+        <button class="btn btn-primary btn-sm" onclick="isoRegistrarNC()"><i class="fas fa-triangle-exclamation"></i> Registrar não conformidade</button>
+      </div>
     </div>
 
     <div class="info-card" style="padding:18px;margin-bottom:16px;border-left:4px solid ${_isoCorNivel(g.nivel)}">
@@ -138,6 +141,19 @@ function isoSalvarNC() {
   renderISO();
 }
 
+// Verifica a integridade da trilha de auditoria imutável (hash encadeado).
+async function isoVerificarTrilha() {
+  if (typeof apiAuth !== 'function') { showToast('Verificação indisponível offline.', 'warning'); return; }
+  try {
+    const r = await apiAuth('/api/auditoria/verificar');
+    if (r && r.integra) showToast(`Trilha íntegra ✅ — ${r.total} registro(s) encadeado(s) sem adulteração.`, 'success', 6000);
+    else showToast(`⚠️ Trilha COMPROMETIDA: ${r.motivo} (registro ${r.quebraEm}).`, 'error', 8000);
+  } catch (e) {
+    showToast('Não foi possível verificar a trilha: ' + e.message, 'error');
+  }
+}
+
 window.renderISO = renderISO;
 window.isoRegistrarNC = isoRegistrarNC;
 window.isoSalvarNC = isoSalvarNC;
+window.isoVerificarTrilha = isoVerificarTrilha;
