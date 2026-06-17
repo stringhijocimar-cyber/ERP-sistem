@@ -88,6 +88,8 @@ posicionamento a perseguir.
   + endpoints + modal com quantidades): o gate **puxa automaticamente** o
   recebido acumulado do pedido e o usa no 3-way (sem precisar informar no
   pagamento). "Não paga o que não chegou" passa a ser automático.
+  **Paridade no Worker**: o gate agrega os docs de recebimento por `pc_id`
+  (`json_extract`) e alimenta o 3-way igualmente — validado em SQLite real.
 - ⬜ **Almoxarifado**: movimentação atômica de estoque no servidor.
 
 ### P2 — Inteligência adaptativa

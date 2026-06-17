@@ -182,6 +182,25 @@ function conciliarTresVias(dados, opts){
   return { conforme: divergencias.length===0, divergencias };
 }
 function _parseItens(v){ if (Array.isArray(v)) return v; if (typeof v==='string'){ try { const p=JSON.parse(v); return Array.isArray(p)?p:[]; } catch(e){ return []; } } return []; }
+// Auto-feed: soma os itens recebidos (docs de recebimento) vinculados ao pedido.
+async function itensRecebidosAcumulados(env, pedidoId){
+  if (!pedidoId) return [];
+  const rs = await env.DB.prepare(
+    "SELECT payload FROM recebimentos WHERE CAST(json_extract(payload,'$.pc_id') AS TEXT)=?"
+  ).bind(String(pedidoId)).all();
+  const acc = {};
+  for (const row of (rs.results || [])){
+    let doc; try { doc = JSON.parse(row.payload); } catch(e){ continue; }
+    for (const it of _parseItens(doc.itens)){
+      const k = String(it.codigo_produto || it.codigo || it.descricao || it.desc || '').trim().toLowerCase();
+      if (!k) continue;
+      const q = Number(it.quantidade_recebida != null ? it.quantidade_recebida : (it.qtd_recebida != null ? it.qtd_recebida : it.qtd)) || 0;
+      if (!acc[k]) acc[k] = { codigo: k, descricao: it.descricao || it.desc || k, quantidade_recebida: 0 };
+      acc[k].quantidade_recebida += q;
+    }
+  }
+  return Object.values(acc);
+}
 async function pagarConta(env, id, user){
   requireRole(user, ['financeiro','admin']);            // segregacao de funcoes
   const conta = await getDoc(env, 'contas_pagar', id);
@@ -198,9 +217,12 @@ async function pagarConta(env, id, user){
     const ped = await getDoc(env, 'pedidos', conta.pedido_id);
     const itensNota = _parseItens(conta.itens_nota);
     if (itensNota.length){
+      // Auto-feed: se a conta não trouxer os recebidos, busca dos recebimentos do pedido.
+      let itensRecebidos = _parseItens(conta.itens_recebidos);
+      if (!itensRecebidos.length) itensRecebidos = await itensRecebidosAcumulados(env, conta.pedido_id);
       const r = conciliarTresVias({
         itensPedido: _parseItens(ped && ped.itens),
-        itensRecebidos: _parseItens(conta.itens_recebidos),
+        itensRecebidos,
         itensNota
       });
       if (!r.conforme){
