@@ -674,13 +674,25 @@ function _rfqStatusBadge(s) {
 }
 
 // ─── ACEITAR / REJEITAR REQUISIÇÃO (COMPRADOR) ───
-function aceitarRequisicaoComprador(reqId) {
+// Numeração atômica no servidor (sem corrida do length+1). Fallback local se
+// o servidor estiver indisponível (offline/demo).
+async function _numAtomico(tipo, fallbackFn) {
+  try {
+    if (window.DB && typeof DB.sequencia === 'function') {
+      const s = await DB.sequencia(tipo);
+      if (s && s.numero) return s.numero;
+    }
+  } catch (e) {}
+  return fallbackFn();
+}
+
+async function aceitarRequisicaoComprador(reqId) {
   const reqs = _getRequisicoes();
   const req = reqs.find(r => r.id === reqId);
   if (!req) return;
 
-  // Cria RFQ automaticamente
-  const rfqNum = 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0');
+  // Cria RFQ automaticamente (numeração atômica no servidor)
+  const rfqNum = await _numAtomico('RFQ', () => 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0'));
   const novoRFQ = {
     id: gerarId('RFQ'),
     numero_rfq: rfqNum,
@@ -743,7 +755,7 @@ function _confirmarRejeicaoReq(reqId) {
 
 // ─── EMITIR RC A PARTIR DE UMA OS APROVADA + ABRIR ACEITE DIRETO ─────────────
 // Cria RC automaticamente com os itens aprovados da OS e abre modal de aceite/RFQ
-function _procEmitirRCdaOS(fluxoId) {
+async function _procEmitirRCdaOS(fluxoId) {
   const fluxoOS = (() => { try { return JSON.parse(localStorage.getItem('fa_fluxo_os')||'[]'); } catch(e){ return []; } })();
   const f = fluxoOS.find(x => x.id === fluxoId);
   if (!f) { showToast('OS não encontrada.', 'error'); return; }
@@ -773,7 +785,7 @@ function _procEmitirRCdaOS(fluxoId) {
 
   // Gera número de RC
   const ano = new Date().getFullYear();
-  const numero = `RC-${ano}-${String(rcLista.length+1).padStart(4,'0')}`;
+  const numero = await _numAtomico('RC', () => `RC-${ano}-${String(rcLista.length+1).padStart(4,'0')}`);
   const novaRC = {
     id: 'RC-'+Date.now(),
     numero,
@@ -5724,7 +5736,7 @@ function addItemRFQ() {
   body.appendChild(row);
 }
 
-function salvarNovoRFQ() {
+async function salvarNovoRFQ() {
   const titulo = document.getElementById('nrTitulo')?.value?.trim();
   if (!titulo) { showToast('Informe o título do processo.', 'error'); return; }
   const valor = parseFloat(document.getElementById('nrValor')?.value || 0);
@@ -5737,7 +5749,7 @@ function salvarNovoRFQ() {
     if (desc) itens.push({ descricao: desc, qtd, unidade: un });
   });
 
-  const rfqNum = 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0');
+  const rfqNum = await _numAtomico('RFQ', () => 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0'));
   const rfq = {
     id: gerarId('RFQ'),
     numero_rfq: rfqNum,

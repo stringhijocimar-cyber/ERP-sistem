@@ -74,9 +74,9 @@ posicionamento a perseguir.
 - ⬜ **Fornecedores+**: consulta automática de situação fiscal/credit bureau real
   (hoje a análise usa dados informados + CNPJ; integrar Serasa/SPC/Receita).
 - ✅ **Numeração atômica no servidor** — endpoint `POST /api/sequencia/:tipo`
-  (Express + Worker/D1) com UPSERT+RETURNING; PC já usa, com fallback offline.
-  Testado com 100 chamadas concorrentes → 100 números únicos. RC/RFQ/MAPA
-  podem usar o mesmo helper (`DB.sequencia`).
+  (Express + Worker/D1) com UPSERT+RETURNING; **PC, RC e RFQ** usam, com
+  fallback offline. Testado com 100 chamadas concorrentes → 100 números únicos.
+  (MAPA herda o número do RFQ/RC.)
 - ✅ **3-way match por item** (`js/lib/three_way.js`): confere a nota contra o
   pedido e o recebimento item a item (qtd e preço, com tolerância). Integrado
   ao gate de pagamento no Worker e no Express (rota `/pagar` com gate completo,
