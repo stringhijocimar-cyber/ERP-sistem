@@ -76,6 +76,46 @@ function pedidoPertence(pedido, fornecedorId){
   return !!pedido && fornecedorId != null && String(pedido.fornecedor_id) === String(fornecedorId);
 }
 
+// ===== Central de Alertas: montagem pura (espelha coletarAlertas do Express) =====
+const _SEV_PESO = { alta: 3, media: 2, baixa: 1 };
+const _hojeStr = () => new Date().toISOString().slice(0, 10);
+const _addDias = (ymd, n) => new Date(new Date(ymd + 'T00:00:00Z').getTime() + n * 864e5).toISOString().slice(0, 10);
+// Recebe os documentos já carregados (contas, pedidos, vencidos LGPD) e devolve
+// o feed ordenado por severidade. Sem I/O — testável isoladamente.
+function montarAlertasWorker({ contas = [], pedidos = [], vencidosLGPD = [], dias = 7, hoje = _hojeStr(), isAdmin = false, meses = 60 } = {}){
+  const limite = _addDias(hoje, dias);
+  const alertas = [];
+  for (const c of contas){
+    const venc = (c.vencimento || c.data_vencimento || '').slice(0, 10);
+    if (!venc || !['Pendente', 'Aprovado', 'Vencido'].includes(c.status)) continue;
+    const titulo = c.numero || c.id;
+    if (venc < hoje){
+      alertas.push({ tipo:'conta_vencida', severidade:'alta', modulo:'Financeiro',
+        titulo:`Conta vencida: ${titulo}`, descricao:`${c.descricao||''} — venc. ${venc}`, valor:c.valor, data:venc, ref:c.id });
+    } else if (venc <= limite){
+      alertas.push({ tipo:'conta_a_vencer', severidade:'media', modulo:'Financeiro',
+        titulo:`Conta a vencer: ${titulo}`, descricao:`${c.descricao||''} — venc. ${venc}`, valor:c.valor, data:venc, ref:c.id });
+    }
+  }
+  for (const p of pedidos){
+    if (['Entregue', 'Recebido', 'Cancelado', 'Concluído'].includes(p.status)) continue;
+    const base = (p.enviado_em || p.emitido_em || '').slice(0, 10);
+    const prazo = Number(p.prazo_entrega);
+    if (!base || !prazo) continue;
+    if (_addDias(base, prazo) < hoje){
+      alertas.push({ tipo:'entrega_atrasada', severidade:'alta', modulo:'Compras',
+        titulo:`Entrega atrasada: ${p.numero || p.id}`, descricao:`${p.fornecedor_nome||p.fornecedor||''} — base ${base}, prazo ${prazo}d`, data:base, ref:p.id });
+    }
+  }
+  if (isAdmin && vencidosLGPD.length){
+    alertas.push({ tipo:'lgpd_retencao', severidade:'media', modulo:'LGPD',
+      titulo:`Retenção LGPD: ${vencidosLGPD.length} fornecedor(es) a anonimizar`,
+      descricao:`Inativos além de ${meses} meses, ainda não anonimizados.`, valor:vencidosLGPD.length, ref:'lgpd' });
+  }
+  alertas.sort((a, b) => (_SEV_PESO[b.severidade] || 0) - (_SEV_PESO[a.severidade] || 0));
+  return alertas;
+}
+
 // ===== Auditoria (append-only + hash encadeado, tamper-evident) =====
 async function sha256hex(str){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -616,6 +656,22 @@ export default {
         return E('rota de portal nao encontrada', 404);
       }
 
+      // ---- Central de Alertas (feed interno consolidado) ----
+      if (seg[0]==='alertas' && method==='GET'){
+        if (user.role === 'fornecedor') return E('Sem acesso a central de alertas', 403);
+        const dias = Math.max(1, Math.min(parseInt(url.searchParams.get('dias')) || 7, 90));
+        const isAdmin = user.role === 'admin';
+        const all = { searchParams: new URLSearchParams() };
+        const contas = await listDocs(env, 'contas_pagar', all);
+        const pedidos = await listDocs(env, 'pedidos', all);
+        let vencidosLGPD = [], meses = 60;
+        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env); vencidosLGPD = r.vencidos; meses = r.meses; }
+        const alertas = montarAlertasWorker({ contas, pedidos, vencidosLGPD, dias, isAdmin, meses });
+        const resumo = { total: alertas.length, alta: 0, media: 0, baixa: 0 };
+        for (const a of alertas) resumo[a.severidade] = (resumo[a.severidade] || 0) + 1;
+        return J({ resumo, dias, alertas });
+      }
+
       // Logs de aplicacao
       if (seg[0]==='logs'){
         if (method==='POST'){
@@ -744,5 +800,5 @@ export default {
   }
 };
 
-// Exporta as regras puras de isolamento do portal para teste unitário.
-export { portalScope, pedidoPertence };
+// Exporta as regras puras (isolamento do portal + montagem de alertas) p/ teste.
+export { portalScope, pedidoPertence, montarAlertasWorker };

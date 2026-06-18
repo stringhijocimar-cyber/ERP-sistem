@@ -75,7 +75,10 @@ posicionamento a perseguir.
   severidade reunindo contas vencidas/a vencer (janela configurável), entregas
   atrasadas (prazo do pedido estourado) e retenção LGPD pendente. Dados 100%
   server-side; alerta sensível de LGPD só para admin; fornecedor (portal) é
-  barrado. Página com resumo + lista colorida por severidade. Coberto por testes.
+  barrado. Página com resumo + lista colorida por severidade. **Paridade
+  Express + Worker**: o Worker (nexus-cf) replica `/api/alertas` sobre o modelo
+  documento, com a montagem extraída em função pura (`montarAlertasWorker`)
+  coberta por testes unitários.
 - ✅ **Portal do Fornecedor** (self-service, escopo restrito): usuário com perfil
   `fornecedor` vinculado a um `fornecedor_id`. Rotas `/api/portal/*` (pedidos,
   enviar NF, perfil) sempre filtradas pelo vínculo — um fornecedor nunca vê
