@@ -76,6 +76,15 @@ function pedidoPertence(pedido, fornecedorId){
   return !!pedido && fornecedorId != null && String(pedido.fornecedor_id) === String(fornecedorId);
 }
 
+// RC: classificação de gasto obrigatória. Aceita acento/caixa, grava canônico.
+function normalizarTipoRC(v){
+  const k = String(v || '').trim().toLowerCase();
+  if (k === 'material') return 'Material';
+  if (k === 'servico' || k === 'serviço' || k === 'serviços' || k === 'servicos') return 'Serviço';
+  if (k === 'equipamento') return 'Equipamento';
+  return null;
+}
+
 // ===== Central de Alertas: montagem pura (espelha coletarAlertas do Express) =====
 const _SEV_PESO = { alta: 3, media: 2, baixa: 1 };
 const _hojeStr = () => new Date().toISOString().slice(0, 10);
@@ -850,6 +859,26 @@ export default {
       if (seg[0]==='auditoria' && seg[1]==='verificar' && method==='GET'){ requireRole(user,['admin']); return await verificarAuditoria(env); }
 
 
+      // RC — criação/edição com tipo + WBS obrigatórios (compliance, espelha o Express)
+      if (seg[0]==='rc' && !seg[1] && method==='POST'){
+        const tipo = normalizarTipoRC(body.tipo);
+        if (!tipo) return E('Tipo da RC obrigatorio: Material, Servico ou Equipamento', 400);
+        if (!body.wbs || !String(body.wbs).trim()) return E('Vinculo WBS obrigatorio na RC (rastreabilidade de custo)', 400);
+        const r = await createDoc(env, 'rc', { ...body, tipo, wbs: String(body.wbs).trim() });
+        await audit(env, user.sub, 'create', 'rc', r.id, {});
+        return J(r);
+      }
+      if (seg[0]==='rc' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
+        const cur = await getDoc(env, 'rc', seg[1]);
+        if (!cur) return E('nao encontrado', 404);
+        const patch = { ...body };
+        if (body.tipo !== undefined){ const t = normalizarTipoRC(body.tipo); if (!t) return E('Tipo da RC invalido: use Material, Servico ou Equipamento', 400); patch.tipo = t; }
+        if (body.wbs !== undefined){ if (!String(body.wbs).trim()) return E('WBS nao pode ser removida da RC', 400); patch.wbs = String(body.wbs).trim(); }
+        const r = await updateDoc(env, 'rc', seg[1], patch);
+        await audit(env, user.sub, 'update', 'rc', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
+
       // CRUD generico
       if (TABLES[seg[0]]){
         const table = TABLES[seg[0]];
@@ -868,5 +897,5 @@ export default {
   }
 };
 
-// Exporta as regras puras (isolamento, alertas, KPIs) para teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker };
+// Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC };

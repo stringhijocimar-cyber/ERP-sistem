@@ -71,6 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **RC: `tipo` + `WBS` obrigatórios** (Onda 1 do plano de verificação): a
+  requisição exige classificação de gasto (Material/Serviço/Equipamento,
+  tolerando acento/caixa → canônico) e vínculo WBS, fechando o gargalo de
+  rastreabilidade custo→contrato→projeto. Bloqueio no `POST`/`PUT` (não permite
+  remover WBS nem gravar tipo inválido). **Paridade Express + Worker** +
+  campos no formulário do front. Coberto por testes (RC compliance + `normalizarTipoRC`).
 - ✅ **Dashboard BI** (`GET /api/bi`): KPIs gerenciais consolidados — exposição
   financeira (a pagar / vencido / a vencer / pago), governança do gate (taxa de
   bloqueio via trilha de logs), homologação e score de fornecedores, taxa de
