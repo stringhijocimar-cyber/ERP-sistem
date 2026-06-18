@@ -1000,9 +1000,28 @@ app.get('/api/mapas', requireAuth, (req, res) => {
   res.json(ok(rows))
 })
 
+// Concorrência mínima: compras acima do limiar exigem N cotações; exceção só
+// com justificativa + Diretor (registrada na trilha). Pura (espelhada no Worker).
+const CONCORRENCIA_VALOR_MIN = parseFloat(process.env.CONCORRENCIA_VALOR_MIN) || 10000
+const CONCORRENCIA_MIN_COTACOES = parseInt(process.env.CONCORRENCIA_MIN_COTACOES) || 3
+function avaliarConcorrencia({ valor = 0, numCotacoes = 0, justificativa = '', perfil = '' } = {}) {
+  if ((Number(valor) || 0) <= CONCORRENCIA_VALOR_MIN) return { ok: true }
+  if ((Number(numCotacoes) || 0) >= CONCORRENCIA_MIN_COTACOES) return { ok: true }
+  const ehDiretor = perfil === 'diretor' || perfil === 'admin'
+  if (String(justificativa || '').trim() && ehDiretor) return { ok: true, excecao: true }
+  return { ok: false, motivo: `Compra acima de R$ ${CONCORRENCIA_VALOR_MIN} exige ${CONCORRENCIA_MIN_COTACOES} cotações (recebidas: ${Number(numCotacoes) || 0}). Exceção requer justificativa e aprovação de Diretor.` }
+}
+
 app.post('/api/mapas', requireAuth, (req, res) => {
   const { rfq_id, cotacao_vencedora_id, fornecedor_vencedor_id, valor_aprovado, economia_gerada, justificativa } = req.body
   if (!rfq_id || !cotacao_vencedora_id) return res.status(400).json(err('RFQ e cotação vencedora obrigatórios'))
+  // Compliance: concorrência mínima para compras acima do limiar.
+  const numCotacoes = db.prepare(`SELECT COUNT(*) as n FROM cotacoes WHERE rfq_id = ?`).get(rfq_id).n
+  const conc = avaliarConcorrencia({ valor: valor_aprovado || 0, numCotacoes, justificativa, perfil: req.user.perfil })
+  if (!conc.ok) {
+    log(req.user.usuario_id, req.user.nome, 'concorrencia_bloqueada', 'mapas', conc.motivo)
+    return res.status(409).json(err(conc.motivo, 409))
+  }
   const rfq = db.prepare(`SELECT numero FROM rfq WHERE id = ?`).get(rfq_id)
   const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fornecedor_vencedor_id)
   const numero = nextMapa()
@@ -1011,6 +1030,7 @@ app.post('/api/mapas', requireAuth, (req, res) => {
      VALUES(?,?,?,?,?,?,?,?,?,?)`
   ).run(numero, rfq_id, rfq?.numero, cotacao_vencedora_id, fornecedor_vencedor_id, f?.nome, 'Em análise', valor_aprovado || 0, economia_gerada || 0, justificativa)
   db.prepare(`UPDATE cotacoes SET vencedor = 1 WHERE id = ?`).run(cotacao_vencedora_id)
+  if (conc.excecao) log(req.user.usuario_id, req.user.nome, 'concorrencia_excecao', 'mapas', `Exceção de concorrência (${numCotacoes} cotação(ões)) aprovada por Diretor: ${justificativa}`)
   const mapa = db.prepare(`SELECT * FROM mapas_comparativos WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'mapas', `Mapa criado: ${numero}`)
   res.status(201).json(ok(mapa))

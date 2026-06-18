@@ -71,6 +71,11 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Concorrência mínima** (Onda 1): a criação do mapa comparativo bloqueia
+  compras acima de R$ 10.000 com menos de 3 cotações; exceção apenas com
+  justificativa **e** perfil Diretor/admin, registrada na trilha de auditoria
+  (`concorrencia_excecao`). Limiares por env. **Paridade Express + Worker**
+  (helper puro `avaliarConcorrencia`). Coberto por testes.
 - ✅ **RC: `tipo` + `WBS` obrigatórios** (Onda 1 do plano de verificação): a
   requisição exige classificação de gasto (Material/Serviço/Equipamento,
   tolerando acento/caixa → canônico) e vínculo WBS, fechando o gargalo de
