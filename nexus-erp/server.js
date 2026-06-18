@@ -113,6 +113,11 @@ ensureColumns('requisicoes_compra', [
 ensureColumns('ordens_servico', [
   ['wbs', 'wbs TEXT'],
 ])
+// SSMA: encerrar incidente exige RCA (causa raiz + plano de ação).
+ensureColumns('ssma_ocorrencias', [
+  ['causa_raiz', 'causa_raiz TEXT'],
+  ['plano_acao', 'plano_acao TEXT'],
+])
 // Gate de pagamento precisa de NF e origem na conta a pagar.
 ensureColumns('contas_pagar', [
   ['nota_fiscal', 'nota_fiscal TEXT'],
@@ -1404,6 +1409,39 @@ app.post('/api/ssma', requireAuth, (req, res) => {
      VALUES(?,?,?,?,?,?,?,?,?,?)`
   ).run(numero, tipo, descricao, local, gravidade || 'Baixa', 'Aberta', req.user.usuario_id, req.user.nome, data_ocorrencia, acoes_corretivas)
   res.status(201).json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+// RCA completo = causa raiz + plano de ação preenchidos. Pura (espelhada no Worker).
+function rcaCompleto({ causa_raiz, plano_acao } = {}) {
+  return !!(String(causa_raiz || '').trim() && String(plano_acao || '').trim())
+}
+
+// Atualiza a ocorrência (inclui preencher a RCA antes do encerramento).
+app.put('/api/ssma/:id', requireAuth, (req, res) => {
+  const oc = db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)
+  if (!oc) return res.status(404).json(err('Ocorrência não encontrada'))
+  const b = req.body || {}
+  db.prepare(`UPDATE ssma_ocorrencias SET tipo=?, descricao=?, local=?, gravidade=?, data_ocorrencia=?, acoes_corretivas=?, causa_raiz=?, plano_acao=? WHERE id=?`)
+    .run(b.tipo ?? oc.tipo, b.descricao ?? oc.descricao, b.local ?? oc.local, b.gravidade ?? oc.gravidade,
+      b.data_ocorrencia ?? oc.data_ocorrencia, b.acoes_corretivas ?? oc.acoes_corretivas,
+      b.causa_raiz ?? oc.causa_raiz, b.plano_acao ?? oc.plano_acao, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)))
+})
+
+// Encerramento bloqueado sem RCA (causa raiz + plano de ação) → reduz reincidência.
+app.post('/api/ssma/:id/encerrar', requireAuth, (req, res) => {
+  const oc = db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)
+  if (!oc) return res.status(404).json(err('Ocorrência não encontrada'))
+  if (oc.status === 'Encerrada') return res.status(409).json(err('Ocorrência já encerrada', 409))
+  const causa_raiz = req.body?.causa_raiz ?? oc.causa_raiz
+  const plano_acao = req.body?.plano_acao ?? oc.plano_acao
+  if (!rcaCompleto({ causa_raiz, plano_acao })) {
+    return res.status(400).json(err('Encerramento exige RCA: informe a causa raiz e o plano de ação'))
+  }
+  db.prepare(`UPDATE ssma_ocorrencias SET status='Encerrada', data_resolucao=datetime('now'), causa_raiz=?, plano_acao=? WHERE id=?`)
+    .run(causa_raiz, plano_acao, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'ssma_encerrar', 'ssma_ocorrencias', `Ocorrência ${oc.numero} encerrada com RCA`)
+  res.json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)))
 })
 
 // ════════════════════════════════════════════════════════════

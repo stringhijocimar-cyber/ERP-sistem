@@ -95,6 +95,11 @@ function avaliarConcorrencia({ valor = 0, numCotacoes = 0, justificativa = '', p
   return { ok: false, motivo: `Compra acima de R$ ${valorMin} exige ${minCotacoes} cotacoes (recebidas: ${Number(numCotacoes) || 0}). Excecao requer justificativa e aprovacao de Diretor.` };
 }
 
+// SSMA: RCA completo = causa raiz + plano de ação preenchidos. Pura (espelha o Express).
+function rcaCompleto({ causa_raiz, plano_acao } = {}){
+  return !!(String(causa_raiz || '').trim() && String(plano_acao || '').trim());
+}
+
 // ===== Central de Alertas: montagem pura (espelha coletarAlertas do Express) =====
 const _SEV_PESO = { alta: 3, media: 2, baixa: 1 };
 const _hojeStr = () => new Date().toISOString().slice(0, 10);
@@ -930,6 +935,19 @@ export default {
         return r ? J(r) : E('nao encontrado', 404);
       }
 
+      // SSMA — encerramento bloqueado sem RCA (causa raiz + plano de ação)
+      if (seg[0]==='ssma' && seg[2]==='encerrar' && method==='POST'){
+        const oc = await getDoc(env, 'ssma', seg[1]);
+        if (!oc) return E('Ocorrencia nao encontrada', 404);
+        if (oc.status === 'Encerrada') return E('Ocorrencia ja encerrada', 409);
+        const causa_raiz = (body.causa_raiz !== undefined) ? body.causa_raiz : oc.causa_raiz;
+        const plano_acao = (body.plano_acao !== undefined) ? body.plano_acao : oc.plano_acao;
+        if (!rcaCompleto({ causa_raiz, plano_acao })) return E('Encerramento exige RCA: informe a causa raiz e o plano de acao', 400);
+        const r = await updateDoc(env, 'ssma', seg[1], { status: 'Encerrada', data_resolucao: new Date().toISOString(), causa_raiz, plano_acao });
+        await audit(env, user.sub, 'ssma_encerrar', 'ssma', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
+
       // Mapa comparativo — concorrência mínima (compliance, espelha o Express)
       if (seg[0]==='mapas' && !seg[1] && method==='POST'){
         if (!body.rfq_id || !body.cotacao_vencedora_id) return E('RFQ e cotacao vencedora obrigatorios', 400);
@@ -965,4 +983,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto };
