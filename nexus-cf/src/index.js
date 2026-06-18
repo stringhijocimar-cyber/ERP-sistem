@@ -85,6 +85,16 @@ function normalizarTipoRC(v){
   return null;
 }
 
+// Concorrência mínima: compras acima do limiar exigem N cotações; exceção só
+// com justificativa + Diretor. Pura (espelha o Express).
+function avaliarConcorrencia({ valor = 0, numCotacoes = 0, justificativa = '', perfil = '', valorMin = 10000, minCotacoes = 3 } = {}){
+  if ((Number(valor) || 0) <= valorMin) return { ok: true };
+  if ((Number(numCotacoes) || 0) >= minCotacoes) return { ok: true };
+  const ehDiretor = perfil === 'diretor' || perfil === 'admin';
+  if (String(justificativa || '').trim() && ehDiretor) return { ok: true, excecao: true };
+  return { ok: false, motivo: `Compra acima de R$ ${valorMin} exige ${minCotacoes} cotacoes (recebidas: ${Number(numCotacoes) || 0}). Excecao requer justificativa e aprovacao de Diretor.` };
+}
+
 // ===== Central de Alertas: montagem pura (espelha coletarAlertas do Express) =====
 const _SEV_PESO = { alta: 3, media: 2, baixa: 1 };
 const _hojeStr = () => new Date().toISOString().slice(0, 10);
@@ -920,6 +930,22 @@ export default {
         return r ? J(r) : E('nao encontrado', 404);
       }
 
+      // Mapa comparativo — concorrência mínima (compliance, espelha o Express)
+      if (seg[0]==='mapas' && !seg[1] && method==='POST'){
+        if (!body.rfq_id || !body.cotacao_vencedora_id) return E('RFQ e cotacao vencedora obrigatorios', 400);
+        const rfq = await getDoc(env, 'rfq', body.rfq_id);
+        const numCotacoes = (rfq && Array.isArray(rfq.cotacoes)) ? rfq.cotacoes.length : (Number(body.num_cotacoes) || 0);
+        const conc = avaliarConcorrencia({
+          valor: body.valor_aprovado || 0, numCotacoes, justificativa: body.justificativa, perfil: user.role,
+          valorMin: parseFloat(env.CONCORRENCIA_VALOR_MIN) || 10000, minCotacoes: parseInt(env.CONCORRENCIA_MIN_COTACOES) || 3,
+        });
+        if (!conc.ok){ await audit(env, user.sub, 'concorrencia_bloqueada', 'mapas', null, { motivo: conc.motivo }); return E(conc.motivo, 409); }
+        const r = await createDoc(env, 'mapas', { ...body, status: 'Em análise' });
+        if (conc.excecao) await audit(env, user.sub, 'concorrencia_excecao', 'mapas', r.id, { numCotacoes, justificativa: body.justificativa });
+        await audit(env, user.sub, 'create', 'mapas', r.id, {});
+        return J(r);
+      }
+
       // CRUD generico
       if (TABLES[seg[0]]){
         const table = TABLES[seg[0]];
@@ -939,4 +965,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia };
