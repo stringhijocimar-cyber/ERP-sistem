@@ -406,6 +406,78 @@ app.post('/api/lgpd/retencao/fornecedores/executar', requireAuth, requireRole('a
   res.json(ok({ anonimizados: n, politica_meses: RETENCAO_FORNECEDOR_MESES }))
 })
 
+// ════════════════════════════════════════════════════════════
+// CENTRAL DE ALERTAS — consolida pendências acionáveis dos módulos
+// num único feed, ordenado por severidade. Fontes 100% server-side.
+// ════════════════════════════════════════════════════════════
+const SEV_PESO = { alta: 3, media: 2, baixa: 1 }
+function coletarAlertas({ dias = 7, isAdmin = false } = {}) {
+  const hoje = new Date().toISOString().slice(0, 10)
+  const limite = new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10)
+  const alertas = []
+
+  // 1) Contas a pagar VENCIDAS (dinheiro em atraso) → severidade alta.
+  for (const c of db.prepare(
+    `SELECT id, numero, descricao, valor, data_vencimento FROM contas_pagar
+      WHERE status IN ('Pendente','Aprovado','Vencido')
+        AND data_vencimento IS NOT NULL AND date(data_vencimento) < date(?)
+      ORDER BY data_vencimento ASC`
+  ).all(hoje)) {
+    alertas.push({ tipo: 'conta_vencida', severidade: 'alta', modulo: 'Financeiro',
+      titulo: `Conta vencida: ${c.numero}`, descricao: `${c.descricao || ''} — venc. ${c.data_vencimento}`,
+      valor: c.valor, data: c.data_vencimento, ref: c.id })
+  }
+
+  // 2) Contas a VENCER na janela (próximos N dias) → severidade média.
+  for (const c of db.prepare(
+    `SELECT id, numero, descricao, valor, data_vencimento FROM contas_pagar
+      WHERE status IN ('Pendente','Aprovado') AND data_vencimento IS NOT NULL
+        AND date(data_vencimento) >= date(?) AND date(data_vencimento) <= date(?)
+      ORDER BY data_vencimento ASC`
+  ).all(hoje, limite)) {
+    alertas.push({ tipo: 'conta_a_vencer', severidade: 'media', modulo: 'Financeiro',
+      titulo: `Conta a vencer: ${c.numero}`, descricao: `${c.descricao || ''} — venc. ${c.data_vencimento}`,
+      valor: c.valor, data: c.data_vencimento, ref: c.id })
+  }
+
+  // 3) Entregas ATRASADAS (pedido enviado, prazo estourado, não recebido) → alta.
+  for (const p of db.prepare(
+    `SELECT id, numero, fornecedor_nome, enviado_em, prazo_entrega FROM pedidos_compra
+      WHERE enviado_em IS NOT NULL
+        AND status NOT IN ('Entregue','Recebido','Cancelado','Concluído')
+        AND date(enviado_em, '+' || COALESCE(prazo_entrega,7) || ' days') < date(?)
+      ORDER BY enviado_em ASC`
+  ).all(hoje)) {
+    alertas.push({ tipo: 'entrega_atrasada', severidade: 'alta', modulo: 'Compras',
+      titulo: `Entrega atrasada: ${p.numero}`, descricao: `${p.fornecedor_nome || ''} — enviado ${p.enviado_em}, prazo ${p.prazo_entrega || 7}d`,
+      data: p.enviado_em, ref: p.id })
+  }
+
+  // 4) Retenção LGPD pendente — dado sensível, só para admin → média.
+  if (isAdmin) {
+    const venc = _fornecedoresVencidos()
+    if (venc.length) {
+      alertas.push({ tipo: 'lgpd_retencao', severidade: 'media', modulo: 'LGPD',
+        titulo: `Retenção LGPD: ${venc.length} fornecedor(es) a anonimizar`,
+        descricao: `Inativos além de ${RETENCAO_FORNECEDOR_MESES} meses, ainda não anonimizados.`,
+        valor: venc.length, ref: 'lgpd' })
+    }
+  }
+
+  alertas.sort((a, b) => (SEV_PESO[b.severidade] || 0) - (SEV_PESO[a.severidade] || 0))
+  return alertas
+}
+
+app.get('/api/alertas', requireAuth, (req, res) => {
+  // Feed interno: fornecedor (portal) não acessa a central de alertas.
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso à central de alertas', 403))
+  const dias = Math.max(1, Math.min(parseInt(req.query.dias) || 7, 90))
+  const alertas = coletarAlertas({ dias, isAdmin: req.user.perfil === 'admin' })
+  const resumo = { total: alertas.length, alta: 0, media: 0, baixa: 0 }
+  for (const a of alertas) resumo[a.severidade] = (resumo[a.severidade] || 0) + 1
+  res.json(ok({ resumo, dias, alertas }))
+})
+
 // Consulta a bureau de crédito (provedor por env; mock por padrão).
 app.post('/api/credito/consultar', requireAuth, async (req, res) => {
   try {
