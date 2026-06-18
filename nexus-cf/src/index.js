@@ -116,6 +116,57 @@ function montarAlertasWorker({ contas = [], pedidos = [], vencidosLGPD = [], dia
   return alertas;
 }
 
+// ===== Dashboard BI: KPIs gerenciais (espelha coletarKPIs do Express) =====
+const _ativo = f => f.ativo !== 0 && f.ativo !== '0' && f.ativo !== false;
+// Recebe documentos já carregados + contagens do gate (audit_log). Sem I/O.
+function montarKPIsWorker({ contas = [], pedidos = [], fornecedores = [], bloqueios = 0, liberados = 0, vencidosLGPD = [], dias = 30, hoje = _hojeStr(), isAdmin = false, meses = 60 } = {}){
+  const limite = _addDias(hoje, dias);
+  let aPagarV = 0, aPagarQ = 0, vencV = 0, vencQ = 0, avV = 0, avQ = 0, pagoV = 0;
+  for (const c of contas){
+    const venc = (c.vencimento || c.data_vencimento || '').slice(0, 10);
+    const val = Number(c.valor) || 0;
+    if (c.status === 'Pago'){ pagoV += val; continue; }
+    if (['Pendente', 'Aprovado'].includes(c.status)){ aPagarV += val; aPagarQ++; }
+    if (['Pendente', 'Aprovado', 'Vencido'].includes(c.status) && venc && venc < hoje){ vencV += val; vencQ++; }
+    if (['Pendente', 'Aprovado'].includes(c.status) && venc && venc >= hoje && venc <= limite){ avV += val; avQ++; }
+  }
+
+  const ativos = fornecedores.filter(_ativo);
+  const score = ativos.length ? ativos.reduce((s, f) => s + (Number(f.score_medio) || 0), 0) / ativos.length : 0;
+  const statusMap = {};
+  for (const f of ativos){ const s = f.status || '—'; statusMap[s] = (statusMap[s] || 0) + 1; }
+  const porStatus = Object.entries(statusMap).map(([status, n]) => ({ status, n }));
+
+  let pcVal = 0, pcEntreg = 0;
+  for (const p of pedidos){
+    if (p.status !== 'Cancelado') pcVal += Number(p.valor_total != null ? p.valor_total : p.valor) || 0;
+    if (['Entregue', 'Recebido', 'Concluído'].includes(p.status)) pcEntreg++;
+  }
+
+  const alertas = montarAlertasWorker({ contas, pedidos, vencidosLGPD, dias, hoje, isAdmin, meses });
+  const sevs = { total: alertas.length, alta: 0, media: 0 };
+  for (const a of alertas) if (sevs[a.severidade] != null) sevs[a.severidade]++;
+
+  const totGate = bloqueios + liberados;
+  return {
+    gerado_em: new Date().toISOString(),
+    dias,
+    financeiro: {
+      a_pagar_valor: aPagarV, a_pagar_qtd: aPagarQ,
+      vencido_valor: vencV, vencido_qtd: vencQ,
+      a_vencer_valor: avV, a_vencer_qtd: avQ,
+      pago_valor: pagoV,
+    },
+    gate: { bloqueios, liberados, taxa_bloqueio: totGate ? +(bloqueios / totGate).toFixed(3) : 0 },
+    fornecedores: { ativos: ativos.length, score_medio: +(score || 0).toFixed(2), por_status: porStatus },
+    compras: {
+      pc_valor_ativo: pcVal, pc_total: pedidos.length, pc_entregues: pcEntreg,
+      pc_entregues_pct: pedidos.length ? +((pcEntreg / pedidos.length) * 100).toFixed(1) : 0,
+    },
+    alertas: sevs,
+  };
+}
+
 // ===== Auditoria (append-only + hash encadeado, tamper-evident) =====
 async function sha256hex(str){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -672,6 +723,23 @@ export default {
         return J({ resumo, dias, alertas });
       }
 
+      // ---- Dashboard BI (KPIs gerenciais consolidados) ----
+      if (seg[0]==='bi' && method==='GET'){
+        if (user.role === 'fornecedor') return E('Sem acesso ao painel gerencial', 403);
+        const dias = Math.max(1, Math.min(parseInt(url.searchParams.get('dias')) || 30, 365));
+        const isAdmin = user.role === 'admin';
+        const all = { searchParams: new URLSearchParams() };
+        const contas = await listDocs(env, 'contas_pagar', all);
+        const pedidos = await listDocs(env, 'pedidos', all);
+        const fornecedores = await listDocs(env, 'fornecedores', all);
+        const cnt = async (acao) => { const r = await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action=?").bind(acao).first(); return r ? r.n : 0; };
+        const bloqueios = await cnt('payment_blocked');
+        const liberados = await cnt('payment_release');
+        let vencidosLGPD = [], meses = 60;
+        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env); vencidosLGPD = r.vencidos; meses = r.meses; }
+        return J(montarKPIsWorker({ contas, pedidos, fornecedores, bloqueios, liberados, vencidosLGPD, dias, isAdmin, meses }));
+      }
+
       // Logs de aplicacao
       if (seg[0]==='logs'){
         if (method==='POST'){
@@ -800,5 +868,5 @@ export default {
   }
 };
 
-// Exporta as regras puras (isolamento do portal + montagem de alertas) p/ teste.
-export { portalScope, pedidoPertence, montarAlertasWorker };
+// Exporta as regras puras (isolamento, alertas, KPIs) para teste unitário.
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker };
