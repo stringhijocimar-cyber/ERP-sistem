@@ -103,6 +103,12 @@ ensureColumns('pedidos_compra', [
   ['nf_numero', 'nf_numero TEXT'],
   ['nf_valor', 'nf_valor REAL'],
 ])
+// Compliance de compras: a RC precisa de tipo (classificação de gasto) e de
+// vínculo WBS (rastreabilidade custo → contrato → projeto).
+ensureColumns('requisicoes_compra', [
+  ['tipo', 'tipo TEXT'],
+  ['wbs', 'wbs TEXT'],
+])
 // Gate de pagamento precisa de NF e origem na conta a pagar.
 ensureColumns('contas_pagar', [
   ['nota_fiscal', 'nota_fiscal TEXT'],
@@ -819,14 +825,27 @@ app.get('/api/rc/:id', requireAuth, (req, res) => {
   res.json(ok({ ...rc, itens }))
 })
 
+// Tipos de RC aceitos (classificação obrigatória do gasto). Aceita acento/caixa.
+function normalizarTipoRC(v) {
+  const k = String(v || '').trim().toLowerCase()
+  if (k === 'material') return 'Material'
+  if (k === 'servico' || k === 'servi\u00e7o' || k === 'servi\u00e7os' || k === 'servicos') return 'Servi\u00e7o'
+  if (k === 'equipamento') return 'Equipamento'
+  return null
+}
+
 app.post('/api/rc', requireAuth, (req, res) => {
-  const { os_id, os_numero, departamento, prioridade, observacoes, itens = [] } = req.body
+  const { os_id, os_numero, departamento, prioridade, observacoes, tipo, wbs, itens = [] } = req.body
+  // Compliance: tipo válido e WBS são obrigatórios para rastreabilidade de custo.
+  const tipoCanon = normalizarTipoRC(tipo)
+  if (!tipoCanon) return res.status(400).json(err('Tipo da RC obrigatório: Material, Serviço ou Equipamento'))
+  if (!wbs || !String(wbs).trim()) return res.status(400).json(err('Vínculo WBS obrigatório na RC (rastreabilidade de custo)'))
   const numero = nextRC()
   const valorTotal = itens.reduce((s, i) => s + ((i.quantidade || 1) * (i.valor_unitario_estimado || 0)), 0)
   const r = db.prepare(
-    `INSERT INTO requisicoes_compra(numero, os_id, os_numero, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_total, observacoes)
-     VALUES(?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, os_id || null, os_numero, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valorTotal, observacoes)
+    `INSERT INTO requisicoes_compra(numero, os_id, os_numero, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_total, observacoes, tipo, wbs)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, os_id || null, os_numero, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valorTotal, observacoes, tipoCanon, String(wbs).trim())
   const rcId = r.lastInsertRowid
   for (const item of itens) {
     const vt = (item.quantidade || 1) * (item.valor_unitario_estimado || 0)
@@ -839,11 +858,22 @@ app.post('/api/rc', requireAuth, (req, res) => {
 })
 
 app.put('/api/rc/:id', requireAuth, (req, res) => {
+  const cur = db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)
+  if (!cur) return res.status(404).json(err('RC não encontrada'))
   const { status, departamento, prioridade, observacoes } = req.body
-  db.prepare(`UPDATE requisicoes_compra SET status=?,departamento=?,prioridade=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
-    .run(status, departamento, prioridade, observacoes, req.params.id)
-  const rc = db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)
-  res.json(ok(rc))
+  // tipo/WBS não podem ser removidos; se enviados, devem permanecer válidos.
+  let tipo = cur.tipo, wbs = cur.wbs
+  if (req.body.tipo !== undefined) {
+    tipo = normalizarTipoRC(req.body.tipo)
+    if (!tipo) return res.status(400).json(err('Tipo da RC inválido: use Material, Serviço ou Equipamento'))
+  }
+  if (req.body.wbs !== undefined) {
+    if (!String(req.body.wbs).trim()) return res.status(400).json(err('WBS não pode ser removida da RC'))
+    wbs = String(req.body.wbs).trim()
+  }
+  db.prepare(`UPDATE requisicoes_compra SET status=?,departamento=?,prioridade=?,observacoes=?,tipo=?,wbs=?,updated_at=datetime('now') WHERE id=?`)
+    .run(status, departamento, prioridade, observacoes, tipo, wbs, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)))
 })
 
 // ════════════════════════════════════════════════════════════
