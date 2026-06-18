@@ -84,7 +84,7 @@ contrato vencido sem aviso, incidente sem causa raiz (reincidência), e — o ma
 | **Contratos** | **Alertas vencimento 90/60/30** | ✅ **Validado** | Alta | Baixo | feito | Contrato vencido | Contrato a vencer → alerta | Teste `alertas_contrato` | % avisados | Contratos |
 | **Contratos** | **Checklist de aceite** | 🟥 **AUSENTE** | Média | Médio | Onda 2 | Aceite incompleto | Aceitar sem itens → bloqueio | (a criar) | % checklist | Contratos |
 | **Contratos** | **Controle de seguro vigente** | 🟥 **AUSENTE** | Média | Médio | Onda 2 | Risco sem cobertura | Contrato sem seguro → alerta | (a criar) | % c/ seguro | Contratos |
-| **Financeiro** | **Alçada por valor (R$50k→Diretor)** | 🟥 **AUSENTE** | Alta | Baixo | Onda 1 | Pagto alto sem aprovação | Pagar >50k sem Diretor → bloqueio | (a criar) | % >50k aprovados | Financeiro |
+| **Financeiro** | **Alçada por valor (R$50k→Diretor)** | ✅ **Validado** | Alta | Baixo | feito | Pagto alto sem aprovação | Pagar >50k sem Diretor → 409 | Teste `alcada` | % >50k aprovados | Financeiro |
 | **Financeiro** | **AP vencido c/ justificativa** | 🟥 **AUSENTE** | Média | Baixo | Onda 1 | Inadimplência oculta | Reabrir AP vencido exige justificativa | (a criar) | % AP>30d | Financeiro |
 | **Qualidade** | **Validação CNPJ Receita/SEFAZ** | 🟥 **AUSENTE** | Alta | Médio | Onda 2 | Fornecedor irregular | Cadastrar CNPJ irregular → bloqueio | (a criar) | % irregulares | Qualidade |
 | **Qualidade** | **Detecção de duplicatas** | 🟥 **AUSENTE** | Média | Médio | Onda 2 | Cadastro duplicado | Duplicar CNPJ → alerta | (a criar) | nº duplicatas | Qualidade |

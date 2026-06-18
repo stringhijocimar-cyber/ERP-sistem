@@ -99,6 +99,10 @@ function avaliarConcorrencia({ valor = 0, numCotacoes = 0, justificativa = '', p
 function rcaCompleto({ causa_raiz, plano_acao } = {}){
   return !!(String(causa_raiz || '').trim() && String(plano_acao || '').trim());
 }
+// Alçada de pagamento: acima do limiar exige aprovação de Diretor. Pura (espelha o Express).
+function alcadaPendente({ valor = 0, aprovadaPor = null, limite = 50000 } = {}){
+  return (Number(valor) || 0) > limite && !String(aprovadaPor || '').trim();
+}
 
 // ===== Central de Alertas: montagem pura (espelha coletarAlertas do Express) =====
 const _SEV_PESO = { alta: 3, media: 2, baixa: 1 };
@@ -304,6 +308,11 @@ function gateContaPagar(c, env){
   if ((env.ENFORCE_ORIGIN ?? '1') !== '0'){
     const origem = c.pedido_id || (c.contrato_id && c.contrato_id !== 'Geral' && c.contrato_id !== '—');
     if (!origem) motivos.push('sem pedido ou contrato de origem (lastro)');
+  }
+  // Alçada por valor: acima do limiar exige aprovação prévia de Diretor.
+  const limiteAlcada = parseFloat(env && env.ALCADA_PAGAMENTO_VALOR) || 50000;
+  if (alcadaPendente({ valor: c.valor, aprovadaPor: c.alcada_aprovada_por, limite: limiteAlcada })){
+    motivos.push(`acima de R$ ${limiteAlcada} sem aprovacao de alcada (Diretor Financeiro)`);
   }
   return { ok: motivos.length === 0, motivos };
 }
@@ -845,6 +854,15 @@ export default {
       // CONTAS A PAGAR (com GATE de pagamento)
       if (seg[0]==='contas-pagar'){
         if (seg[2]==='pagar' && method==='POST') return await pagarConta(env, seg[1], user);
+        // Aprovação de alçada por Diretor — distinta do pagamento (segregação).
+        if (seg[2]==='aprovar-alcada' && method==='POST'){
+          requireRole(user, ['admin','diretor']);
+          const conta = await getDoc(env, 'contas_pagar', seg[1]);
+          if (!conta) return E('conta nao encontrada', 404);
+          const r = await updateDoc(env, 'contas_pagar', seg[1], { alcada_aprovada_por: user.name, alcada_aprovada_em: new Date().toISOString() });
+          await audit(env, user.sub, 'alcada_aprovada', 'contas_pagar', seg[1], {});
+          return r ? J(r) : E('nao encontrado', 404);
+        }
         if (method==='GET' && !seg[1]) return J(await listDocs(env,'contas_pagar',url));
         if (method==='GET' && seg[1]){ const d=await getDoc(env,'contas_pagar',seg[1]); return d?J(d):E('nao encontrado',404); }
         if (method==='POST'){ const r=await createDoc(env,'contas_pagar',body); await audit(env,user.sub,'create','contas_pagar',r.id,{}); return J(r); }
@@ -983,4 +1001,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente };

@@ -122,6 +122,9 @@ ensureColumns('ssma_ocorrencias', [
 ensureColumns('contas_pagar', [
   ['nota_fiscal', 'nota_fiscal TEXT'],
   ['contrato_id', 'contrato_id TEXT'],
+  // Alçada por valor: aprovação de Diretor para pagamentos acima do limiar.
+  ['alcada_aprovada_por', 'alcada_aprovada_por TEXT'],
+  ['alcada_aprovada_em', 'alcada_aprovada_em TEXT'],
 ])
 
 // Recebimento por item (alimenta o 3-way automaticamente).
@@ -1223,6 +1226,23 @@ app.post('/api/recebimentos', requireAuth, (req, res) => {
 
 // GATE DE PAGAMENTO: "nada paga sem lastro" + 3-way por item. Segregação: só
 // financeiro/admin. Bloqueios respondem 409 e ficam na trilha de auditoria.
+// Alçada de pagamento: acima do limiar exige aprovação de Diretor (segregação
+// do pagador). Pura (espelhada no Worker).
+const ALCADA_PAGAMENTO_VALOR = parseFloat(process.env.ALCADA_PAGAMENTO_VALOR) || 50000
+function alcadaPendente({ valor = 0, aprovadaPor = null, limite = ALCADA_PAGAMENTO_VALOR } = {}) {
+  return (Number(valor) || 0) > limite && !String(aprovadaPor || '').trim()
+}
+
+// Aprovação de alçada por Diretor — distinta do pagamento (segregação de funções).
+app.post('/api/contas-pagar/:id/aprovar-alcada', requireAuth, requireRole('admin', 'diretor'), (req, res) => {
+  const conta = db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)
+  if (!conta) return res.status(404).json(err('Conta não encontrada'))
+  db.prepare(`UPDATE contas_pagar SET alcada_aprovada_por=?, alcada_aprovada_em=datetime('now') WHERE id=?`)
+    .run(req.user.nome, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'alcada_aprovada', 'contas_pagar', `Alçada aprovada: ${conta.descricao} (R$ ${conta.valor})`)
+  res.json(ok(db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)))
+})
+
 app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
   const conta = db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)
   if (!conta) return res.status(404).json(err('Conta não encontrada'))
@@ -1233,6 +1253,10 @@ app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'finan
   if (!conta.nota_fiscal || conta.nota_fiscal === '—') motivos.push('sem nota fiscal')
   const origem = conta.pc_id || (conta.contrato_id && conta.contrato_id !== 'Geral' && conta.contrato_id !== '—')
   if (!origem) motivos.push('sem pedido ou contrato de origem (lastro)')
+  // Alçada por valor: acima do limiar exige aprovação prévia de Diretor.
+  if (alcadaPendente({ valor: conta.valor, aprovadaPor: conta.alcada_aprovada_por })) {
+    motivos.push(`acima de R$ ${ALCADA_PAGAMENTO_VALOR} sem aprovação de alçada (Diretor Financeiro)`)
+  }
   if (motivos.length) {
     log(req.user.usuario_id, req.user.nome, 'payment_blocked', 'contas_pagar', `Bloqueio: ${motivos.join('; ')}`)
     return res.status(409).json(err('Pagamento bloqueado: ' + motivos.join('; ')))
