@@ -71,6 +71,11 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Dashboard BI** (`GET /api/bi`): KPIs gerenciais consolidados — exposição
+  financeira (a pagar / vencido / a vencer / pago), governança do gate (taxa de
+  bloqueio via trilha de logs), homologação e score de fornecedores, taxa de
+  entrega de pedidos e alertas por severidade. Dados 100% server-side; fornecedor
+  barrado. Página com cartões + barras de progresso. Coberto por testes.
 - ✅ **Central de Alertas** (`GET /api/alertas`): feed único e priorizado por
   severidade reunindo contas vencidas/a vencer (janela configurável), entregas
   atrasadas (prazo do pedido estourado) e retenção LGPD pendente. Dados 100%

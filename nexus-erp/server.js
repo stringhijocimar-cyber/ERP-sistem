@@ -478,6 +478,75 @@ app.get('/api/alertas', requireAuth, (req, res) => {
   res.json(ok({ resumo, dias, alertas }))
 })
 
+// ════════════════════════════════════════════════════════════
+// DASHBOARD BI — KPIs gerenciais consolidados (exposição financeira,
+// governança do gate, homologação de fornecedores, alertas). Server-side.
+// ════════════════════════════════════════════════════════════
+function coletarKPIs({ dias = 30, isAdmin = false } = {}) {
+  const hoje = new Date().toISOString().slice(0, 10)
+  const limite = new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10)
+  const one = (sql, ...p) => db.prepare(sql).get(...p)
+
+  // Exposição financeira (Pendente/Aprovado = compromissado, ainda não pago).
+  const aPagar = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar WHERE status IN ('Pendente','Aprovado')`)
+  const vencido = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar
+      WHERE status IN ('Pendente','Aprovado','Vencido') AND data_vencimento IS NOT NULL AND date(data_vencimento) < date(?)`, hoje)
+  const aVencer = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar
+      WHERE status IN ('Pendente','Aprovado') AND data_vencimento IS NOT NULL
+        AND date(data_vencimento) >= date(?) AND date(data_vencimento) <= date(?)`, hoje, limite)
+  const pago = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar WHERE status = 'Pago'`)
+
+  // Governança do gate: bloqueios vs. pagamentos liberados (trilha de logs).
+  const bloqueios = one(`SELECT COUNT(*) n FROM logs_sistema WHERE acao = 'payment_blocked'`).n
+  const liberados = one(`SELECT COUNT(*) n FROM logs_sistema WHERE acao = 'Pagar' AND modulo = 'contas_pagar'`).n
+  const totGate = bloqueios + liberados
+
+  // Homologação e qualidade de fornecedores.
+  const fornAtivos = one(`SELECT COUNT(*) n, COALESCE(AVG(score_medio),0) score FROM fornecedores WHERE ativo = 1`)
+  const porStatus = db.prepare(`SELECT COALESCE(status,'—') status, COUNT(*) n FROM fornecedores WHERE ativo = 1 GROUP BY status`).all()
+
+  // Compras: valor comprometido em pedidos ativos e taxa de entrega.
+  const pc = one(`SELECT COUNT(*) tot,
+      COALESCE(SUM(CASE WHEN status != 'Cancelado' THEN valor_total ELSE 0 END),0) val,
+      SUM(CASE WHEN status IN ('Entregue','Recebido','Concluído') THEN 1 ELSE 0 END) entregues
+      FROM pedidos_compra`)
+
+  // Alertas por severidade (reusa o motor da central).
+  const alertas = coletarAlertas({ dias, isAdmin })
+  const sevs = { total: alertas.length, alta: 0, media: 0 }
+  for (const a of alertas) if (sevs[a.severidade] != null) sevs[a.severidade]++
+
+  return {
+    gerado_em: new Date().toISOString(),
+    dias,
+    financeiro: {
+      a_pagar_valor: aPagar.val, a_pagar_qtd: aPagar.qtd,
+      vencido_valor: vencido.val, vencido_qtd: vencido.qtd,
+      a_vencer_valor: aVencer.val, a_vencer_qtd: aVencer.qtd,
+      pago_valor: pago.val,
+    },
+    gate: {
+      bloqueios, liberados,
+      taxa_bloqueio: totGate ? +(bloqueios / totGate).toFixed(3) : 0,
+    },
+    fornecedores: {
+      ativos: fornAtivos.n, score_medio: +(fornAtivos.score || 0).toFixed(2),
+      por_status: porStatus,
+    },
+    compras: {
+      pc_valor_ativo: pc.val, pc_total: pc.tot, pc_entregues: pc.entregues || 0,
+      pc_entregues_pct: pc.tot ? +(((pc.entregues || 0) / pc.tot) * 100).toFixed(1) : 0,
+    },
+    alertas: sevs,
+  }
+}
+
+app.get('/api/bi', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao painel gerencial', 403))
+  const dias = Math.max(1, Math.min(parseInt(req.query.dias) || 30, 365))
+  res.json(ok(coletarKPIs({ dias, isAdmin: req.user.perfil === 'admin' })))
+})
+
 // Consulta a bureau de crédito (provedor por env; mock por padrão).
 app.post('/api/credito/consultar', requireAuth, async (req, res) => {
   try {
