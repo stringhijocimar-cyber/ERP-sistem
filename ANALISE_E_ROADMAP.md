@@ -71,6 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Alçada de pagamento >R$50k** (Onda 1 — conclui a onda): o gate de pagamento
+  bloqueia contas acima do limiar sem aprovação prévia de Diretor
+  (`POST /api/contas-pagar/:id/aprovar-alcada`, perfil diretor/admin — distinto
+  do pagador financeiro/admin, segregação de funções). Limiar por env
+  (`ALCADA_PAGAMENTO_VALOR`). **Paridade Express + Worker** (helper puro
+  `alcadaPendente`). Coberto por testes.
 - ✅ **SSMA: RCA obrigatório para encerrar** (Onda 1): `POST /api/ssma/:id/encerrar`
   bloqueia o encerramento de incidente sem causa raiz **e** plano de ação
   (reduz reincidência — gargalo dos 5 incidentes sem RCA). `PUT` permite
