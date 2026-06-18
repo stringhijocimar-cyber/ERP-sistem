@@ -75,7 +75,10 @@ posicionamento a perseguir.
   financeira (a pagar / vencido / a vencer / pago), governança do gate (taxa de
   bloqueio via trilha de logs), homologação e score de fornecedores, taxa de
   entrega de pedidos e alertas por severidade. Dados 100% server-side; fornecedor
-  barrado. Página com cartões + barras de progresso. Coberto por testes.
+  barrado. Página com cartões + barras de progresso. **Paridade Express + Worker**:
+  o Worker (nexus-cf) replica `/api/bi` sobre o modelo documento (gate via
+  `audit_log`), com a montagem extraída em função pura (`montarKPIsWorker`)
+  coberta por testes unitários.
 - ✅ **Central de Alertas** (`GET /api/alertas`): feed único e priorizado por
   severidade reunindo contas vencidas/a vencer (janela configurável), entregas
   atrasadas (prazo do pedido estourado) e retenção LGPD pendente. Dados 100%
