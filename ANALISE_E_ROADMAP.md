@@ -71,6 +71,11 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **SSMA: RCA obrigatório para encerrar** (Onda 1): `POST /api/ssma/:id/encerrar`
+  bloqueia o encerramento de incidente sem causa raiz **e** plano de ação
+  (reduz reincidência — gargalo dos 5 incidentes sem RCA). `PUT` permite
+  preencher a RCA antes; trilha registra o encerramento. **Paridade Express +
+  Worker** (helper puro `rcaCompleto`). Coberto por testes.
 - ✅ **Concorrência mínima** (Onda 1): a criação do mapa comparativo bloqueia
   compras acima de R$ 10.000 com menos de 3 cotações; exceção apenas com
   justificativa **e** perfil Diretor/admin, registrada na trilha de auditoria
