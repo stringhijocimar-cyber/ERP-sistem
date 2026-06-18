@@ -5,7 +5,7 @@
  */
 const SEV_COR = { alta: '#dc2626', media: '#d97706', baixa: '#2563eb' };
 const SEV_LABEL = { alta: 'Alta', media: 'Média', baixa: 'Baixa' };
-const MOD_ICON = { Financeiro: 'file-invoice-dollar', Compras: 'truck', LGPD: 'user-shield' };
+const MOD_ICON = { Financeiro: 'file-invoice-dollar', Compras: 'truck', LGPD: 'user-shield', Contratos: 'file-contract' };
 
 async function renderAlertas() {
   const main = document.getElementById('mainContent') || document.getElementById('main');

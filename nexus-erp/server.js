@@ -421,6 +421,18 @@ app.post('/api/lgpd/retencao/fornecedores/executar', requireAuth, requireRole('a
 // num único feed, ordenado por severidade. Fontes 100% server-side.
 // ════════════════════════════════════════════════════════════
 const SEV_PESO = { alta: 3, media: 2, baixa: 1 }
+// Antecedência de vencimento de contrato: vencido/≤30d → alta; ≤60d → média;
+// ≤90d → baixa; acima disso, sem alerta. Pura (espelhada no Worker).
+function classificarVencimentoContrato(dataFim, hoje = new Date().toISOString().slice(0, 10)) {
+  if (!dataFim) return null
+  const fim = String(dataFim).slice(0, 10)
+  const diasRest = Math.round((new Date(fim + 'T00:00:00Z') - new Date(hoje + 'T00:00:00Z')) / 864e5)
+  if (diasRest <= 30) return 'alta'
+  if (diasRest <= 60) return 'media'
+  if (diasRest <= 90) return 'baixa'
+  return null
+}
+
 function coletarAlertas({ dias = 7, isAdmin = false } = {}) {
   const hoje = new Date().toISOString().slice(0, 10)
   const limite = new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10)
@@ -472,6 +484,22 @@ function coletarAlertas({ dias = 7, isAdmin = false } = {}) {
         descricao: `Inativos além de ${RETENCAO_FORNECEDOR_MESES} meses, ainda não anonimizados.`,
         valor: venc.length, ref: 'lgpd' })
     }
+  }
+
+  // 5) Vencimento de contrato — antecedência 90/60/30 (severidade crescente).
+  const lim90 = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10)
+  for (const c of db.prepare(
+    `SELECT id, numero, titulo, fornecedor_nome, data_fim FROM contratos
+      WHERE status = 'Ativo' AND data_fim IS NOT NULL AND date(data_fim) <= date(?)
+      ORDER BY data_fim ASC`
+  ).all(lim90)) {
+    const sev = classificarVencimentoContrato(c.data_fim, hoje)
+    if (!sev) continue
+    const venc = c.data_fim < hoje
+    alertas.push({ tipo: 'contrato_vencimento', severidade: sev, modulo: 'Contratos',
+      titulo: `${venc ? 'Contrato vencido' : 'Contrato a vencer'}: ${c.numero}`,
+      descricao: `${c.titulo || c.fornecedor_nome || ''} — fim ${c.data_fim}`,
+      data: c.data_fim, ref: c.id })
   }
 
   alertas.sort((a, b) => (SEV_PESO[b.severidade] || 0) - (SEV_PESO[a.severidade] || 0))

@@ -81,7 +81,7 @@ contrato vencido sem aviso, incidente sem causa raiz (reincidência), e — o ma
 | **Compras** | **Bloqueio <3 cotações >R$10k** | 🟥 **AUSENTE** | Alta | Baixo | Onda 1 | Compra sem concorrência | Cotação 2 fornec. >10k → bloqueio | (a criar) | % c/ 3+ | Compras |
 | **Compras** | **Compra emergencial c/ aprovação Diretor** | 🟥 **AUSENTE** | Alta | Baixo | Onda 1 | Abuso de exceção | Emergencial sem Diretor → bloqueio | (a criar) | % emergenciais | Diretoria |
 | **Compras** | **Alerta RFQ aberta >15/30 dias** | 🟥 **AUSENTE** | Média | Baixo | Onda 1 | RFQ parada | RFQ antiga aparece em alertas | (a criar) | tempo médio RFQ | Compras |
-| **Contratos** | **Alertas vencimento 90/60/30** | 🟥 **AUSENTE** | Alta | Baixo | Onda 1 | Contrato vencido | Contrato a vencer aparece | (a criar) | % avisados | Contratos |
+| **Contratos** | **Alertas vencimento 90/60/30** | ✅ **Validado** | Alta | Baixo | feito | Contrato vencido | Contrato a vencer → alerta | Teste `alertas_contrato` | % avisados | Contratos |
 | **Contratos** | **Checklist de aceite** | 🟥 **AUSENTE** | Média | Médio | Onda 2 | Aceite incompleto | Aceitar sem itens → bloqueio | (a criar) | % checklist | Contratos |
 | **Contratos** | **Controle de seguro vigente** | 🟥 **AUSENTE** | Média | Médio | Onda 2 | Risco sem cobertura | Contrato sem seguro → alerta | (a criar) | % c/ seguro | Contratos |
 | **Financeiro** | **Alçada por valor (R$50k→Diretor)** | 🟥 **AUSENTE** | Alta | Baixo | Onda 1 | Pagto alto sem aprovação | Pagar >50k sem Diretor → bloqueio | (a criar) | % >50k aprovados | Financeiro |
