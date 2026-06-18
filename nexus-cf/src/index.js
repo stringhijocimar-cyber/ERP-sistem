@@ -89,9 +89,20 @@ function normalizarTipoRC(v){
 const _SEV_PESO = { alta: 3, media: 2, baixa: 1 };
 const _hojeStr = () => new Date().toISOString().slice(0, 10);
 const _addDias = (ymd, n) => new Date(new Date(ymd + 'T00:00:00Z').getTime() + n * 864e5).toISOString().slice(0, 10);
-// Recebe os documentos já carregados (contas, pedidos, vencidos LGPD) e devolve
-// o feed ordenado por severidade. Sem I/O — testável isoladamente.
-function montarAlertasWorker({ contas = [], pedidos = [], vencidosLGPD = [], dias = 7, hoje = _hojeStr(), isAdmin = false, meses = 60 } = {}){
+// Antecedência de vencimento de contrato: vencido/≤30d → alta; ≤60d → média;
+// ≤90d → baixa; acima disso, sem alerta. Pura (espelha o Express).
+function classificarVencimentoContrato(dataFim, hoje = _hojeStr()){
+  if (!dataFim) return null;
+  const fim = String(dataFim).slice(0, 10);
+  const diasRest = Math.round((new Date(fim + 'T00:00:00Z') - new Date(hoje + 'T00:00:00Z')) / 864e5);
+  if (diasRest <= 30) return 'alta';
+  if (diasRest <= 60) return 'media';
+  if (diasRest <= 90) return 'baixa';
+  return null;
+}
+// Recebe os documentos já carregados (contas, pedidos, contratos, vencidos LGPD)
+// e devolve o feed ordenado por severidade. Sem I/O — testável isoladamente.
+function montarAlertasWorker({ contas = [], pedidos = [], contratos = [], vencidosLGPD = [], dias = 7, hoje = _hojeStr(), isAdmin = false, meses = 60 } = {}){
   const limite = _addDias(hoje, dias);
   const alertas = [];
   for (const c of contas){
@@ -121,6 +132,16 @@ function montarAlertasWorker({ contas = [], pedidos = [], vencidosLGPD = [], dia
       titulo:`Retenção LGPD: ${vencidosLGPD.length} fornecedor(es) a anonimizar`,
       descricao:`Inativos além de ${meses} meses, ainda não anonimizados.`, valor:vencidosLGPD.length, ref:'lgpd' });
   }
+  for (const c of contratos){
+    if (c.status !== 'Ativo') continue;
+    const fim = (c.data_fim || '').slice(0, 10);
+    const sev = classificarVencimentoContrato(fim, hoje);
+    if (!sev) continue;
+    const venc = fim < hoje;
+    alertas.push({ tipo:'contrato_vencimento', severidade:sev, modulo:'Contratos',
+      titulo:`${venc ? 'Contrato vencido' : 'Contrato a vencer'}: ${c.numero || c.id}`,
+      descricao:`${c.titulo || c.fornecedor_nome || ''} — fim ${fim}`, data:fim, ref:c.id });
+  }
   alertas.sort((a, b) => (_SEV_PESO[b.severidade] || 0) - (_SEV_PESO[a.severidade] || 0));
   return alertas;
 }
@@ -128,7 +149,7 @@ function montarAlertasWorker({ contas = [], pedidos = [], vencidosLGPD = [], dia
 // ===== Dashboard BI: KPIs gerenciais (espelha coletarKPIs do Express) =====
 const _ativo = f => f.ativo !== 0 && f.ativo !== '0' && f.ativo !== false;
 // Recebe documentos já carregados + contagens do gate (audit_log). Sem I/O.
-function montarKPIsWorker({ contas = [], pedidos = [], fornecedores = [], bloqueios = 0, liberados = 0, vencidosLGPD = [], dias = 30, hoje = _hojeStr(), isAdmin = false, meses = 60 } = {}){
+function montarKPIsWorker({ contas = [], pedidos = [], fornecedores = [], contratos = [], bloqueios = 0, liberados = 0, vencidosLGPD = [], dias = 30, hoje = _hojeStr(), isAdmin = false, meses = 60 } = {}){
   const limite = _addDias(hoje, dias);
   let aPagarV = 0, aPagarQ = 0, vencV = 0, vencQ = 0, avV = 0, avQ = 0, pagoV = 0;
   for (const c of contas){
@@ -152,7 +173,7 @@ function montarKPIsWorker({ contas = [], pedidos = [], fornecedores = [], bloque
     if (['Entregue', 'Recebido', 'Concluído'].includes(p.status)) pcEntreg++;
   }
 
-  const alertas = montarAlertasWorker({ contas, pedidos, vencidosLGPD, dias, hoje, isAdmin, meses });
+  const alertas = montarAlertasWorker({ contas, pedidos, contratos, vencidosLGPD, dias, hoje, isAdmin, meses });
   const sevs = { total: alertas.length, alta: 0, media: 0 };
   for (const a of alertas) if (sevs[a.severidade] != null) sevs[a.severidade]++;
 
@@ -724,9 +745,10 @@ export default {
         const all = { searchParams: new URLSearchParams() };
         const contas = await listDocs(env, 'contas_pagar', all);
         const pedidos = await listDocs(env, 'pedidos', all);
+        const contratos = await listDocs(env, 'contratos', all);
         let vencidosLGPD = [], meses = 60;
         if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env); vencidosLGPD = r.vencidos; meses = r.meses; }
-        const alertas = montarAlertasWorker({ contas, pedidos, vencidosLGPD, dias, isAdmin, meses });
+        const alertas = montarAlertasWorker({ contas, pedidos, contratos, vencidosLGPD, dias, isAdmin, meses });
         const resumo = { total: alertas.length, alta: 0, media: 0, baixa: 0 };
         for (const a of alertas) resumo[a.severidade] = (resumo[a.severidade] || 0) + 1;
         return J({ resumo, dias, alertas });
@@ -741,12 +763,13 @@ export default {
         const contas = await listDocs(env, 'contas_pagar', all);
         const pedidos = await listDocs(env, 'pedidos', all);
         const fornecedores = await listDocs(env, 'fornecedores', all);
+        const contratos = await listDocs(env, 'contratos', all);
         const cnt = async (acao) => { const r = await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action=?").bind(acao).first(); return r ? r.n : 0; };
         const bloqueios = await cnt('payment_blocked');
         const liberados = await cnt('payment_release');
         let vencidosLGPD = [], meses = 60;
         if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env); vencidosLGPD = r.vencidos; meses = r.meses; }
-        return J(montarKPIsWorker({ contas, pedidos, fornecedores, bloqueios, liberados, vencidosLGPD, dias, isAdmin, meses }));
+        return J(montarKPIsWorker({ contas, pedidos, fornecedores, contratos, bloqueios, liberados, vencidosLGPD, dias, isAdmin, meses }));
       }
 
       // Logs de aplicacao
@@ -916,4 +939,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato };

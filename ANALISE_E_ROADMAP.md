@@ -82,6 +82,11 @@ posicionamento a perseguir.
   Bloqueio no `POST`/`PUT` (não remove WBS). **Paridade Express + Worker**; o
   front já tinha o bloqueio de WBS, agora com campo canônico `wbs` no sync.
   Coberto por testes (OS compliance).
+- ✅ **Alertas de vencimento de contrato 90/60/30** (Onda 1): contratos Ativos
+  com `data_fim` próxima entram na Central de Alertas com severidade crescente
+  (≤90d baixa, ≤60d média, ≤30d/vencido alta), também refletidos no Dashboard BI.
+  **Paridade Express + Worker** (helper puro `classificarVencimentoContrato`).
+  Coberto por testes.
 - ✅ **Dashboard BI** (`GET /api/bi`): KPIs gerenciais consolidados — exposição
   financeira (a pagar / vencido / a vencer / pago), governança do gate (taxa de
   bloqueio via trilha de logs), homologação e score de fornecedores, taxa de
