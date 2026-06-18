@@ -400,6 +400,10 @@ function loginAs(profile, emailLogin) {
     const navAlertas = document.getElementById('nav-alertas');
     if (navAlertas) navAlertas.style.display = profile === 'fornecedor' ? 'none' : 'block';
 
+    // Dashboard BI: painel gerencial interno — oculto para o fornecedor
+    const navBI = document.getElementById('nav-bi');
+    if (navBI) navBI.style.display = profile === 'fornecedor' ? 'none' : 'block';
+
     // Registra log
     logAction('Login', 'Sistema', `Acesso realizado: ${currentUser.name} (${profile})`);
 
@@ -528,6 +532,7 @@ const PAGE_META = {
   lgpd: { label: 'Conformidade LGPD', icon: 'user-shield' },
   portal: { label: 'Portal do Fornecedor', icon: 'store' },
   alertas: { label: 'Central de Alertas', icon: 'bell' },
+  bi: { label: 'Dashboard BI', icon: 'chart-line' },
   meu_painel: { label: 'Meu Painel de Pendências', icon: 'th-large' },
   equipe: { label: 'Equipe / Mobilização', icon: 'users' },
   frota: { label: 'Frota / Equipamentos', icon: 'truck' },
@@ -612,6 +617,7 @@ function navigate(page) {
     lgpd: function() { if(typeof renderLGPD === 'function') renderLGPD(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando LGPD...</p>'; },
     portal: function() { if(typeof renderPortal === 'function') renderPortal(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Portal...</p>'; },
     alertas: function() { if(typeof renderAlertas === 'function') renderAlertas(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Alertas...</p>'; },
+    bi: function() { if(typeof renderBI === 'function') renderBI(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando BI...</p>'; },
     meu_painel: function() { if(typeof renderMeuPainel === 'function') renderMeuPainel(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Meu Painel...</p>'; },
     equipe: renderEquipe,
     frota: renderFrota,
