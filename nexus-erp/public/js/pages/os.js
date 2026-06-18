@@ -1025,6 +1025,7 @@ function salvarNovaOS() {
     criadoEm: new Date().toISOString(),
     // Vínculo WBS
     wbs_id: wbsIdFinal || null,
+    wbs: wbsIdFinal || null, // campo canônico exigido pelo backend (compliance)
     wbs_nao_previsto: isNaoP,
     wbs_descricao: wbsItemFinal ? `${wbsItemFinal.id} – ${wbsItemFinal.descricao}` : null,
     wbs_natureza: wbsItemFinal ? wbsItemFinal.natureza : null,

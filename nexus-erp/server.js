@@ -109,6 +109,10 @@ ensureColumns('requisicoes_compra', [
   ['tipo', 'tipo TEXT'],
   ['wbs', 'wbs TEXT'],
 ])
+// Rastreabilidade de custo na origem: a OS também exige vínculo WBS.
+ensureColumns('ordens_servico', [
+  ['wbs', 'wbs TEXT'],
+])
 // Gate de pagamento precisa de NF e origem na conta a pagar.
 ensureColumns('contas_pagar', [
   ['nota_fiscal', 'nota_fiscal TEXT'],
@@ -732,23 +736,33 @@ app.get('/api/os/:id', requireAuth, (req, res) => {
 })
 
 app.post('/api/os', requireAuth, (req, res) => {
-  const { titulo, descricao, departamento, prioridade, valor_estimado, centro_custo, projeto, data_necessidade } = req.body
+  const { titulo, descricao, departamento, prioridade, valor_estimado, centro_custo, projeto, data_necessidade, wbs } = req.body
   if (!titulo) return res.status(400).json(err('Título obrigatório'))
+  // Compliance: WBS obrigatória para rastreabilidade de custo na origem da demanda.
+  if (!wbs || !String(wbs).trim()) return res.status(400).json(err('Vínculo WBS obrigatório na OS (rastreabilidade de custo)'))
   const numero = nextOS()
   const r = db.prepare(
-    `INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, titulo, descricao, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valor_estimado || 0, centro_custo, projeto, data_necessidade)
+    `INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, titulo, descricao, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valor_estimado || 0, centro_custo, projeto, data_necessidade, String(wbs).trim())
   const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'os', `OS criada: ${numero}`)
   res.status(201).json(ok(os))
 })
 
 app.put('/api/os/:id', requireAuth, (req, res) => {
+  const cur = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
+  if (!cur) return res.status(404).json(err('OS não encontrada'))
   const { titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade } = req.body
+  // WBS não pode ser removida; se enviada, deve permanecer preenchida.
+  let wbs = cur.wbs
+  if (req.body.wbs !== undefined) {
+    if (!String(req.body.wbs).trim()) return res.status(400).json(err('WBS não pode ser removida da OS'))
+    wbs = String(req.body.wbs).trim()
+  }
   db.prepare(
-    `UPDATE ordens_servico SET titulo=?,descricao=?,departamento=?,prioridade=?,status=?,valor_estimado=?,centro_custo=?,projeto=?,data_necessidade=?,updated_at=datetime('now') WHERE id=?`
-  ).run(titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, req.params.id)
+    `UPDATE ordens_servico SET titulo=?,descricao=?,departamento=?,prioridade=?,status=?,valor_estimado=?,centro_custo=?,projeto=?,data_necessidade=?,wbs=?,updated_at=datetime('now') WHERE id=?`
+  ).run(titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs, req.params.id)
   const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Editar', 'os', `OS atualizada: ${os.numero}`)
   res.json(ok(os))

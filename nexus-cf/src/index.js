@@ -879,6 +879,24 @@ export default {
         return r ? J(r) : E('nao encontrado', 404);
       }
 
+      // OS — criação/edição com WBS obrigatória (compliance, espelha o Express)
+      if (seg[0]==='os' && !seg[1] && method==='POST'){
+        if (!body.titulo) return E('Titulo obrigatorio', 400);
+        if (!body.wbs || !String(body.wbs).trim()) return E('Vinculo WBS obrigatorio na OS (rastreabilidade de custo)', 400);
+        const r = await createDoc(env, 'os', { ...body, wbs: String(body.wbs).trim() });
+        await audit(env, user.sub, 'create', 'os', r.id, {});
+        return J(r);
+      }
+      if (seg[0]==='os' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
+        const cur = await getDoc(env, 'os', seg[1]);
+        if (!cur) return E('nao encontrado', 404);
+        const patch = { ...body };
+        if (body.wbs !== undefined){ if (!String(body.wbs).trim()) return E('WBS nao pode ser removida da OS', 400); patch.wbs = String(body.wbs).trim(); }
+        const r = await updateDoc(env, 'os', seg[1], patch);
+        await audit(env, user.sub, 'update', 'os', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
+
       // CRUD generico
       if (TABLES[seg[0]]){
         const table = TABLES[seg[0]];

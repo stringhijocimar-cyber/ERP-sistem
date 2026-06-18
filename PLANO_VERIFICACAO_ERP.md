@@ -77,7 +77,7 @@ contrato vencido sem aviso, incidente sem causa raiz (reincidência), e — o ma
 | Almoxarifado | Estoque básico + estoque baixo | 🟡 Não validado | Média | Médio | — | Ruptura | Mov. abaixo do mínimo | Alerta estoque | % ruptura | Suprimentos |
 | **Compras** | **`tipo` obrigatório na RC** | ✅ **Validado** | Alta | Baixo | feito | Classificação de gasto | RC sem tipo → 400 | Teste `rc_compliance` | % RC c/ tipo | Compras |
 | **Compras** | **Vínculo WBS na RC** | ✅ **Validado** | Crítica | Baixo | feito | Rastreabilidade custo | RC sem WBS → 400 | Teste `rc_compliance` | % vinculadas | Projetos |
-| **Compras** | **Vínculo WBS em OS** | 🟥 **AUSENTE** | Crítica | Baixo | Onda 1 | Rastreabilidade custo | OS sem WBS deve bloquear | (a criar) | % vinculadas | Projetos |
+| **Compras** | **Vínculo WBS em OS** | ✅ **Validado** | Crítica | Baixo | feito | Rastreabilidade custo | OS sem WBS → 400 | Teste `os_compliance` | % vinculadas | Projetos |
 | **Compras** | **Bloqueio <3 cotações >R$10k** | 🟥 **AUSENTE** | Alta | Baixo | Onda 1 | Compra sem concorrência | Cotação 2 fornec. >10k → bloqueio | (a criar) | % c/ 3+ | Compras |
 | **Compras** | **Compra emergencial c/ aprovação Diretor** | 🟥 **AUSENTE** | Alta | Baixo | Onda 1 | Abuso de exceção | Emergencial sem Diretor → bloqueio | (a criar) | % emergenciais | Diretoria |
 | **Compras** | **Alerta RFQ aberta >15/30 dias** | 🟥 **AUSENTE** | Média | Baixo | Onda 1 | RFQ parada | RFQ antiga aparece em alertas | (a criar) | tempo médio RFQ | Compras |

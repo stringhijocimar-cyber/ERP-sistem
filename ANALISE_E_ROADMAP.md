@@ -77,6 +77,11 @@ posicionamento a perseguir.
   rastreabilidade custo→contrato→projeto. Bloqueio no `POST`/`PUT` (não permite
   remover WBS nem gravar tipo inválido). **Paridade Express + Worker** +
   campos no formulário do front. Coberto por testes (RC compliance + `normalizarTipoRC`).
+- ✅ **OS: `WBS` obrigatória** (Onda 1): a ordem de serviço — origem da demanda —
+  também exige vínculo WBS, completando a rastreabilidade de custo na ponta.
+  Bloqueio no `POST`/`PUT` (não remove WBS). **Paridade Express + Worker**; o
+  front já tinha o bloqueio de WBS, agora com campo canônico `wbs` no sync.
+  Coberto por testes (OS compliance).
 - ✅ **Dashboard BI** (`GET /api/bi`): KPIs gerenciais consolidados — exposição
   financeira (a pagar / vencido / a vencer / pago), governança do gate (taxa de
   bloqueio via trilha de logs), homologação e score de fornecedores, taxa de
