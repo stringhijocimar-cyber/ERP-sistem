@@ -71,6 +71,13 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Análise financeira prévia** (`POST /api/analise-financeira`): combina
+  bureau de crédito (dados de mercado) + situação cadastral (Receita) num parecer
+  automático — score consolidado (0–100), nível de risco e recomendação
+  (Aprovar / Aprovar com ressalvas / Recusar), com os fatores que pesaram.
+  Situação irregular força Recusar. Botão "Análise financeira" no cadastro
+  (apoio à homologação). Lib pura `lib/analise_financeira.js`; **paridade
+  Express + Worker** (parecer idêntico, provado por teste).
 - ✅ **Gate de homologação de fornecedor** (Financeiro + Compliance): fornecedor
   novo nasce "Em Homologação" e **só pode ser usado em PC após aprovação das
   duas funções** (`/homologar/financeiro` + `/homologar/compliance`,

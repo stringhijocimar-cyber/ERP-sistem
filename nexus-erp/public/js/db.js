@@ -497,6 +497,11 @@ window.DB = {
     catch (e) { return null; }
   },
 
+  async analiseFinanceira(cnpj) {
+    try { return await _apiFetch('/api/analise-financeira', { method: 'POST', body: JSON.stringify({ cnpj }) }); }
+    catch (e) { return null; }
+  },
+
   async homologarFornecedor(id, etapa) {
     return await _apiFetch(`/api/fornecedores/${id}/homologar/${etapa}`, { method: 'POST', body: '{}' });
   },
