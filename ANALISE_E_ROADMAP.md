@@ -71,6 +71,13 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Gate de homologação de fornecedor** (Financeiro + Compliance): fornecedor
+  novo nasce "Em Homologação" e **só pode ser usado em PC após aprovação das
+  duas funções** (`/homologar/financeiro` + `/homologar/compliance`,
+  `/reprovar-homologacao`). Emissão de PC bloqueada (409) para não homologado
+  (default-deny). Painel de homologação no detalhe do fornecedor (botões por
+  perfil). **Paridade Express + Worker** (helper puro `fornecedorHomologado`).
+  Coberto por testes.
 - ✅ **Cadastro por CNPJ (autofill estilo Omie)** — FIX: a aba de cadastro
   dependia de APIs públicas direto do browser (falhavam por CORS). Agora há o
   proxy server-side `GET /api/cnpj/:cnpj` (adaptador `lib/receita.js` ampliado:

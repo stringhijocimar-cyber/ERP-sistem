@@ -381,6 +381,59 @@ function filterFornecedores() {
 }
 
 // ─── DETALHE DO FORNECEDOR ───────────────────────────────────
+// Painel de homologação (dupla aprovação Financeiro + Compliance) no detalhe.
+function _homologacaoPanel(f) {
+  const homologado = f.status === 'Homologado' || (f.aprovado_financeiro_por && f.aprovado_compliance_por);
+  const role = (currentUser && (currentUser.profile || currentUser.role)) || '';
+  const podeFin = ['admin', 'financeiro'].includes(role);
+  const podeComp = ['admin', 'diretor', 'compliance'].includes(role);
+  const etapa = (ok, quem) => ok
+    ? `<span style="color:#16a34a;font-weight:600"><i class="fas fa-check-circle"></i> ${quem}</span>`
+    : `<span style="color:#d97706"><i class="fas fa-clock"></i> pendente</span>`;
+  const btn = (cond, etp, label) => cond && !homologado
+    ? `<button class="btn btn-primary btn-sm" onclick="homologarFor('${f.id}','${etp}')"><i class="fas fa-check"></i> ${label}</button>` : '';
+  return `
+    <div style="border:1px solid ${homologado ? 'rgba(22,163,74,.3)' : 'rgba(217,119,6,.3)'};background:${homologado ? 'rgba(22,163,74,.05)' : 'rgba(217,119,6,.05)'};border-radius:10px;padding:12px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <strong style="font-size:13px"><i class="fas fa-user-shield" style="margin-right:6px"></i>Homologação de cadastro
+          ${homologado ? '<span class="badge badge-success" style="margin-left:6px">HOMOLOGADO</span>' : '<span class="badge badge-warning" style="margin-left:6px">não pode ser usado em pedidos</span>'}
+        </strong>
+        <div style="display:flex;gap:6px">
+          ${btn(podeFin, 'financeiro', 'Aprovar (Financeiro)')}
+          ${btn(podeComp, 'compliance', 'Aprovar (Compliance)')}
+          ${!homologado && (podeFin || podeComp) ? `<button class="btn btn-secondary btn-sm" onclick="reprovarHomologacaoFor('${f.id}')">Reprovar</button>` : ''}
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:8px;display:flex;gap:20px;flex-wrap:wrap">
+        <span>Financeiro: ${etapa(f.aprovado_financeiro_por, f.aprovado_financeiro_por)}</span>
+        <span>Compliance: ${etapa(f.aprovado_compliance_por, f.aprovado_compliance_por)}</span>
+      </div>
+    </div>`;
+}
+
+async function homologarFor(id, etapa) {
+  try {
+    const r = await DB.homologarFornecedor(id, etapa);
+    const item = FA_FORNECEDORES.find(x => String(x.id) === String(id));
+    if (item && r) Object.assign(item, r);
+    showToast(`Aprovação ${etapa} registrada${r && r.status === 'Homologado' ? ' · fornecedor HOMOLOGADO' : ''}.`, 'success');
+    closeModal(); setTimeout(() => abrirDetalheFor(id), 150);
+  } catch (e) {
+    showToast('Falha ao aprovar: ' + (e.message || 'verifique seu perfil'), 'error');
+  }
+}
+
+async function reprovarHomologacaoFor(id) {
+  const motivo = prompt('Motivo da reprovação (opcional):') || '';
+  try {
+    const r = await DB.reprovarHomologacao(id, motivo);
+    const item = FA_FORNECEDORES.find(x => String(x.id) === String(id));
+    if (item && r) Object.assign(item, r);
+    showToast('Homologação reprovada.', 'warning');
+    closeModal(); setTimeout(() => abrirDetalheFor(id), 150);
+  } catch (e) { showToast('Falha: ' + (e.message || ''), 'error'); }
+}
+
 function abrirDetalheFor(id) {
   const f = FA_FORNECEDORES.find(x => x.id === id);
   if (!f) return;
@@ -409,6 +462,8 @@ function abrirDetalheFor(id) {
         <div style="font-size:11px;color:var(--text-muted)">Total histórico</div>
       </div>
     </div>
+
+    ${_homologacaoPanel(f)}
 
     <!-- Bloco IDF destacado -->
     ${idf ? `

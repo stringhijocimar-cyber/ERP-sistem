@@ -60,20 +60,20 @@ describe('Gate de emissão de PC por situação cadastral', () => {
   const emitir = fid => request(app).post('/api/pedidos').set('Authorization', `Bearer ${token}`).send({ fornecedor_id: fid, valor_total: 1000 })
 
   it('bloqueia PC para fornecedor com CNPJ irregular (409)', async () => {
-    const fid = db.prepare(`INSERT INTO fornecedores(nome, cnpj) VALUES('Irregular SA', ?)`).run(cnpjIrregular).lastInsertRowid
+    const fid = db.prepare(`INSERT INTO fornecedores(nome, cnpj, status) VALUES('Irregular SA', ?, 'Homologado')`).run(cnpjIrregular).lastInsertRowid
     const r = await emitir(fid)
     expect(r.status).toBe(409)
     expect(r.body.error).toMatch(/cadastral|receita|irregular/i)
   })
 
   it('permite PC para fornecedor com CNPJ regular', async () => {
-    const fid = db.prepare(`INSERT INTO fornecedores(nome, cnpj) VALUES('Regular SA', ?)`).run(cnpjRegular).lastInsertRowid
+    const fid = db.prepare(`INSERT INTO fornecedores(nome, cnpj, status) VALUES('Regular SA', ?, 'Homologado')`).run(cnpjRegular).lastInsertRowid
     const r = await emitir(fid)
     expect(r.status).toBe(201)
   })
 
   it('não bloqueia fornecedor sem CNPJ (validação não se aplica)', async () => {
-    const fid = db.prepare(`INSERT INTO fornecedores(nome) VALUES('Sem CNPJ')`).run().lastInsertRowid
+    const fid = db.prepare(`INSERT INTO fornecedores(nome, status) VALUES('Sem CNPJ', 'Homologado')`).run().lastInsertRowid
     const r = await emitir(fid)
     expect(r.status).toBe(201)
   })

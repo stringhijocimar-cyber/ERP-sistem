@@ -497,6 +497,13 @@ window.DB = {
     catch (e) { return null; }
   },
 
+  async homologarFornecedor(id, etapa) {
+    return await _apiFetch(`/api/fornecedores/${id}/homologar/${etapa}`, { method: 'POST', body: '{}' });
+  },
+  async reprovarHomologacao(id, motivo) {
+    return await _apiFetch(`/api/fornecedores/${id}/reprovar-homologacao`, { method: 'POST', body: JSON.stringify({ motivo: motivo || '' }) });
+  },
+
   // Compatibilidade com código legado que usa logAction()
   log: (acao, modulo, desc) => Logs.registrar(acao, modulo, desc),
 };
