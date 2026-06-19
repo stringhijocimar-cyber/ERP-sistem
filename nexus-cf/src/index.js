@@ -131,6 +131,34 @@ function montarFluxoCaixa(contas = [], { semanas = 8, hoje } = {}){
   return { semanas: buckets, por_contrato, resumo: { planejado_total: _r2(planTot), realizado_total: _r2(realTot), desvio_total: _r2(realTot - planTot) } };
 }
 
+// IDF — Índice de Desempenho do Fornecedor (OTD + avaliações). Pura (espelha lib/idf.js).
+const _r1 = n => Math.round(n * 10) / 10;
+function calcularIDF({ pedidos = [], avaliacoes = [] } = {}){
+  let onTime = 0, considerados = 0;
+  for (const p of pedidos){
+    const entrega = String(p.entregue_em || p.data_entrega || '').slice(0, 10);
+    if (!entrega) continue;
+    const base = String(p.enviado_em || p.emitido_em || '').slice(0, 10);
+    const prazo = Number(p.prazo_entrega);
+    if (!base || !prazo) continue;
+    considerados++;
+    if (entrega <= _addDias(base, prazo)) onTime++;
+  }
+  const otd = considerados ? (onTime / considerados) * 100 : null;
+  const notas = avaliacoes.map(a => Number(a.nota_media ?? a.media ?? a.nota) || 0).filter(n => n > 0);
+  const avalMedia = notas.length ? notas.reduce((s, n) => s + n, 0) / notas.length : null;
+  const avalScore = avalMedia != null ? (avalMedia / 5) * 100 : null;
+  let score = null; const componentes = [];
+  if (otd != null) componentes.push({ nome: 'OTD (entrega no prazo)', valor: _r1(otd), peso: avalScore != null ? 0.6 : 1 });
+  if (avalScore != null) componentes.push({ nome: 'Avaliações', valor: _r1(avalScore), peso: otd != null ? 0.4 : 1 });
+  if (otd != null && avalScore != null) score = 0.6 * otd + 0.4 * avalScore;
+  else if (otd != null) score = otd;
+  else if (avalScore != null) score = avalScore;
+  let classificacao = 'Sem dados';
+  if (score != null) classificacao = score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D';
+  return { score: score != null ? _r1(score) : null, classificacao, otd_pct: otd != null ? _r1(otd) : null, entregas_consideradas: considerados, avaliacao_media: avalMedia != null ? _r1(avalMedia) : null, avaliacoes_qtd: notas.length, componentes };
+}
+
 // Fornecedor homologado = aprovado por Financeiro E Compliance. Pura (espelha o Express).
 function fornecedorHomologado(f){
   if (!f) return false;
@@ -1175,6 +1203,15 @@ export default {
         await audit(env, user.sub, 'create', 'fornecedores', r.id, {});
         return J(r);
       }
+      // Fornecedor — IDF (índice de desempenho): GET /api/fornecedores/:id/idf
+      if (seg[0]==='fornecedores' && seg[2]==='idf' && method==='GET'){
+        const f = await getDoc(env, 'fornecedores', seg[1]);
+        if (!f) return E('Fornecedor nao encontrado', 404);
+        const pedidos = await listDocs(env, 'pedidos', { searchParams: new URLSearchParams({ fornecedor_id: String(seg[1]) }) });
+        const avaliacoes = Array.isArray(f.avaliacoes) ? f.avaliacoes : [];
+        return J({ fornecedor_id: f.id, nome: f.nome, ...calcularIDF({ pedidos, avaliacoes }) });
+      }
+
       // Fornecedor — homologação de cadastro (Financeiro + Compliance)
       if (seg[0]==='fornecedores' && seg[2]==='homologar' && (seg[3]==='financeiro' || seg[3]==='compliance') && method==='POST'){
         const etapa = seg[3];
@@ -1278,4 +1315,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF };

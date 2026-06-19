@@ -502,6 +502,11 @@ window.DB = {
     catch (e) { return null; }
   },
 
+  async idfFornecedor(id) {
+    try { return await _apiFetch(`/api/fornecedores/${id}/idf`); }
+    catch (e) { return null; }
+  },
+
   async homologarFornecedor(id, etapa) {
     return await _apiFetch(`/api/fornecedores/${id}/homologar/${etapa}`, { method: 'POST', body: '{}' });
   },
