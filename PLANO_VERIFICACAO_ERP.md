@@ -180,7 +180,7 @@ já existe como destino dos avisos):
 ### Onda 2 — 1 a 3 meses · Integrações simples e automações
 1. Validação **CNPJ/situação cadastral** (Receita/SEFAZ) antes da PO — reusar o padrão do adaptador de bureau (`lib/credit_bureau.js`).
 2. **Emissão NF-e/NFS-e/CT-e** via Focus NF-e/eNotas/NFe.io (REST) — *quick win* fiscal.
-3. **Dashboard fluxo de caixa real vs. planejado por contrato** (estende o BI atual).
+3. ✅ **Dashboard fluxo de caixa real vs. planejado por contrato** (`GET /api/fluxo-caixa`, bloco no BI — entregue).
 4. Rotina de **detecção de duplicatas** (fornecedor/material/NF).
 5. **Dupla aprovação** para CNPJ/conta bancária/e-mail de fornecedor.
 6. Checklist de aceite de contrato + controle de seguro (alerta).
