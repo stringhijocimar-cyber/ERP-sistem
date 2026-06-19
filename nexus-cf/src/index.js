@@ -648,6 +648,42 @@ function situacaoReceitaMock(cnpjRaw){
   return { cnpj, fonte:'mock', situacao_cadastral, regular: situacao_cadastral === 'ATIVA' };
 }
 
+// Cadastro completo por CNPJ (estilo Omie) — mock determinístico, mesmo
+// resultado da lib/receita.js do Express (preenche o formulário sem CORS).
+const _UFS = ['SP','RJ','MG','PR','RS','SC','BA','PE','CE','GO','ES','DF'];
+const _CIDADES = { SP:'São Paulo', RJ:'Rio de Janeiro', MG:'Belo Horizonte', PR:'Curitiba', RS:'Porto Alegre', SC:'Joinville', BA:'Salvador', PE:'Recife', CE:'Fortaleza', GO:'Goiânia', ES:'Serra', DF:'Brasília' };
+const _BAIRROS = ['Centro','Distrito Industrial','Jardim América','Vila Nova','Boa Vista','São José','Santa Mônica','Industrial'];
+const _LOGRAD = ['Rua das Indústrias','Av. Brasil','Av. das Nações','Rua XV de Novembro','Av. Industrial','Rua do Comércio','Rod. BR-101'];
+const _ATIV = ['Comércio atacadista de materiais de construção','Transporte rodoviário de carga','Fabricação de peças e acessórios','Manutenção e reparação de máquinas','Comércio varejista de equipamentos','Serviços de engenharia','Locação de máquinas e equipamentos','Comércio de produtos químicos'];
+const _PORTES = ['ME','EPP','Demais','MEI'];
+const _NATUREZAS = ['Sociedade Empresária Limitada','Empresário (Individual)','Sociedade Anônima Fechada','EIRELI'];
+const _RAMOS = ['Metalúrgica','Comercial','Transportes','Engenharia','Industrial','Construtora','Distribuidora','Serviços'];
+const _MARCAS = ['Aliança','Horizonte','Progresso','União','Pioneira','Atlas','Vértice','Primus'];
+const _SUFIXOS = ['LTDA','S.A.','ME','EIRELI'];
+const _pick = (arr, h) => arr[h % arr.length];
+function cadastroCNPJMock(cnpjRaw){
+  const cnpj = String(cnpjRaw||'').replace(/\D/g,'');
+  if (cnpj.length !== 14) return null;
+  let h = 0; for (const ch of cnpj) h = (h*31 + (ch.charCodeAt(0)-48)) % 1000003;
+  const ramo = _pick(_RAMOS, h), marca = _pick(_MARCAS, Math.floor(h/7)), sufixo = _pick(_SUFIXOS, Math.floor(h/13));
+  const uf = _pick(_UFS, Math.floor(h/3));
+  const ano = 1990 + (h % 33), mes = String(1 + (h % 12)).padStart(2,'0'), dia = String(1 + (h % 27)).padStart(2,'0');
+  const ddd = 11 + (h % 80);
+  const sit = _RECEITA_SITU[h % _RECEITA_SITU.length];
+  return {
+    cnpj, cnpj_fmt: `${cnpj.slice(0,2)}.${cnpj.slice(2,5)}.${cnpj.slice(5,8)}/${cnpj.slice(8,12)}-${cnpj.slice(12,14)}`,
+    razao: `${ramo} ${marca} ${sufixo}`, fantasia: `${marca} ${ramo}`,
+    situacao: sit, regular: sit === 'ATIVA',
+    logradouro: _pick(_LOGRAD, Math.floor(h/5)), numero: String(50 + (h % 1950)), bairro: _pick(_BAIRROS, Math.floor(h/11)),
+    cidade: _CIDADES[uf], uf, cep: `${String(10000 + (h % 89999)).slice(0,5)}-${String(100 + (h % 899)).slice(0,3)}`,
+    email: `contato@${marca.toLowerCase()}${(h % 90) + 10}.com.br`,
+    telefone: `(${ddd}) ${String(90000 + (h % 9999)).slice(0,5)}-${String(1000 + (h % 8999)).slice(0,4)}`,
+    porte: _pick(_PORTES, Math.floor(h/17)), atividade: _pick(_ATIV, Math.floor(h/19)),
+    abertura: `${ano}-${mes}-${dia}`, capital: 50000 * (1 + (h % 200)), natureza: _pick(_NATUREZAS, Math.floor(h/23)),
+    fonte: 'mock', ok: true,
+  };
+}
+
 // Numeração atômica por tipo/ano (UPSERT + RETURNING numa instrução).
 const TIPOS_SEQ = new Set(['PC','RC','RFQ','MAPA','CP']);
 async function proximaSequencia(env, tipoRaw, anoRaw){
@@ -988,6 +1024,14 @@ export default {
         return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
       }
 
+      // Cadastro completo por CNPJ (proxy server-side): GET /api/cnpj/:cnpj
+      if (seg[0]==='cnpj' && seg[1] && method==='GET'){
+        const prov = String(env.RECEITA_PROVIDER||'mock').toLowerCase();
+        if (prov !== 'mock') return E('Provedor de cadastro CNPJ nao configurado: ' + prov, 400);
+        const d = cadastroCNPJMock(seg[1]);
+        return d ? J(d) : E('CNPJ invalido (14 digitos)', 400);
+      }
+
       // Relatório de duplicatas: GET /api/duplicatas (fornecedor por CNPJ / NF)
       if (seg[0]==='duplicatas' && method==='GET'){
         const all = { searchParams: new URLSearchParams() };
@@ -1161,4 +1205,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock };

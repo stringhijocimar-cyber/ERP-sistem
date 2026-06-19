@@ -71,6 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Cadastro por CNPJ (autofill estilo Omie)** — FIX: a aba de cadastro
+  dependia de APIs públicas direto do browser (falhavam por CORS). Agora há o
+  proxy server-side `GET /api/cnpj/:cnpj` (adaptador `lib/receita.js` ampliado:
+  razão, fantasia, endereço, situação, porte, CNAE, abertura, capital — provedor
+  por env, mock determinístico). O formulário preenche automaticamente.
+  **Paridade Express + Worker** (cadastro idêntico por CNPJ, provado por teste).
 - ✅ **Fluxo de caixa planejado × realizado** (Onda 2): `GET /api/fluxo-caixa`
   compara, por semana e por contrato, o planejado (vencimentos) contra o
   realizado (pagamentos), com desvios. Lib pura `lib/fluxo_caixa.js`; bloco no
