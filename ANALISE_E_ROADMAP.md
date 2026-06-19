@@ -71,6 +71,11 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **IDF — Índice de Desempenho do Fornecedor** (`GET /api/fornecedores/:id/idf`):
+  consolida sinais reais — **OTD** (entregas no prazo, de `pedidos_compra`) +
+  **avaliações** — num score 0–100 e classificação A/B/C/D. Exibido no detalhe
+  do fornecedor (junto da homologação) e incluído no payload do cadastro. Lib
+  pura `lib/idf.js`; **paridade Express + Worker** (índice idêntico, provado por teste).
 - ✅ **Análise financeira prévia** (`POST /api/analise-financeira`): combina
   bureau de crédito (dados de mercado) + situação cadastral (Receita) num parecer
   automático — score consolidado (0–100), nível de risco e recomendação

@@ -19,6 +19,7 @@ import './public/js/lib/lgpd.js'      // define globalThis.LGPD (anonimização/
 import { consultarCredito } from './lib/credit_bureau.js'
 import { consultarReceita, consultarCadastroCNPJ } from './lib/receita.js'
 import { analisarFinanceiro } from './lib/analise_financeira.js'
+import { calcularIDF } from './lib/idf.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
 const Auditoria = globalThis.Auditoria
@@ -765,7 +766,19 @@ app.get('/api/fornecedores/:id', requireAuth, (req, res) => {
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   const avaliacoes = db.prepare(`SELECT * FROM avaliacoes_fornecedor WHERE fornecedor_id = ? ORDER BY created_at DESC LIMIT 10`).all(req.params.id)
-  res.json(ok({ ...f, avaliacoes }))
+  res.json(ok({ ...f, avaliacoes, idf: _idfDoFornecedor(req.params.id) }))
+})
+
+// IDF — Índice de Desempenho do Fornecedor (OTD + avaliações), server-side.
+function _idfDoFornecedor(id) {
+  const pedidos = db.prepare(`SELECT enviado_em, entregue_em, prazo_entrega, status FROM pedidos_compra WHERE fornecedor_id = ?`).all(id)
+  const avaliacoes = db.prepare(`SELECT nota_media FROM avaliacoes_fornecedor WHERE fornecedor_id = ?`).all(id)
+  return calcularIDF({ pedidos, avaliacoes })
+}
+app.get('/api/fornecedores/:id/idf', requireAuth, (req, res) => {
+  const f = db.prepare(`SELECT id, nome FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  res.json(ok({ fornecedor_id: f.id, nome: f.nome, ..._idfDoFornecedor(req.params.id) }))
 })
 
 app.post('/api/fornecedores', requireAuth, (req, res) => {

@@ -407,8 +407,23 @@ function _homologacaoPanel(f) {
       <div style="font-size:12px;color:var(--text-muted);margin-top:8px;display:flex;gap:20px;flex-wrap:wrap">
         <span>Financeiro: ${etapa(f.aprovado_financeiro_por, f.aprovado_financeiro_por)}</span>
         <span>Compliance: ${etapa(f.aprovado_compliance_por, f.aprovado_compliance_por)}</span>
+        <span id="idf_srv_${f.id}" style="color:var(--text-muted)"><i class="fas fa-gauge"></i> IDF: <span style="opacity:.6">carregando…</span></span>
       </div>
     </div>`;
+}
+
+// Carrega o IDF autoritativo do servidor (OTD + avaliações) no painel do detalhe.
+async function _carregarIdfServer(id) {
+  const el = document.getElementById(`idf_srv_${id}`);
+  if (!el || !(window.DB && typeof DB.idfFornecedor === 'function')) return;
+  try {
+    const idf = await DB.idfFornecedor(id);
+    if (!idf) { el.innerHTML = '<i class="fas fa-gauge"></i> IDF: —'; return; }
+    const cor = idf.classificacao === 'A' ? '#16a34a' : idf.classificacao === 'B' ? '#2563eb' : idf.classificacao === 'C' ? '#d97706' : (idf.classificacao === 'D' ? '#dc2626' : 'var(--text-muted)');
+    const scoreTxt = idf.score != null ? `${idf.score}/100` : 'sem dados';
+    const otdTxt = idf.otd_pct != null ? ` · OTD ${idf.otd_pct}%` : '';
+    el.innerHTML = `<i class="fas fa-gauge"></i> IDF: <strong style="color:${cor}">${idf.classificacao}</strong> (${scoreTxt})${otdTxt}`;
+  } catch (e) { el.innerHTML = '<i class="fas fa-gauge"></i> IDF: —'; }
 }
 
 async function homologarFor(id, etapa) {
@@ -566,6 +581,7 @@ function abrirDetalheFor(id) {
       <i class="fas fa-shopping-cart"></i> Novo Pedido
     </button>
   `);
+  setTimeout(() => _carregarIdfServer(id), 60);
 }
 
 // ─── CONSULTA CNPJ via Receita Federal (PUBLICA API) ─────────────
