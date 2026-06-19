@@ -17,7 +17,7 @@ import './public/js/lib/auditoria.js' // define globalThis.Auditoria (hash encad
 import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-way por item)
 import './public/js/lib/lgpd.js'      // define globalThis.LGPD (anonimização/retenção)
 import { consultarCredito } from './lib/credit_bureau.js'
-import { consultarReceita } from './lib/receita.js'
+import { consultarReceita, consultarCadastroCNPJ } from './lib/receita.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
 const Auditoria = globalThis.Auditoria
@@ -625,6 +625,16 @@ app.post('/api/credito/consultar', requireAuth, async (req, res) => {
 app.post('/api/receita/consultar', requireAuth, async (req, res) => {
   try {
     const data = await consultarReceita(req.body && req.body.cnpj, { provider: process.env.RECEITA_PROVIDER })
+    res.json(ok(data))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
+// Cadastro completo por CNPJ (proxy server-side, sem CORS) — preenche o form.
+app.get('/api/cnpj/:cnpj', requireAuth, async (req, res) => {
+  try {
+    const data = await consultarCadastroCNPJ(req.params.cnpj, { provider: process.env.RECEITA_PROVIDER })
     res.json(ok(data))
   } catch (e) {
     res.status(400).json(err(e.message))
