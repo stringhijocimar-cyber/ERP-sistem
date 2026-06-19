@@ -119,6 +119,14 @@ ensureColumns('ssma_ocorrencias', [
   ['causa_raiz', 'causa_raiz TEXT'],
   ['plano_acao', 'plano_acao TEXT'],
 ])
+// Dupla aprovação de dados bancários: alterações ficam pendentes até 2º aval.
+ensureColumns('fornecedores', [
+  ['banco_pendente', 'banco_pendente TEXT'],
+  ['agencia_pendente', 'agencia_pendente TEXT'],
+  ['conta_pendente', 'conta_pendente TEXT'],
+  ['banco_solicitado_por', 'banco_solicitado_por TEXT'],
+  ['banco_solicitado_em', 'banco_solicitado_em TEXT'],
+])
 // Gate de pagamento precisa de NF e origem na conta a pagar.
 ensureColumns('contas_pagar', [
   ['nota_fiscal', 'nota_fiscal TEXT'],
@@ -666,11 +674,18 @@ app.put('/api/portal/perfil', requireAuth, requirePortal, (req, res) => {
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   const b = req.body || {}
-  // Fornecedor só edita dados de contato/bancários — nunca crédito/status/ativo.
-  db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, banco=?, agencia=?, conta=?, updated_at=datetime('now') WHERE id=?`)
-    .run(b.contato ?? f.contato, b.email ?? f.email, b.telefone ?? f.telefone, b.banco ?? f.banco, b.agencia ?? f.agencia, b.conta ?? f.conta, req.user.fornecedor_id)
+  // Fornecedor edita só contato (nunca crédito/status/ativo). Dados bancários
+  // entram como PENDENTES de dupla aprovação interna (anti-desvio de pagamento).
+  const bankChange = alteracaoBancariaSolicitada(f, b)
+  db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.contato ?? f.contato, b.email ?? f.email, b.telefone ?? f.telefone, req.user.fornecedor_id)
+  if (bankChange) {
+    db.prepare(`UPDATE fornecedores SET banco_pendente=?, agencia_pendente=?, conta_pendente=?, banco_solicitado_por=?, banco_solicitado_em=datetime('now') WHERE id=?`)
+      .run(bankChange.banco ?? f.banco, bankChange.agencia ?? f.agencia, bankChange.conta ?? f.conta, `portal:${f.nome}`, req.user.fornecedor_id)
+    log(req.user.usuario_id, req.user.nome, 'banco_alteracao_solicitada', 'fornecedores', `Alteração bancária via portal pendente de aprovação: ${f.nome}`)
+  }
   log(req.user.usuario_id, req.user.nome, 'Portal perfil', 'fornecedores', `Atualização de cadastro pelo portal`)
-  res.json(ok(db.prepare(`SELECT id, nome, contato, email, telefone, banco, agencia, conta FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)))
+  res.json(ok(db.prepare(`SELECT id, nome, contato, email, telefone, banco, agencia, conta, banco_solicitado_por FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)))
 })
 
 // Normalização de CNPJ em SQL (só dígitos) — usada na detecção de duplicatas.
@@ -744,12 +759,47 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   res.status(201).json(ok(f))
 })
 
+// Detecta alteração de dados bancários (banco/agência/conta) no corpo vs. atual.
+function alteracaoBancariaSolicitada(atual, b) {
+  const mudou = {}
+  for (const c of ['banco', 'agencia', 'conta']) {
+    if (b[c] !== undefined && String(b[c] ?? '') !== String(atual[c] ?? '')) mudou[c] = b[c]
+  }
+  return Object.keys(mudou).length ? mudou : null
+}
+
+// Aprovação da alteração bancária — exige 2ª pessoa (segregação anti-desvio).
+app.post('/api/fornecedores/:id/aprovar-banco', requireAuth, requireRole('admin', 'diretor', 'financeiro'), (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  if (!f.banco_solicitado_por) return res.status(400).json(err('Não há alteração bancária pendente'))
+  if (f.banco_solicitado_por === req.user.nome) {
+    return res.status(403).json(err('A aprovação deve ser feita por outro usuário (segregação de funções)'))
+  }
+  db.prepare(`UPDATE fornecedores SET banco=?, agencia=?, conta=?, banco_pendente=NULL, agencia_pendente=NULL, conta_pendente=NULL, banco_solicitado_por=NULL, banco_solicitado_em=NULL, updated_at=datetime('now') WHERE id=?`)
+    .run(f.banco_pendente, f.agencia_pendente, f.conta_pendente, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'banco_alteracao_aprovada', 'fornecedores', `Alteração bancária aprovada: ${f.nome} (solicitante: ${f.banco_solicitado_por})`)
+  res.json(ok(db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)))
+})
+
+// Rejeição descarta a alteração pendente.
+app.post('/api/fornecedores/:id/rejeitar-banco', requireAuth, requireRole('admin', 'diretor', 'financeiro'), (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  if (!f.banco_solicitado_por) return res.status(400).json(err('Não há alteração bancária pendente'))
+  db.prepare(`UPDATE fornecedores SET banco_pendente=NULL, agencia_pendente=NULL, conta_pendente=NULL, banco_solicitado_por=NULL, banco_solicitado_em=NULL WHERE id=?`).run(req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'banco_alteracao_rejeitada', 'fornecedores', `Alteração bancária rejeitada: ${f.nome}`)
+  res.json(ok(db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)))
+})
+
 app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
   const b = req.body || {}
   const atual = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
   if (!atual) return res.status(404).json(err('Fornecedor não encontrado'))
   // Merge parcial: só sobrescreve o que veio no corpo (aceita aliases).
   const v = (campo, ...alias) => { for (const k of [campo, ...alias]) if (b[k] !== undefined) return b[k]; return atual[campo] }
+  // Dados bancários NÃO são aplicados direto: ficam pendentes de 2ª aprovação.
+  const bankChange = alteracaoBancariaSolicitada(atual, b)
   db.prepare(
     `UPDATE fornecedores SET nome=?,razao_social=?,nome_fantasia=?,cnpj=?,email=?,telefone=?,contato=?,cidade=?,estado=?,
        categoria=?,ativo=?,banco=?,agencia=?,conta=?,prazo_entrega=?,condicao_pagamento=?,observacoes=?,
@@ -757,11 +807,16 @@ app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
        updated_at=datetime('now') WHERE id=?`
   ).run(
     v('nome'), v('razao_social'), v('nome_fantasia'), v('cnpj'), v('email'), v('telefone'), v('contato', 'contato_nome'),
-    v('cidade'), v('estado'), v('categoria'), b.ativo ?? atual.ativo, v('banco'), v('agencia'), v('conta'),
+    v('cidade'), v('estado'), v('categoria'), b.ativo ?? atual.ativo, atual.banco, atual.agencia, atual.conta,
     v('prazo_entrega', 'prazo_pagamento'), v('condicao_pagamento'), v('observacoes'),
     v('faturamento_anual'), v('limite_credito'), v('score_credito'), v('classificacao_credito'), v('analise_credito'),
     v('status'), req.params.id
   )
+  if (bankChange) {
+    db.prepare(`UPDATE fornecedores SET banco_pendente=?, agencia_pendente=?, conta_pendente=?, banco_solicitado_por=?, banco_solicitado_em=datetime('now') WHERE id=?`)
+      .run(bankChange.banco ?? atual.banco, bankChange.agencia ?? atual.agencia, bankChange.conta ?? atual.conta, req.user.nome, req.params.id)
+    log(req.user.usuario_id, req.user.nome, 'banco_alteracao_solicitada', 'fornecedores', `Alteração bancária pendente de aprovação: ${atual.nome}`)
+  }
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Editar', 'fornecedores', `Fornecedor atualizado: ${v('nome')}`)
   res.json(ok(f))
