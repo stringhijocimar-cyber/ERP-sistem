@@ -1578,6 +1578,16 @@ function openNovaRequisicao() {
       <div class="form-group"><label>Solicitante</label><input class="form-control" id="nr_sol" value="${currentUser?currentUser.name:''}"></div>
       <div class="form-group"><label>Departamento</label><input class="form-control" id="nr_depto" value="${currentUser?currentUser.role:''}"></div>
     </div>
+    <div class="form-row">
+      <div class="form-group"><label>Tipo *</label>
+        <select class="form-control" id="nr_tipo">
+          <option value="Material">Material</option>
+          <option value="Serviço">Serviço</option>
+          <option value="Equipamento">Equipamento</option>
+        </select>
+      </div>
+      <div class="form-group"><label>WBS / Linha de custo *</label><input class="form-control" id="nr_wbs" placeholder="Ex: 1.2.3 – rastreabilidade de custo"></div>
+    </div>
 
     <div style="margin-top:16px;margin-bottom:8px;font-size:13px;font-weight:600;color:var(--text-primary)">
       <i class="fas fa-list" style="color:var(--orange);margin-right:6px"></i>Itens da Requisição
@@ -1634,6 +1644,10 @@ function salvarNovaRequisicao() {
   const erroEl = document.getElementById('nr_erro');
   if (!titulo) { erroEl.textContent = 'Informe o título.'; erroEl.style.display = 'block'; return; }
   if (!prazo) { erroEl.textContent = 'Informe o prazo de necessidade.'; erroEl.style.display = 'block'; return; }
+  // Compliance: tipo e WBS são obrigatórios (rastreabilidade de custo).
+  const tipo = document.getElementById('nr_tipo')?.value;
+  const wbs = (document.getElementById('nr_wbs')?.value || '').trim();
+  if (!wbs) { erroEl.textContent = 'Informe a WBS / linha de custo (obrigatória).'; erroEl.style.display = 'block'; return; }
 
   const itens = [];
   const descs = document.querySelectorAll('#itensReq .item-desc');
@@ -1657,6 +1671,8 @@ function salvarNovaRequisicao() {
     titulo,
     numero_processo: document.getElementById('nr_proc').value.trim() || `PROC-${ano}-${String(lista.length+1).padStart(4,'0')}`,
     contrato: document.getElementById('nr_ctr').value,
+    tipo,
+    wbs,
     solicitante: document.getElementById('nr_sol').value.trim(),
     departamento: document.getElementById('nr_depto').value.trim(),
     data_abertura: new Date().toLocaleDateString('pt-BR'),

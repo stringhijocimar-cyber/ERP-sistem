@@ -392,6 +392,18 @@ function loginAs(profile, emailLogin) {
     const navCRM = document.getElementById('nav-crm');
     if (navCRM) navCRM.style.display = ['admin','diretor','crm'].includes(profile) ? 'block' : 'none';
 
+    // Portal do Fornecedor só visível para usuários do tipo fornecedor
+    const navPortal = document.getElementById('nav-portal');
+    if (navPortal) navPortal.style.display = profile === 'fornecedor' ? 'block' : 'none';
+
+    // Central de Alertas: feed interno — oculto para o fornecedor
+    const navAlertas = document.getElementById('nav-alertas');
+    if (navAlertas) navAlertas.style.display = profile === 'fornecedor' ? 'none' : 'block';
+
+    // Dashboard BI: painel gerencial interno — oculto para o fornecedor
+    const navBI = document.getElementById('nav-bi');
+    if (navBI) navBI.style.display = profile === 'fornecedor' ? 'none' : 'block';
+
     // Registra log
     logAction('Login', 'Sistema', `Acesso realizado: ${currentUser.name} (${profile})`);
 
@@ -517,6 +529,10 @@ const PAGE_META = {
   idf: { label: 'IDF – Índice de Desenvolvimento de Fornecedores', icon: 'chart-bar' },
   auditoria_ai: { label: 'Auditoria Inteligente AI', icon: 'robot' },
   iso: { label: 'Auditoria ISO / Conformidade', icon: 'certificate' },
+  lgpd: { label: 'Conformidade LGPD', icon: 'user-shield' },
+  portal: { label: 'Portal do Fornecedor', icon: 'store' },
+  alertas: { label: 'Central de Alertas', icon: 'bell' },
+  bi: { label: 'Dashboard BI', icon: 'chart-line' },
   meu_painel: { label: 'Meu Painel de Pendências', icon: 'th-large' },
   equipe: { label: 'Equipe / Mobilização', icon: 'users' },
   frota: { label: 'Frota / Equipamentos', icon: 'truck' },
@@ -598,6 +614,10 @@ function navigate(page) {
     idf: renderIDF,
     auditoria_ai: function() { if(typeof renderAuditoriaAI === 'function') renderAuditoriaAI(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Auditoria AI...</p>'; },
     iso: function() { if(typeof renderISO === 'function') renderISO(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Auditoria ISO...</p>'; },
+    lgpd: function() { if(typeof renderLGPD === 'function') renderLGPD(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando LGPD...</p>'; },
+    portal: function() { if(typeof renderPortal === 'function') renderPortal(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Portal...</p>'; },
+    alertas: function() { if(typeof renderAlertas === 'function') renderAlertas(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Alertas...</p>'; },
+    bi: function() { if(typeof renderBI === 'function') renderBI(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando BI...</p>'; },
     meu_painel: function() { if(typeof renderMeuPainel === 'function') renderMeuPainel(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Meu Painel...</p>'; },
     equipe: renderEquipe,
     frota: renderFrota,

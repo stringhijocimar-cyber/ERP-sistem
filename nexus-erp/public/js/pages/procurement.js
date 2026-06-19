@@ -674,13 +674,25 @@ function _rfqStatusBadge(s) {
 }
 
 // ─── ACEITAR / REJEITAR REQUISIÇÃO (COMPRADOR) ───
-function aceitarRequisicaoComprador(reqId) {
+// Numeração atômica no servidor (sem corrida do length+1). Fallback local se
+// o servidor estiver indisponível (offline/demo).
+async function _numAtomico(tipo, fallbackFn) {
+  try {
+    if (window.DB && typeof DB.sequencia === 'function') {
+      const s = await DB.sequencia(tipo);
+      if (s && s.numero) return s.numero;
+    }
+  } catch (e) {}
+  return fallbackFn();
+}
+
+async function aceitarRequisicaoComprador(reqId) {
   const reqs = _getRequisicoes();
   const req = reqs.find(r => r.id === reqId);
   if (!req) return;
 
-  // Cria RFQ automaticamente
-  const rfqNum = 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0');
+  // Cria RFQ automaticamente (numeração atômica no servidor)
+  const rfqNum = await _numAtomico('RFQ', () => 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0'));
   const novoRFQ = {
     id: gerarId('RFQ'),
     numero_rfq: rfqNum,
@@ -743,7 +755,7 @@ function _confirmarRejeicaoReq(reqId) {
 
 // ─── EMITIR RC A PARTIR DE UMA OS APROVADA + ABRIR ACEITE DIRETO ─────────────
 // Cria RC automaticamente com os itens aprovados da OS e abre modal de aceite/RFQ
-function _procEmitirRCdaOS(fluxoId) {
+async function _procEmitirRCdaOS(fluxoId) {
   const fluxoOS = (() => { try { return JSON.parse(localStorage.getItem('fa_fluxo_os')||'[]'); } catch(e){ return []; } })();
   const f = fluxoOS.find(x => x.id === fluxoId);
   if (!f) { showToast('OS não encontrada.', 'error'); return; }
@@ -773,7 +785,7 @@ function _procEmitirRCdaOS(fluxoId) {
 
   // Gera número de RC
   const ano = new Date().getFullYear();
-  const numero = `RC-${ano}-${String(rcLista.length+1).padStart(4,'0')}`;
+  const numero = await _numAtomico('RC', () => `RC-${ano}-${String(rcLista.length+1).padStart(4,'0')}`);
   const novaRC = {
     id: 'RC-'+Date.now(),
     numero,
@@ -5136,6 +5148,7 @@ function abrirRecebimento(pedidoIdPre) {
         </select>
       </div>
       <div id="recPedidoInfo" style="grid-column:1/-1;display:none;padding:10px 12px;background:rgba(0,180,184,0.06);border:1px solid rgba(0,180,184,0.2);border-radius:8px;font-size:12px"></div>
+      <div id="recItensContainer" style="grid-column:1/-1"></div>
       <div>
         <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Número da NF *</label>
         <input type="text" id="recNF" placeholder="Ex: 001234"
@@ -5224,7 +5237,46 @@ window._recPedidoSelecionado = function(pedidoId) {
     </div>
   `;
   if (valorEl && !valorEl.value) valorEl.value = pedido.valor_total || '';
+
+  // Itens do pedido com quantidade recebida editável (alimenta o 3-way).
+  const cont = document.getElementById('recItensContainer');
+  if (cont) {
+    let itens = [];
+    try { itens = typeof pedido.itens === 'string' ? JSON.parse(pedido.itens) : (pedido.itens || []); } catch (e) { itens = []; }
+    if (Array.isArray(itens) && itens.length) {
+      cont.innerHTML = `
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin:6px 0 4px">Itens recebidos (confira a quantidade)</label>
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead><tr style="color:var(--text-muted)">
+            <th style="text-align:left;padding:4px">Item</th><th style="padding:4px">Pedido</th><th style="padding:4px">Recebido</th>
+          </tr></thead>
+          <tbody>
+            ${itens.map((it, i) => {
+              const desc = it.descricao || it.desc || ('Item ' + (i + 1));
+              const qtd = it.qtd != null ? it.qtd : (it.quantidade != null ? it.quantidade : 1);
+              const cod = it.codigo || it.codigo_produto || '';
+              return `<tr data-rec-item="1" data-desc="${String(desc).replace(/"/g, '&quot;')}" data-cod="${String(cod).replace(/"/g, '&quot;')}">
+                <td style="padding:4px">${desc}</td>
+                <td style="padding:4px;text-align:center;color:var(--text-muted)">${qtd}</td>
+                <td style="padding:4px;text-align:center"><input type="number" class="rec-item-qtd" min="0" step="any" value="${qtd}" style="width:80px;padding:4px 6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);text-align:center"></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+    } else { cont.innerHTML = ''; }
+  }
 };
+
+// Coleta os itens recebidos do modal (desc/código + quantidade conferida).
+function _recColetarItens() {
+  const linhas = document.querySelectorAll('#recItensContainer tr[data-rec-item]');
+  const itens = [];
+  linhas.forEach(tr => {
+    const q = parseFloat(tr.querySelector('.rec-item-qtd')?.value || 0) || 0;
+    itens.push({ descricao: tr.getAttribute('data-desc') || '', codigo_produto: tr.getAttribute('data-cod') || '', quantidade_recebida: q });
+  });
+  return itens;
+}
 
 async function salvarRecebimento() {
   const pedidoId = document.getElementById('recPedido')?.value;
@@ -5295,10 +5347,25 @@ async function salvarRecebimento() {
     } catch(e) {}
   }
 
+  // Itens conferidos (alimentam o 3-way no gate de pagamento)
+  const itensRec = _recColetarItens();
+  novoRec.itens = itensRec;
+
   // Persiste recebimento
   const recs = _getRecebimentos();
   recs.unshift(novoRec);
   _saveRecebimentos(recs);
+
+  // Persiste no servidor (vínculo com o pedido p/ o 3-way automático)
+  if (pedido && pedido.id) {
+    try {
+      await fetch('/api/recebimentos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${(window.DB && DB.token && DB.token.get && DB.token.get()) || ''}` },
+        body: JSON.stringify({ pc_id: pedido.id, nf_numero: nfNum, valor_nf: valorNF, status, conferente, observacoes: obs, itens: itensRec })
+      });
+    } catch (e) {}
+  }
 
   // Atualiza estoque via módulo Almoxarifado (rastreabilidade completa)
   if (status !== 'Recusado') {
@@ -5724,7 +5791,7 @@ function addItemRFQ() {
   body.appendChild(row);
 }
 
-function salvarNovoRFQ() {
+async function salvarNovoRFQ() {
   const titulo = document.getElementById('nrTitulo')?.value?.trim();
   if (!titulo) { showToast('Informe o título do processo.', 'error'); return; }
   const valor = parseFloat(document.getElementById('nrValor')?.value || 0);
@@ -5737,7 +5804,7 @@ function salvarNovoRFQ() {
     if (desc) itens.push({ descricao: desc, qtd, unidade: un });
   });
 
-  const rfqNum = 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0');
+  const rfqNum = await _numAtomico('RFQ', () => 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0'));
   const rfq = {
     id: gerarId('RFQ'),
     numero_rfq: rfqNum,

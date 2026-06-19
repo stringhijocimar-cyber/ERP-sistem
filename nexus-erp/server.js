@@ -13,7 +13,16 @@ import Database from 'better-sqlite3'
 import { readFileSync, existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import './public/js/lib/auditoria.js' // define globalThis.Auditoria (hash encadeado)
+import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-way por item)
+import './public/js/lib/lgpd.js'      // define globalThis.LGPD (anonimização/retenção)
+import { consultarCredito } from './lib/credit_bureau.js'
+import { consultarReceita } from './lib/receita.js'
+import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
+const Auditoria = globalThis.Auditoria
+const conciliarTresVias = globalThis.conciliarTresVias
+const LGPD = globalThis.LGPD
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 3002
 const DB_PATH = process.env.DB_PATH || join(__dirname, 'nexus.db')
@@ -80,7 +89,82 @@ ensureColumns('fornecedores', [
   ['classificacao_credito', 'classificacao_credito TEXT'],
   ['analise_credito', 'analise_credito TEXT'],
   ['status', "status TEXT DEFAULT 'Em Homologação'"],
+  ['anonimizado', 'anonimizado INTEGER DEFAULT 0'],
 ])
+// Trilha de auditoria imutável: hash do registro + hash do anterior.
+ensureColumns('logs_sistema', [
+  ['hash', 'hash TEXT'],
+  ['hash_anterior', 'hash_anterior TEXT'],
+])
+// Portal do fornecedor: usuário pode ser vinculado a um fornecedor (escopo).
+ensureColumns('usuarios', [
+  ['fornecedor_id', 'fornecedor_id INTEGER'],
+])
+// NF enviada pelo fornecedor no pedido.
+ensureColumns('pedidos_compra', [
+  ['nf_numero', 'nf_numero TEXT'],
+  ['nf_valor', 'nf_valor REAL'],
+])
+// Compliance de compras: a RC precisa de tipo (classificação de gasto) e de
+// vínculo WBS (rastreabilidade custo → contrato → projeto).
+ensureColumns('requisicoes_compra', [
+  ['tipo', 'tipo TEXT'],
+  ['wbs', 'wbs TEXT'],
+])
+// Rastreabilidade de custo na origem: a OS também exige vínculo WBS.
+ensureColumns('ordens_servico', [
+  ['wbs', 'wbs TEXT'],
+])
+// SSMA: encerrar incidente exige RCA (causa raiz + plano de ação).
+ensureColumns('ssma_ocorrencias', [
+  ['causa_raiz', 'causa_raiz TEXT'],
+  ['plano_acao', 'plano_acao TEXT'],
+])
+// Dupla aprovação de dados bancários: alterações ficam pendentes até 2º aval.
+ensureColumns('fornecedores', [
+  ['banco_pendente', 'banco_pendente TEXT'],
+  ['agencia_pendente', 'agencia_pendente TEXT'],
+  ['conta_pendente', 'conta_pendente TEXT'],
+  ['banco_solicitado_por', 'banco_solicitado_por TEXT'],
+  ['banco_solicitado_em', 'banco_solicitado_em TEXT'],
+])
+// Gate de pagamento precisa de NF e origem na conta a pagar.
+ensureColumns('contas_pagar', [
+  ['nota_fiscal', 'nota_fiscal TEXT'],
+  ['contrato_id', 'contrato_id TEXT'],
+  // Alçada por valor: aprovação de Diretor para pagamentos acima do limiar.
+  ['alcada_aprovada_por', 'alcada_aprovada_por TEXT'],
+  ['alcada_aprovada_em', 'alcada_aprovada_em TEXT'],
+])
+
+// Recebimento por item (alimenta o 3-way automaticamente).
+db.exec(`CREATE TABLE IF NOT EXISTS recebimentos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pc_id INTEGER,
+  nf_numero TEXT,
+  valor_nf REAL DEFAULT 0,
+  status TEXT,
+  conferente TEXT,
+  observacoes TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+db.exec(`CREATE TABLE IF NOT EXISTS recebimento_itens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recebimento_id INTEGER NOT NULL REFERENCES recebimentos(id) ON DELETE CASCADE,
+  pc_id INTEGER,
+  codigo_produto TEXT,
+  descricao TEXT,
+  quantidade_recebida REAL DEFAULT 0
+)`)
+// Soma do que já foi recebido por item de um pedido (chave: código ou descrição).
+function itensRecebidosAcumulados(pcId) {
+  return db.prepare(
+    `SELECT COALESCE(NULLIF(codigo_produto,''), descricao) AS codigo, descricao,
+            SUM(quantidade_recebida) AS quantidade_recebida
+       FROM recebimento_itens WHERE pc_id = ?
+      GROUP BY COALESCE(NULLIF(codigo_produto,''), descricao)`
+  ).all(pcId)
+}
 
 // ─── Sequências atômicas (numeração sem corrida) ──────────────
 // Substitui o `length+1` do cliente por um contador no servidor, incrementado
@@ -180,7 +264,7 @@ function getUser(req) {
   if (!token) return null
   try {
     const row = db.prepare(
-      `SELECT s.usuario_id, u.nome, u.email, u.perfil, u.ativo
+      `SELECT s.usuario_id, u.nome, u.email, u.perfil, u.ativo, u.fornecedor_id
        FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id
        WHERE s.token = ? AND u.ativo = 1`
     ).get(token)
@@ -208,9 +292,17 @@ function requireRole(...roles) {
 
 function log(userId, userName, acao, modulo, descricao) {
   try {
+    // Encadeia ao hash do último registro (tamper-evident). Em Node (single
+    // thread + better-sqlite3 síncrono) a leitura do último + insert é atômica.
+    const created_at = new Date().toISOString()
+    const ult = db.prepare(`SELECT hash FROM logs_sistema ORDER BY id DESC LIMIT 1`).get()
+    const hash_anterior = (ult && ult.hash) ? ult.hash : Auditoria.GENESIS
+    const reg = { usuario_id: userId, acao, modulo, descricao, created_at }
+    const hash = Auditoria.hashRegistro(reg, hash_anterior)
     db.prepare(
-      `INSERT INTO logs_sistema(usuario_id, usuario_nome, acao, modulo, descricao) VALUES(?,?,?,?,?)`
-    ).run(userId, userName, acao, modulo, descricao)
+      `INSERT INTO logs_sistema(usuario_id, usuario_nome, acao, modulo, descricao, created_at, hash, hash_anterior)
+       VALUES(?,?,?,?,?,?,?,?)`
+    ).run(userId, userName, acao, modulo, descricao, created_at, hash, hash_anterior)
   } catch {}
 }
 
@@ -297,6 +389,248 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
 // ════════════════════════════════════════════════════════════
 // FORNECEDORES
 // ════════════════════════════════════════════════════════════
+// LGPD — anonimiza os dados pessoais de um fornecedor (direito de eliminação).
+// Admin apenas. Irreversível: contato/email/telefone viram máscaras.
+app.post('/api/lgpd/anonimizar/fornecedores/:id', requireAuth, requireRole('admin'), (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  const novo = LGPD.anonimizarRegistro(
+    { contato: f.contato, email: f.email, telefone: f.telefone },
+    { contato: 'nome', email: 'email', telefone: 'telefone' }
+  )
+  db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, anonimizado=1, updated_at=datetime('now') WHERE id=?`)
+    .run(novo.contato, novo.email, novo.telefone, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'LGPD anonimizar', 'fornecedores', `Dados pessoais anonimizados: fornecedor ${req.params.id}`)
+  res.json(ok(db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)))
+})
+
+// LGPD — retenção: política de guarda dos dados pessoais de fornecedor.
+const RETENCAO_FORNECEDOR_MESES = parseInt(process.env.RETENCAO_FORNECEDOR_MESES) || 60
+function _fornecedoresVencidos() {
+  // Conservador: inativos, além da retenção e ainda não anonimizados.
+  const cands = db.prepare(
+    `SELECT * FROM fornecedores WHERE ativo = 0 AND COALESCE(anonimizado,0) = 0`
+  ).all()
+  return LGPD.vencidosPorRetencao(cands, { campoData: 'created_at', retencaoMeses: RETENCAO_FORNECEDOR_MESES })
+}
+
+// Preview (dry-run): quem SERIA anonimizado pela política, sem alterar nada.
+app.get('/api/lgpd/retencao/fornecedores', requireAuth, requireRole('admin'), (req, res) => {
+  const vencidos = _fornecedoresVencidos().map(f => ({ id: f.id, nome: f.nome, created_at: f.created_at, ativo: f.ativo }))
+  res.json(ok({ politica_meses: RETENCAO_FORNECEDOR_MESES, total: vencidos.length, fornecedores: vencidos }))
+})
+
+// Execução: anonimiza todos os vencidos pela política (admin).
+app.post('/api/lgpd/retencao/fornecedores/executar', requireAuth, requireRole('admin'), (req, res) => {
+  const vencidos = _fornecedoresVencidos()
+  const upd = db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, anonimizado=1, updated_at=datetime('now') WHERE id=?`)
+  let n = 0
+  for (const f of vencidos) {
+    const a = LGPD.anonimizarRegistro({ contato: f.contato, email: f.email, telefone: f.telefone }, { contato: 'nome', email: 'email', telefone: 'telefone' })
+    upd.run(a.contato, a.email, a.telefone, f.id)
+    n++
+  }
+  if (n) log(req.user.usuario_id, req.user.nome, 'LGPD retenção', 'fornecedores', `${n} fornecedor(es) anonimizado(s) por retenção (${RETENCAO_FORNECEDOR_MESES}m)`)
+  res.json(ok({ anonimizados: n, politica_meses: RETENCAO_FORNECEDOR_MESES }))
+})
+
+// ════════════════════════════════════════════════════════════
+// CENTRAL DE ALERTAS — consolida pendências acionáveis dos módulos
+// num único feed, ordenado por severidade. Fontes 100% server-side.
+// ════════════════════════════════════════════════════════════
+const SEV_PESO = { alta: 3, media: 2, baixa: 1 }
+// Antecedência de vencimento de contrato: vencido/≤30d → alta; ≤60d → média;
+// ≤90d → baixa; acima disso, sem alerta. Pura (espelhada no Worker).
+function classificarVencimentoContrato(dataFim, hoje = new Date().toISOString().slice(0, 10)) {
+  if (!dataFim) return null
+  const fim = String(dataFim).slice(0, 10)
+  const diasRest = Math.round((new Date(fim + 'T00:00:00Z') - new Date(hoje + 'T00:00:00Z')) / 864e5)
+  if (diasRest <= 30) return 'alta'
+  if (diasRest <= 60) return 'media'
+  if (diasRest <= 90) return 'baixa'
+  return null
+}
+
+function coletarAlertas({ dias = 7, isAdmin = false } = {}) {
+  const hoje = new Date().toISOString().slice(0, 10)
+  const limite = new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10)
+  const alertas = []
+
+  // 1) Contas a pagar VENCIDAS (dinheiro em atraso) → severidade alta.
+  for (const c of db.prepare(
+    `SELECT id, numero, descricao, valor, data_vencimento FROM contas_pagar
+      WHERE status IN ('Pendente','Aprovado','Vencido')
+        AND data_vencimento IS NOT NULL AND date(data_vencimento) < date(?)
+      ORDER BY data_vencimento ASC`
+  ).all(hoje)) {
+    alertas.push({ tipo: 'conta_vencida', severidade: 'alta', modulo: 'Financeiro',
+      titulo: `Conta vencida: ${c.numero}`, descricao: `${c.descricao || ''} — venc. ${c.data_vencimento}`,
+      valor: c.valor, data: c.data_vencimento, ref: c.id })
+  }
+
+  // 2) Contas a VENCER na janela (próximos N dias) → severidade média.
+  for (const c of db.prepare(
+    `SELECT id, numero, descricao, valor, data_vencimento FROM contas_pagar
+      WHERE status IN ('Pendente','Aprovado') AND data_vencimento IS NOT NULL
+        AND date(data_vencimento) >= date(?) AND date(data_vencimento) <= date(?)
+      ORDER BY data_vencimento ASC`
+  ).all(hoje, limite)) {
+    alertas.push({ tipo: 'conta_a_vencer', severidade: 'media', modulo: 'Financeiro',
+      titulo: `Conta a vencer: ${c.numero}`, descricao: `${c.descricao || ''} — venc. ${c.data_vencimento}`,
+      valor: c.valor, data: c.data_vencimento, ref: c.id })
+  }
+
+  // 3) Entregas ATRASADAS (pedido enviado, prazo estourado, não recebido) → alta.
+  for (const p of db.prepare(
+    `SELECT id, numero, fornecedor_nome, enviado_em, prazo_entrega FROM pedidos_compra
+      WHERE enviado_em IS NOT NULL
+        AND status NOT IN ('Entregue','Recebido','Cancelado','Concluído')
+        AND date(enviado_em, '+' || COALESCE(prazo_entrega,7) || ' days') < date(?)
+      ORDER BY enviado_em ASC`
+  ).all(hoje)) {
+    alertas.push({ tipo: 'entrega_atrasada', severidade: 'alta', modulo: 'Compras',
+      titulo: `Entrega atrasada: ${p.numero}`, descricao: `${p.fornecedor_nome || ''} — enviado ${p.enviado_em}, prazo ${p.prazo_entrega || 7}d`,
+      data: p.enviado_em, ref: p.id })
+  }
+
+  // 4) Retenção LGPD pendente — dado sensível, só para admin → média.
+  if (isAdmin) {
+    const venc = _fornecedoresVencidos()
+    if (venc.length) {
+      alertas.push({ tipo: 'lgpd_retencao', severidade: 'media', modulo: 'LGPD',
+        titulo: `Retenção LGPD: ${venc.length} fornecedor(es) a anonimizar`,
+        descricao: `Inativos além de ${RETENCAO_FORNECEDOR_MESES} meses, ainda não anonimizados.`,
+        valor: venc.length, ref: 'lgpd' })
+    }
+  }
+
+  // 5) Vencimento de contrato — antecedência 90/60/30 (severidade crescente).
+  const lim90 = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10)
+  for (const c of db.prepare(
+    `SELECT id, numero, titulo, fornecedor_nome, data_fim FROM contratos
+      WHERE status = 'Ativo' AND data_fim IS NOT NULL AND date(data_fim) <= date(?)
+      ORDER BY data_fim ASC`
+  ).all(lim90)) {
+    const sev = classificarVencimentoContrato(c.data_fim, hoje)
+    if (!sev) continue
+    const venc = c.data_fim < hoje
+    alertas.push({ tipo: 'contrato_vencimento', severidade: sev, modulo: 'Contratos',
+      titulo: `${venc ? 'Contrato vencido' : 'Contrato a vencer'}: ${c.numero}`,
+      descricao: `${c.titulo || c.fornecedor_nome || ''} — fim ${c.data_fim}`,
+      data: c.data_fim, ref: c.id })
+  }
+
+  alertas.sort((a, b) => (SEV_PESO[b.severidade] || 0) - (SEV_PESO[a.severidade] || 0))
+  return alertas
+}
+
+app.get('/api/alertas', requireAuth, (req, res) => {
+  // Feed interno: fornecedor (portal) não acessa a central de alertas.
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso à central de alertas', 403))
+  const dias = Math.max(1, Math.min(parseInt(req.query.dias) || 7, 90))
+  const alertas = coletarAlertas({ dias, isAdmin: req.user.perfil === 'admin' })
+  const resumo = { total: alertas.length, alta: 0, media: 0, baixa: 0 }
+  for (const a of alertas) resumo[a.severidade] = (resumo[a.severidade] || 0) + 1
+  res.json(ok({ resumo, dias, alertas }))
+})
+
+// ════════════════════════════════════════════════════════════
+// DASHBOARD BI — KPIs gerenciais consolidados (exposição financeira,
+// governança do gate, homologação de fornecedores, alertas). Server-side.
+// ════════════════════════════════════════════════════════════
+function coletarKPIs({ dias = 30, isAdmin = false } = {}) {
+  const hoje = new Date().toISOString().slice(0, 10)
+  const limite = new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10)
+  const one = (sql, ...p) => db.prepare(sql).get(...p)
+
+  // Exposição financeira (Pendente/Aprovado = compromissado, ainda não pago).
+  const aPagar = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar WHERE status IN ('Pendente','Aprovado')`)
+  const vencido = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar
+      WHERE status IN ('Pendente','Aprovado','Vencido') AND data_vencimento IS NOT NULL AND date(data_vencimento) < date(?)`, hoje)
+  const aVencer = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar
+      WHERE status IN ('Pendente','Aprovado') AND data_vencimento IS NOT NULL
+        AND date(data_vencimento) >= date(?) AND date(data_vencimento) <= date(?)`, hoje, limite)
+  const pago = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar WHERE status = 'Pago'`)
+
+  // Governança do gate: bloqueios vs. pagamentos liberados (trilha de logs).
+  const bloqueios = one(`SELECT COUNT(*) n FROM logs_sistema WHERE acao = 'payment_blocked'`).n
+  const liberados = one(`SELECT COUNT(*) n FROM logs_sistema WHERE acao = 'Pagar' AND modulo = 'contas_pagar'`).n
+  const totGate = bloqueios + liberados
+
+  // Homologação e qualidade de fornecedores.
+  const fornAtivos = one(`SELECT COUNT(*) n, COALESCE(AVG(score_medio),0) score FROM fornecedores WHERE ativo = 1`)
+  const porStatus = db.prepare(`SELECT COALESCE(status,'—') status, COUNT(*) n FROM fornecedores WHERE ativo = 1 GROUP BY status`).all()
+
+  // Compras: valor comprometido em pedidos ativos e taxa de entrega.
+  const pc = one(`SELECT COUNT(*) tot,
+      COALESCE(SUM(CASE WHEN status != 'Cancelado' THEN valor_total ELSE 0 END),0) val,
+      SUM(CASE WHEN status IN ('Entregue','Recebido','Concluído') THEN 1 ELSE 0 END) entregues
+      FROM pedidos_compra`)
+
+  // Alertas por severidade (reusa o motor da central).
+  const alertas = coletarAlertas({ dias, isAdmin })
+  const sevs = { total: alertas.length, alta: 0, media: 0 }
+  for (const a of alertas) if (sevs[a.severidade] != null) sevs[a.severidade]++
+
+  return {
+    gerado_em: new Date().toISOString(),
+    dias,
+    financeiro: {
+      a_pagar_valor: aPagar.val, a_pagar_qtd: aPagar.qtd,
+      vencido_valor: vencido.val, vencido_qtd: vencido.qtd,
+      a_vencer_valor: aVencer.val, a_vencer_qtd: aVencer.qtd,
+      pago_valor: pago.val,
+    },
+    gate: {
+      bloqueios, liberados,
+      taxa_bloqueio: totGate ? +(bloqueios / totGate).toFixed(3) : 0,
+    },
+    fornecedores: {
+      ativos: fornAtivos.n, score_medio: +(fornAtivos.score || 0).toFixed(2),
+      por_status: porStatus,
+    },
+    compras: {
+      pc_valor_ativo: pc.val, pc_total: pc.tot, pc_entregues: pc.entregues || 0,
+      pc_entregues_pct: pc.tot ? +(((pc.entregues || 0) / pc.tot) * 100).toFixed(1) : 0,
+    },
+    alertas: sevs,
+  }
+}
+
+app.get('/api/bi', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao painel gerencial', 403))
+  const dias = Math.max(1, Math.min(parseInt(req.query.dias) || 30, 365))
+  res.json(ok(coletarKPIs({ dias, isAdmin: req.user.perfil === 'admin' })))
+})
+
+// Fluxo de caixa (saídas): comparativo semanal planejado × realizado por contrato.
+app.get('/api/fluxo-caixa', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao fluxo de caixa', 403))
+  const semanas = Math.max(1, Math.min(parseInt(req.query.semanas) || 8, 52))
+  const contas = db.prepare(`SELECT valor, data_vencimento, data_pagamento, status, contrato_id, pc_numero FROM contas_pagar`).all()
+  res.json(ok(montarFluxoCaixa(contas, { semanas })))
+})
+
+// Consulta a bureau de crédito (provedor por env; mock por padrão).
+app.post('/api/credito/consultar', requireAuth, async (req, res) => {
+  try {
+    const data = await consultarCredito(req.body && req.body.cnpj, { provider: process.env.CREDIT_BUREAU_PROVIDER })
+    res.json(ok(data))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
+// Situação cadastral (Receita/SEFAZ): consulta avulsa do CNPJ.
+app.post('/api/receita/consultar', requireAuth, async (req, res) => {
+  try {
+    const data = await consultarReceita(req.body && req.body.cnpj, { provider: process.env.RECEITA_PROVIDER })
+    res.json(ok(data))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
 // Numeração atômica: POST /api/sequencia/PC → { numero: 'PC-2026-0001', ... }
 app.post('/api/sequencia/:tipo', requireAuth, (req, res) => {
   try {
@@ -305,6 +639,81 @@ app.post('/api/sequencia/:tipo', requireAuth, (req, res) => {
   } catch (e) {
     res.status(400).json(err(e.message))
   }
+})
+
+// ════════════════════════════════════════════════════════════
+// PORTAL DO FORNECEDOR (self-service, escopo restrito ao próprio fornecedor)
+// ════════════════════════════════════════════════════════════
+// Garante perfil 'fornecedor' COM vínculo. Toda rota /portal usa req.user.fornecedor_id
+// como filtro — um fornecedor nunca enxerga dados de outro.
+function requirePortal(req, res, next) {
+  if (!req.user || req.user.perfil !== 'fornecedor') return res.status(403).json(err('Acesso restrito ao portal do fornecedor', 403))
+  if (!req.user.fornecedor_id) return res.status(403).json(err('Usuário sem fornecedor vinculado', 403))
+  next()
+}
+
+app.get('/api/portal/pedidos', requireAuth, requirePortal, (req, res) => {
+  const rows = db.prepare(
+    `SELECT id, numero, status, valor_total, prazo_entrega, created_at, nf_numero, nf_valor
+       FROM pedidos_compra WHERE fornecedor_id = ? ORDER BY created_at DESC LIMIT 200`
+  ).all(req.user.fornecedor_id)
+  res.json(ok(rows))
+})
+
+app.post('/api/portal/pedidos/:id/nf', requireAuth, requirePortal, (req, res) => {
+  const ped = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(req.params.id)
+  if (!ped) return res.status(404).json(err('Pedido não encontrado'))
+  // Ownership: só o dono do pedido pode anexar NF.
+  if (ped.fornecedor_id !== req.user.fornecedor_id) return res.status(403).json(err('Pedido não pertence a este fornecedor', 403))
+  const { nf_numero, nf_valor } = req.body || {}
+  if (!nf_numero) return res.status(400).json(err('Informe o número da NF'))
+  db.prepare(`UPDATE pedidos_compra SET nf_numero=?, nf_valor=?, status='NF Enviada', updated_at=datetime('now') WHERE id=?`)
+    .run(nf_numero, nf_valor || ped.valor_total || 0, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'Portal NF', 'pedidos_compra', `NF ${nf_numero} enviada no pedido ${ped.numero}`)
+  res.json(ok(db.prepare(`SELECT id, numero, status, nf_numero, nf_valor FROM pedidos_compra WHERE id = ?`).get(req.params.id)))
+})
+
+app.get('/api/portal/perfil', requireAuth, requirePortal, (req, res) => {
+  const f = db.prepare(`SELECT id, nome, razao_social, cnpj, contato, email, telefone, banco, agencia, conta FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  res.json(ok(f))
+})
+
+app.put('/api/portal/perfil', requireAuth, requirePortal, (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  const b = req.body || {}
+  // Fornecedor edita só contato (nunca crédito/status/ativo). Dados bancários
+  // entram como PENDENTES de dupla aprovação interna (anti-desvio de pagamento).
+  const bankChange = alteracaoBancariaSolicitada(f, b)
+  db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.contato ?? f.contato, b.email ?? f.email, b.telefone ?? f.telefone, req.user.fornecedor_id)
+  if (bankChange) {
+    db.prepare(`UPDATE fornecedores SET banco_pendente=?, agencia_pendente=?, conta_pendente=?, banco_solicitado_por=?, banco_solicitado_em=datetime('now') WHERE id=?`)
+      .run(bankChange.banco ?? f.banco, bankChange.agencia ?? f.agencia, bankChange.conta ?? f.conta, `portal:${f.nome}`, req.user.fornecedor_id)
+    log(req.user.usuario_id, req.user.nome, 'banco_alteracao_solicitada', 'fornecedores', `Alteração bancária via portal pendente de aprovação: ${f.nome}`)
+  }
+  log(req.user.usuario_id, req.user.nome, 'Portal perfil', 'fornecedores', `Atualização de cadastro pelo portal`)
+  res.json(ok(db.prepare(`SELECT id, nome, contato, email, telefone, banco, agencia, conta, banco_solicitado_por FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)))
+})
+
+// Normalização de CNPJ em SQL (só dígitos) — usada na detecção de duplicatas.
+const CNPJ_NORM = `REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(cnpj,''),'.',''),'/',''),'-',''),' ','')`
+
+// Relatório de duplicatas: fornecedores por CNPJ e NFs repetidas em contas a pagar.
+app.get('/api/duplicatas', requireAuth, (req, res) => {
+  const grpForn = db.prepare(`SELECT ${CNPJ_NORM} cnpj, COUNT(*) n FROM fornecedores WHERE ${CNPJ_NORM} <> '' GROUP BY ${CNPJ_NORM} HAVING n > 1`).all()
+  const fornecedores = grpForn.map(g => ({
+    cnpj: g.cnpj, total: g.n,
+    ocorrencias: db.prepare(`SELECT id, nome, ativo FROM fornecedores WHERE ${CNPJ_NORM} = ?`).all(g.cnpj),
+  }))
+  const grpNF = db.prepare(`SELECT nota_fiscal, COUNT(*) n FROM contas_pagar
+      WHERE nota_fiscal IS NOT NULL AND nota_fiscal <> '' AND nota_fiscal <> '—' GROUP BY nota_fiscal HAVING n > 1`).all()
+  const notas_fiscais = grpNF.map(g => ({
+    nota_fiscal: g.nota_fiscal, total: g.n,
+    ocorrencias: db.prepare(`SELECT id, fornecedor_nome, valor FROM contas_pagar WHERE nota_fiscal = ?`).all(g.nota_fiscal),
+  }))
+  res.json(ok({ resumo: { fornecedores_dup: fornecedores.length, nf_dup: notas_fiscais.length }, fornecedores, notas_fiscais }))
 })
 
 app.get('/api/fornecedores', requireAuth, (req, res) => {
@@ -333,6 +742,12 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   const b = req.body || {}
   const nome = b.nome
   if (!nome) return res.status(400).json(err('Nome obrigatório'))
+  // Qualidade de dados: bloqueia CNPJ duplicado (compara só dígitos).
+  const cnpjDig = String(b.cnpj || '').replace(/\D/g, '')
+  if (cnpjDig) {
+    const dup = db.prepare(`SELECT id, nome FROM fornecedores WHERE ${CNPJ_NORM} = ?`).get(cnpjDig)
+    if (dup) return res.status(409).json(err(`CNPJ já cadastrado no fornecedor "${dup.nome}" (#${dup.id}) — duplicata`))
+  }
   // Aceita aliases vindos do frontend (contato_nome, prazo_pagamento).
   const contato = b.contato ?? b.contato_nome ?? null
   const prazo = b.prazo_entrega ?? b.prazo_pagamento ?? 7
@@ -353,12 +768,47 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   res.status(201).json(ok(f))
 })
 
+// Detecta alteração de dados bancários (banco/agência/conta) no corpo vs. atual.
+function alteracaoBancariaSolicitada(atual, b) {
+  const mudou = {}
+  for (const c of ['banco', 'agencia', 'conta']) {
+    if (b[c] !== undefined && String(b[c] ?? '') !== String(atual[c] ?? '')) mudou[c] = b[c]
+  }
+  return Object.keys(mudou).length ? mudou : null
+}
+
+// Aprovação da alteração bancária — exige 2ª pessoa (segregação anti-desvio).
+app.post('/api/fornecedores/:id/aprovar-banco', requireAuth, requireRole('admin', 'diretor', 'financeiro'), (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  if (!f.banco_solicitado_por) return res.status(400).json(err('Não há alteração bancária pendente'))
+  if (f.banco_solicitado_por === req.user.nome) {
+    return res.status(403).json(err('A aprovação deve ser feita por outro usuário (segregação de funções)'))
+  }
+  db.prepare(`UPDATE fornecedores SET banco=?, agencia=?, conta=?, banco_pendente=NULL, agencia_pendente=NULL, conta_pendente=NULL, banco_solicitado_por=NULL, banco_solicitado_em=NULL, updated_at=datetime('now') WHERE id=?`)
+    .run(f.banco_pendente, f.agencia_pendente, f.conta_pendente, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'banco_alteracao_aprovada', 'fornecedores', `Alteração bancária aprovada: ${f.nome} (solicitante: ${f.banco_solicitado_por})`)
+  res.json(ok(db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)))
+})
+
+// Rejeição descarta a alteração pendente.
+app.post('/api/fornecedores/:id/rejeitar-banco', requireAuth, requireRole('admin', 'diretor', 'financeiro'), (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  if (!f.banco_solicitado_por) return res.status(400).json(err('Não há alteração bancária pendente'))
+  db.prepare(`UPDATE fornecedores SET banco_pendente=NULL, agencia_pendente=NULL, conta_pendente=NULL, banco_solicitado_por=NULL, banco_solicitado_em=NULL WHERE id=?`).run(req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'banco_alteracao_rejeitada', 'fornecedores', `Alteração bancária rejeitada: ${f.nome}`)
+  res.json(ok(db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)))
+})
+
 app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
   const b = req.body || {}
   const atual = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
   if (!atual) return res.status(404).json(err('Fornecedor não encontrado'))
   // Merge parcial: só sobrescreve o que veio no corpo (aceita aliases).
   const v = (campo, ...alias) => { for (const k of [campo, ...alias]) if (b[k] !== undefined) return b[k]; return atual[campo] }
+  // Dados bancários NÃO são aplicados direto: ficam pendentes de 2ª aprovação.
+  const bankChange = alteracaoBancariaSolicitada(atual, b)
   db.prepare(
     `UPDATE fornecedores SET nome=?,razao_social=?,nome_fantasia=?,cnpj=?,email=?,telefone=?,contato=?,cidade=?,estado=?,
        categoria=?,ativo=?,banco=?,agencia=?,conta=?,prazo_entrega=?,condicao_pagamento=?,observacoes=?,
@@ -366,11 +816,16 @@ app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
        updated_at=datetime('now') WHERE id=?`
   ).run(
     v('nome'), v('razao_social'), v('nome_fantasia'), v('cnpj'), v('email'), v('telefone'), v('contato', 'contato_nome'),
-    v('cidade'), v('estado'), v('categoria'), b.ativo ?? atual.ativo, v('banco'), v('agencia'), v('conta'),
+    v('cidade'), v('estado'), v('categoria'), b.ativo ?? atual.ativo, atual.banco, atual.agencia, atual.conta,
     v('prazo_entrega', 'prazo_pagamento'), v('condicao_pagamento'), v('observacoes'),
     v('faturamento_anual'), v('limite_credito'), v('score_credito'), v('classificacao_credito'), v('analise_credito'),
     v('status'), req.params.id
   )
+  if (bankChange) {
+    db.prepare(`UPDATE fornecedores SET banco_pendente=?, agencia_pendente=?, conta_pendente=?, banco_solicitado_por=?, banco_solicitado_em=datetime('now') WHERE id=?`)
+      .run(bankChange.banco ?? atual.banco, bankChange.agencia ?? atual.agencia, bankChange.conta ?? atual.conta, req.user.nome, req.params.id)
+    log(req.user.usuario_id, req.user.nome, 'banco_alteracao_solicitada', 'fornecedores', `Alteração bancária pendente de aprovação: ${atual.nome}`)
+  }
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Editar', 'fornecedores', `Fornecedor atualizado: ${v('nome')}`)
   res.json(ok(f))
@@ -417,23 +872,33 @@ app.get('/api/os/:id', requireAuth, (req, res) => {
 })
 
 app.post('/api/os', requireAuth, (req, res) => {
-  const { titulo, descricao, departamento, prioridade, valor_estimado, centro_custo, projeto, data_necessidade } = req.body
+  const { titulo, descricao, departamento, prioridade, valor_estimado, centro_custo, projeto, data_necessidade, wbs } = req.body
   if (!titulo) return res.status(400).json(err('Título obrigatório'))
+  // Compliance: WBS obrigatória para rastreabilidade de custo na origem da demanda.
+  if (!wbs || !String(wbs).trim()) return res.status(400).json(err('Vínculo WBS obrigatório na OS (rastreabilidade de custo)'))
   const numero = nextOS()
   const r = db.prepare(
-    `INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, titulo, descricao, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valor_estimado || 0, centro_custo, projeto, data_necessidade)
+    `INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, titulo, descricao, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valor_estimado || 0, centro_custo, projeto, data_necessidade, String(wbs).trim())
   const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'os', `OS criada: ${numero}`)
   res.status(201).json(ok(os))
 })
 
 app.put('/api/os/:id', requireAuth, (req, res) => {
+  const cur = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
+  if (!cur) return res.status(404).json(err('OS não encontrada'))
   const { titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade } = req.body
+  // WBS não pode ser removida; se enviada, deve permanecer preenchida.
+  let wbs = cur.wbs
+  if (req.body.wbs !== undefined) {
+    if (!String(req.body.wbs).trim()) return res.status(400).json(err('WBS não pode ser removida da OS'))
+    wbs = String(req.body.wbs).trim()
+  }
   db.prepare(
-    `UPDATE ordens_servico SET titulo=?,descricao=?,departamento=?,prioridade=?,status=?,valor_estimado=?,centro_custo=?,projeto=?,data_necessidade=?,updated_at=datetime('now') WHERE id=?`
-  ).run(titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, req.params.id)
+    `UPDATE ordens_servico SET titulo=?,descricao=?,departamento=?,prioridade=?,status=?,valor_estimado=?,centro_custo=?,projeto=?,data_necessidade=?,wbs=?,updated_at=datetime('now') WHERE id=?`
+  ).run(titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs, req.params.id)
   const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Editar', 'os', `OS atualizada: ${os.numero}`)
   res.json(ok(os))
@@ -510,14 +975,27 @@ app.get('/api/rc/:id', requireAuth, (req, res) => {
   res.json(ok({ ...rc, itens }))
 })
 
+// Tipos de RC aceitos (classificação obrigatória do gasto). Aceita acento/caixa.
+function normalizarTipoRC(v) {
+  const k = String(v || '').trim().toLowerCase()
+  if (k === 'material') return 'Material'
+  if (k === 'servico' || k === 'servi\u00e7o' || k === 'servi\u00e7os' || k === 'servicos') return 'Servi\u00e7o'
+  if (k === 'equipamento') return 'Equipamento'
+  return null
+}
+
 app.post('/api/rc', requireAuth, (req, res) => {
-  const { os_id, os_numero, departamento, prioridade, observacoes, itens = [] } = req.body
+  const { os_id, os_numero, departamento, prioridade, observacoes, tipo, wbs, itens = [] } = req.body
+  // Compliance: tipo válido e WBS são obrigatórios para rastreabilidade de custo.
+  const tipoCanon = normalizarTipoRC(tipo)
+  if (!tipoCanon) return res.status(400).json(err('Tipo da RC obrigatório: Material, Serviço ou Equipamento'))
+  if (!wbs || !String(wbs).trim()) return res.status(400).json(err('Vínculo WBS obrigatório na RC (rastreabilidade de custo)'))
   const numero = nextRC()
   const valorTotal = itens.reduce((s, i) => s + ((i.quantidade || 1) * (i.valor_unitario_estimado || 0)), 0)
   const r = db.prepare(
-    `INSERT INTO requisicoes_compra(numero, os_id, os_numero, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_total, observacoes)
-     VALUES(?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, os_id || null, os_numero, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valorTotal, observacoes)
+    `INSERT INTO requisicoes_compra(numero, os_id, os_numero, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_total, observacoes, tipo, wbs)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, os_id || null, os_numero, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valorTotal, observacoes, tipoCanon, String(wbs).trim())
   const rcId = r.lastInsertRowid
   for (const item of itens) {
     const vt = (item.quantidade || 1) * (item.valor_unitario_estimado || 0)
@@ -530,11 +1008,22 @@ app.post('/api/rc', requireAuth, (req, res) => {
 })
 
 app.put('/api/rc/:id', requireAuth, (req, res) => {
+  const cur = db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)
+  if (!cur) return res.status(404).json(err('RC não encontrada'))
   const { status, departamento, prioridade, observacoes } = req.body
-  db.prepare(`UPDATE requisicoes_compra SET status=?,departamento=?,prioridade=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
-    .run(status, departamento, prioridade, observacoes, req.params.id)
-  const rc = db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)
-  res.json(ok(rc))
+  // tipo/WBS não podem ser removidos; se enviados, devem permanecer válidos.
+  let tipo = cur.tipo, wbs = cur.wbs
+  if (req.body.tipo !== undefined) {
+    tipo = normalizarTipoRC(req.body.tipo)
+    if (!tipo) return res.status(400).json(err('Tipo da RC inválido: use Material, Serviço ou Equipamento'))
+  }
+  if (req.body.wbs !== undefined) {
+    if (!String(req.body.wbs).trim()) return res.status(400).json(err('WBS não pode ser removida da RC'))
+    wbs = String(req.body.wbs).trim()
+  }
+  db.prepare(`UPDATE requisicoes_compra SET status=?,departamento=?,prioridade=?,observacoes=?,tipo=?,wbs=?,updated_at=datetime('now') WHERE id=?`)
+    .run(status, departamento, prioridade, observacoes, tipo, wbs, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)))
 })
 
 // ════════════════════════════════════════════════════════════
@@ -619,9 +1108,28 @@ app.get('/api/mapas', requireAuth, (req, res) => {
   res.json(ok(rows))
 })
 
+// Concorrência mínima: compras acima do limiar exigem N cotações; exceção só
+// com justificativa + Diretor (registrada na trilha). Pura (espelhada no Worker).
+const CONCORRENCIA_VALOR_MIN = parseFloat(process.env.CONCORRENCIA_VALOR_MIN) || 10000
+const CONCORRENCIA_MIN_COTACOES = parseInt(process.env.CONCORRENCIA_MIN_COTACOES) || 3
+function avaliarConcorrencia({ valor = 0, numCotacoes = 0, justificativa = '', perfil = '' } = {}) {
+  if ((Number(valor) || 0) <= CONCORRENCIA_VALOR_MIN) return { ok: true }
+  if ((Number(numCotacoes) || 0) >= CONCORRENCIA_MIN_COTACOES) return { ok: true }
+  const ehDiretor = perfil === 'diretor' || perfil === 'admin'
+  if (String(justificativa || '').trim() && ehDiretor) return { ok: true, excecao: true }
+  return { ok: false, motivo: `Compra acima de R$ ${CONCORRENCIA_VALOR_MIN} exige ${CONCORRENCIA_MIN_COTACOES} cotações (recebidas: ${Number(numCotacoes) || 0}). Exceção requer justificativa e aprovação de Diretor.` }
+}
+
 app.post('/api/mapas', requireAuth, (req, res) => {
   const { rfq_id, cotacao_vencedora_id, fornecedor_vencedor_id, valor_aprovado, economia_gerada, justificativa } = req.body
   if (!rfq_id || !cotacao_vencedora_id) return res.status(400).json(err('RFQ e cotação vencedora obrigatórios'))
+  // Compliance: concorrência mínima para compras acima do limiar.
+  const numCotacoes = db.prepare(`SELECT COUNT(*) as n FROM cotacoes WHERE rfq_id = ?`).get(rfq_id).n
+  const conc = avaliarConcorrencia({ valor: valor_aprovado || 0, numCotacoes, justificativa, perfil: req.user.perfil })
+  if (!conc.ok) {
+    log(req.user.usuario_id, req.user.nome, 'concorrencia_bloqueada', 'mapas', conc.motivo)
+    return res.status(409).json(err(conc.motivo, 409))
+  }
   const rfq = db.prepare(`SELECT numero FROM rfq WHERE id = ?`).get(rfq_id)
   const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fornecedor_vencedor_id)
   const numero = nextMapa()
@@ -630,6 +1138,7 @@ app.post('/api/mapas', requireAuth, (req, res) => {
      VALUES(?,?,?,?,?,?,?,?,?,?)`
   ).run(numero, rfq_id, rfq?.numero, cotacao_vencedora_id, fornecedor_vencedor_id, f?.nome, 'Em análise', valor_aprovado || 0, economia_gerada || 0, justificativa)
   db.prepare(`UPDATE cotacoes SET vencedor = 1 WHERE id = ?`).run(cotacao_vencedora_id)
+  if (conc.excecao) log(req.user.usuario_id, req.user.nome, 'concorrencia_excecao', 'mapas', `Exceção de concorrência (${numCotacoes} cotação(ões)) aprovada por Diretor: ${justificativa}`)
   const mapa = db.prepare(`SELECT * FROM mapas_comparativos WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'mapas', `Mapa criado: ${numero}`)
   res.status(201).json(ok(mapa))
@@ -685,10 +1194,20 @@ app.get('/api/pedidos/:id', requireAuth, (req, res) => {
   res.json(ok({ ...pc, itens, historico }))
 })
 
-app.post('/api/pedidos', requireAuth, (req, res) => {
+app.post('/api/pedidos', requireAuth, async (req, res) => {
   const { mapa_id, mapa_numero, rc_id, fornecedor_id, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, itens = [] } = req.body
   if (!fornecedor_id) return res.status(400).json(err('Fornecedor obrigatório'))
-  const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fornecedor_id)
+  const f = db.prepare(`SELECT nome, cnpj FROM fornecedores WHERE id = ?`).get(fornecedor_id)
+  // Compliance: valida a situação cadastral (Receita/SEFAZ) antes de emitir a PC.
+  if (f && f.cnpj && (process.env.ENFORCE_RECEITA_PO ?? '1') !== '0') {
+    try {
+      const sit = await consultarReceita(f.cnpj, { provider: process.env.RECEITA_PROVIDER })
+      if (!sit.regular) {
+        log(req.user.usuario_id, req.user.nome, 'po_bloqueada_receita', 'pedidos_compra', `Fornecedor ${f.nome} com situação ${sit.situacao_cadastral}`)
+        return res.status(409).json(err(`Emissão bloqueada: fornecedor com situação cadastral irregular na Receita (${sit.situacao_cadastral})`))
+      }
+    } catch (e) { /* CNPJ inválido/sem provedor não bloqueia a emissão aqui */ }
+  }
   const numero = nextPC()
   const r = db.prepare(
     `INSERT INTO pedidos_compra(numero, mapa_id, mapa_numero, rc_id, fornecedor_id, fornecedor_nome, status, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, comprador_id, comprador_nome)
@@ -781,6 +1300,103 @@ app.put('/api/contas-pagar/:id', requireAuth, requireRole('admin', 'financeiro')
   db.prepare(`UPDATE contas_pagar SET status=?,data_pagamento=?,forma_pagamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
     .run(status, data_pagamento, forma_pagamento, observacoes, req.params.id)
   res.json(ok(db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)))
+})
+
+// ── Recebimento por item ──────────────────────────────────────
+app.get('/api/recebimentos', requireAuth, (req, res) => {
+  const { pc_id } = req.query
+  let sql = `SELECT * FROM recebimentos`
+  const params = []
+  if (pc_id) { sql += ` WHERE pc_id = ?`; params.push(pc_id) }
+  sql += ` ORDER BY created_at DESC LIMIT 200`
+  const recs = db.prepare(sql).all(...params).map(r => ({
+    ...r, itens: db.prepare(`SELECT * FROM recebimento_itens WHERE recebimento_id = ?`).all(r.id)
+  }))
+  res.json(ok(recs))
+})
+
+app.post('/api/recebimentos', requireAuth, (req, res) => {
+  const b = req.body || {}
+  const r = db.prepare(
+    `INSERT INTO recebimentos(pc_id, nf_numero, valor_nf, status, conferente, observacoes)
+     VALUES(?,?,?,?,?,?)`
+  ).run(b.pc_id ?? null, b.nf_numero ?? null, b.valor_nf ?? 0, b.status ?? 'Conforme',
+        b.conferente ?? req.user.nome, b.observacoes ?? null)
+  const recId = r.lastInsertRowid
+  const itens = Array.isArray(b.itens) ? b.itens : []
+  const ins = db.prepare(`INSERT INTO recebimento_itens(recebimento_id, pc_id, codigo_produto, descricao, quantidade_recebida) VALUES(?,?,?,?,?)`)
+  for (const it of itens) {
+    ins.run(recId, b.pc_id ?? null, it.codigo_produto ?? it.codigo ?? null, it.descricao ?? it.desc ?? null,
+            Number(it.quantidade_recebida ?? it.qtd_recebida ?? it.qtd ?? 0) || 0)
+  }
+  log(req.user.usuario_id, req.user.nome, 'Receber', 'recebimentos', `Recebimento NF ${b.nf_numero || '—'} (${itens.length} item(ns))`)
+  const rec = db.prepare(`SELECT * FROM recebimentos WHERE id = ?`).get(recId)
+  res.status(201).json(ok({ ...rec, itens: db.prepare(`SELECT * FROM recebimento_itens WHERE recebimento_id = ?`).all(recId) }))
+})
+
+// GATE DE PAGAMENTO: "nada paga sem lastro" + 3-way por item. Segregação: só
+// financeiro/admin. Bloqueios respondem 409 e ficam na trilha de auditoria.
+// Alçada de pagamento: acima do limiar exige aprovação de Diretor (segregação
+// do pagador). Pura (espelhada no Worker).
+const ALCADA_PAGAMENTO_VALOR = parseFloat(process.env.ALCADA_PAGAMENTO_VALOR) || 50000
+function alcadaPendente({ valor = 0, aprovadaPor = null, limite = ALCADA_PAGAMENTO_VALOR } = {}) {
+  return (Number(valor) || 0) > limite && !String(aprovadaPor || '').trim()
+}
+
+// Aprovação de alçada por Diretor — distinta do pagamento (segregação de funções).
+app.post('/api/contas-pagar/:id/aprovar-alcada', requireAuth, requireRole('admin', 'diretor'), (req, res) => {
+  const conta = db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)
+  if (!conta) return res.status(404).json(err('Conta não encontrada'))
+  db.prepare(`UPDATE contas_pagar SET alcada_aprovada_por=?, alcada_aprovada_em=datetime('now') WHERE id=?`)
+    .run(req.user.nome, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'alcada_aprovada', 'contas_pagar', `Alçada aprovada: ${conta.descricao} (R$ ${conta.valor})`)
+  res.json(ok(db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)))
+})
+
+app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
+  const conta = db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)
+  if (!conta) return res.status(404).json(err('Conta não encontrada'))
+
+  const motivos = []
+  if (conta.data_pagamento || conta.status === 'Pago') motivos.push('conta já paga (duplicidade)')
+  if (!['Aprovado', 'Aprovada', 'Liberado'].includes(conta.status)) motivos.push('não aprovada no fluxo')
+  if (!conta.nota_fiscal || conta.nota_fiscal === '—') motivos.push('sem nota fiscal')
+  const origem = conta.pc_id || (conta.contrato_id && conta.contrato_id !== 'Geral' && conta.contrato_id !== '—')
+  if (!origem) motivos.push('sem pedido ou contrato de origem (lastro)')
+  // Alçada por valor: acima do limiar exige aprovação prévia de Diretor.
+  if (alcadaPendente({ valor: conta.valor, aprovadaPor: conta.alcada_aprovada_por })) {
+    motivos.push(`acima de R$ ${ALCADA_PAGAMENTO_VALOR} sem aprovação de alçada (Diretor Financeiro)`)
+  }
+  if (motivos.length) {
+    log(req.user.usuario_id, req.user.nome, 'payment_blocked', 'contas_pagar', `Bloqueio: ${motivos.join('; ')}`)
+    return res.status(409).json(err('Pagamento bloqueado: ' + motivos.join('; ')))
+  }
+
+  // 3-way por item: confere a nota contra o pedido (e recebimento, se houver).
+  if (conta.pc_id && conciliarTresVias) {
+    const itensPedido = db.prepare(`SELECT descricao, quantidade, valor_unitario, codigo_produto FROM pc_itens WHERE pc_id = ?`).all(conta.pc_id)
+    const itensNota = (req.body && req.body.itens_nota) || []
+    // Auto-feed: se o corpo não trouxer os recebidos, usa o acumulado do banco.
+    let itensRecebidos = (req.body && req.body.itens_recebidos) || []
+    if (!itensRecebidos.length) itensRecebidos = itensRecebidosAcumulados(conta.pc_id)
+    if (itensNota.length) {
+      const r = conciliarTresVias({ itensPedido, itensRecebidos, itensNota })
+      if (!r.conforme) {
+        log(req.user.usuario_id, req.user.nome, 'payment_blocked', 'contas_pagar', `Bloqueio 3-way: ${r.divergencias.map(d => d.tipo).join(',')}`)
+        return res.status(409).json(err('Pagamento bloqueado (3-way): ' + r.divergencias.map(d => d.detalhe).join('; ')))
+      }
+    }
+    // Fallback de total: a conta não pode exceder o pedido (+2%).
+    const ped = db.prepare(`SELECT valor_total FROM pedidos_compra WHERE id = ?`).get(conta.pc_id)
+    if (ped && typeof conta.valor === 'number' && conta.valor > ped.valor_total * 1.02) {
+      return res.status(409).json(err('Pagamento bloqueado: valor acima do pedido de origem'))
+    }
+  }
+
+  const data_pagamento = new Date().toISOString().split('T')[0]
+  db.prepare(`UPDATE contas_pagar SET status='Pago', data_pagamento=?, updated_at=datetime('now') WHERE id=?`).run(data_pagamento, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'Pagar', 'contas_pagar', `Pagamento liberado: ${conta.descricao} (R$ ${conta.valor})`)
+  res.json(ok({ id: conta.id, status: 'Pago', data_pagamento }))
 })
 
 // ════════════════════════════════════════════════════════════
@@ -929,6 +1545,39 @@ app.post('/api/ssma', requireAuth, (req, res) => {
   res.status(201).json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
+// RCA completo = causa raiz + plano de ação preenchidos. Pura (espelhada no Worker).
+function rcaCompleto({ causa_raiz, plano_acao } = {}) {
+  return !!(String(causa_raiz || '').trim() && String(plano_acao || '').trim())
+}
+
+// Atualiza a ocorrência (inclui preencher a RCA antes do encerramento).
+app.put('/api/ssma/:id', requireAuth, (req, res) => {
+  const oc = db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)
+  if (!oc) return res.status(404).json(err('Ocorrência não encontrada'))
+  const b = req.body || {}
+  db.prepare(`UPDATE ssma_ocorrencias SET tipo=?, descricao=?, local=?, gravidade=?, data_ocorrencia=?, acoes_corretivas=?, causa_raiz=?, plano_acao=? WHERE id=?`)
+    .run(b.tipo ?? oc.tipo, b.descricao ?? oc.descricao, b.local ?? oc.local, b.gravidade ?? oc.gravidade,
+      b.data_ocorrencia ?? oc.data_ocorrencia, b.acoes_corretivas ?? oc.acoes_corretivas,
+      b.causa_raiz ?? oc.causa_raiz, b.plano_acao ?? oc.plano_acao, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)))
+})
+
+// Encerramento bloqueado sem RCA (causa raiz + plano de ação) → reduz reincidência.
+app.post('/api/ssma/:id/encerrar', requireAuth, (req, res) => {
+  const oc = db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)
+  if (!oc) return res.status(404).json(err('Ocorrência não encontrada'))
+  if (oc.status === 'Encerrada') return res.status(409).json(err('Ocorrência já encerrada', 409))
+  const causa_raiz = req.body?.causa_raiz ?? oc.causa_raiz
+  const plano_acao = req.body?.plano_acao ?? oc.plano_acao
+  if (!rcaCompleto({ causa_raiz, plano_acao })) {
+    return res.status(400).json(err('Encerramento exige RCA: informe a causa raiz e o plano de ação'))
+  }
+  db.prepare(`UPDATE ssma_ocorrencias SET status='Encerrada', data_resolucao=datetime('now'), causa_raiz=?, plano_acao=? WHERE id=?`)
+    .run(causa_raiz, plano_acao, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'ssma_encerrar', 'ssma_ocorrencias', `Ocorrência ${oc.numero} encerrada com RCA`)
+  res.json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)))
+})
+
 // ════════════════════════════════════════════════════════════
 // USUÁRIOS (admin)
 // ════════════════════════════════════════════════════════════
@@ -938,13 +1587,15 @@ app.get('/api/usuarios', requireAuth, (req, res) => {
 })
 
 app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
-  const { nome, email, senha, perfil } = req.body
+  const { nome, email, senha, perfil, fornecedor_id } = req.body
   if (!nome || !email) return res.status(400).json(err('Nome e email obrigatórios'))
+  // Usuário de portal (perfil 'fornecedor') exige vínculo com um fornecedor.
+  if (perfil === 'fornecedor' && !fornecedor_id) return res.status(400).json(err('Usuário fornecedor exige fornecedor_id'))
   // Senha sempre armazenada com hash bcrypt; se omitida, usa SEED_PASSWORD.
   const senhaHash = bcrypt.hashSync(String(senha || SEED_PASSWORD), BCRYPT_ROUNDS)
   try {
-    const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil) VALUES(?,?,?,?)`)
-      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao')
+    const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, fornecedor_id) VALUES(?,?,?,?,?)`)
+      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao', fornecedor_id || null)
     const u = db.prepare(`SELECT id, nome, email, perfil, ativo FROM usuarios WHERE id = ?`).get(r.lastInsertRowid)
     log(req.user.usuario_id, req.user.nome, 'Criar', 'usuarios', `Usuário criado: ${nome}`)
     res.status(201).json(ok(u))
@@ -971,6 +1622,13 @@ app.put('/api/usuarios/:id', requireAuth, requireRole('admin'), (req, res) => {
 app.get('/api/logs', requireAuth, (req, res) => {
   const rows = db.prepare(`SELECT * FROM logs_sistema ORDER BY created_at DESC LIMIT 200`).all()
   res.json(ok(rows))
+})
+
+// Verifica a integridade da trilha (recomputa a cadeia de hash). Admin.
+app.get('/api/auditoria/verificar', requireAuth, requireRole('admin'), (req, res) => {
+  const rows = db.prepare(`SELECT id, usuario_id, acao, modulo, descricao, created_at, hash, hash_anterior
+                           FROM logs_sistema ORDER BY id ASC`).all()
+  res.json(ok(Auditoria.verificarCadeia(rows)))
 })
 
 // ════════════════════════════════════════════════════════════

@@ -71,13 +71,102 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
-- ⬜ **Fornecedores+**: consulta automática de situação fiscal/credit bureau real
-  (hoje a análise usa dados informados + CNPJ; integrar Serasa/SPC/Receita).
+- ✅ **Fluxo de caixa planejado × realizado** (Onda 2): `GET /api/fluxo-caixa`
+  compara, por semana e por contrato, o planejado (vencimentos) contra o
+  realizado (pagamentos), com desvios. Lib pura `lib/fluxo_caixa.js`; bloco no
+  Dashboard BI (tabela semanal + maiores desvios por contrato). **Paridade
+  Express + Worker** (saída idêntica, provada por teste). Coberto por testes.
+- ✅ **Dupla aprovação de dados bancários** (Onda 2): alteração de
+  banco/agência/conta de fornecedor (interna ou via portal) não vale na hora —
+  fica **pendente** até a aprovação de uma 2ª pessoa
+  (`POST /api/fornecedores/:id/aprovar-banco` | `rejeitar-banco`, perfil
+  admin/diretor/financeiro, **solicitante ≠ aprovador**). Fecha o risco de
+  desvio de pagamento. **Paridade Express + Worker** (helper puro
+  `alteracaoBancariaSolicitada`). Coberto por testes.
+- ✅ **Detecção de duplicatas** (Onda 2): prevenção de CNPJ duplicado no cadastro
+  de fornecedor (409, compara só dígitos) + relatório `GET /api/duplicatas`
+  (fornecedores por CNPJ e NFs repetidas em contas a pagar). **Paridade Express
+  + Worker** (helper puro `detectarDuplicatas`). Coberto por testes.
+- ✅ **Validação de situação cadastral (Receita/SEFAZ)** (Onda 2): adaptador
+  server-side `lib/receita.js` (provedor selecionável por `RECEITA_PROVIDER`,
+  mock determinístico por padrão). Endpoint `/api/receita/consultar` (Express +
+  Worker) e botão "Situação cadastral" no cadastro. **Gate**: a emissão de PC é
+  bloqueada (409) para fornecedor com CNPJ irregular (INAPTA/SUSPENSA/BAIXADA/
+  NULA). Paridade Express + Worker (mesma distribuição por CNPJ). Coberto por testes.
+- ✅ **Alçada de pagamento >R$50k** (Onda 1 — conclui a onda): o gate de pagamento
+  bloqueia contas acima do limiar sem aprovação prévia de Diretor
+  (`POST /api/contas-pagar/:id/aprovar-alcada`, perfil diretor/admin — distinto
+  do pagador financeiro/admin, segregação de funções). Limiar por env
+  (`ALCADA_PAGAMENTO_VALOR`). **Paridade Express + Worker** (helper puro
+  `alcadaPendente`). Coberto por testes.
+- ✅ **SSMA: RCA obrigatório para encerrar** (Onda 1): `POST /api/ssma/:id/encerrar`
+  bloqueia o encerramento de incidente sem causa raiz **e** plano de ação
+  (reduz reincidência — gargalo dos 5 incidentes sem RCA). `PUT` permite
+  preencher a RCA antes; trilha registra o encerramento. **Paridade Express +
+  Worker** (helper puro `rcaCompleto`). Coberto por testes.
+- ✅ **Concorrência mínima** (Onda 1): a criação do mapa comparativo bloqueia
+  compras acima de R$ 10.000 com menos de 3 cotações; exceção apenas com
+  justificativa **e** perfil Diretor/admin, registrada na trilha de auditoria
+  (`concorrencia_excecao`). Limiares por env. **Paridade Express + Worker**
+  (helper puro `avaliarConcorrencia`). Coberto por testes.
+- ✅ **RC: `tipo` + `WBS` obrigatórios** (Onda 1 do plano de verificação): a
+  requisição exige classificação de gasto (Material/Serviço/Equipamento,
+  tolerando acento/caixa → canônico) e vínculo WBS, fechando o gargalo de
+  rastreabilidade custo→contrato→projeto. Bloqueio no `POST`/`PUT` (não permite
+  remover WBS nem gravar tipo inválido). **Paridade Express + Worker** +
+  campos no formulário do front. Coberto por testes (RC compliance + `normalizarTipoRC`).
+- ✅ **OS: `WBS` obrigatória** (Onda 1): a ordem de serviço — origem da demanda —
+  também exige vínculo WBS, completando a rastreabilidade de custo na ponta.
+  Bloqueio no `POST`/`PUT` (não remove WBS). **Paridade Express + Worker**; o
+  front já tinha o bloqueio de WBS, agora com campo canônico `wbs` no sync.
+  Coberto por testes (OS compliance).
+- ✅ **Alertas de vencimento de contrato 90/60/30** (Onda 1): contratos Ativos
+  com `data_fim` próxima entram na Central de Alertas com severidade crescente
+  (≤90d baixa, ≤60d média, ≤30d/vencido alta), também refletidos no Dashboard BI.
+  **Paridade Express + Worker** (helper puro `classificarVencimentoContrato`).
+  Coberto por testes.
+- ✅ **Dashboard BI** (`GET /api/bi`): KPIs gerenciais consolidados — exposição
+  financeira (a pagar / vencido / a vencer / pago), governança do gate (taxa de
+  bloqueio via trilha de logs), homologação e score de fornecedores, taxa de
+  entrega de pedidos e alertas por severidade. Dados 100% server-side; fornecedor
+  barrado. Página com cartões + barras de progresso. **Paridade Express + Worker**:
+  o Worker (nexus-cf) replica `/api/bi` sobre o modelo documento (gate via
+  `audit_log`), com a montagem extraída em função pura (`montarKPIsWorker`)
+  coberta por testes unitários.
+- ✅ **Central de Alertas** (`GET /api/alertas`): feed único e priorizado por
+  severidade reunindo contas vencidas/a vencer (janela configurável), entregas
+  atrasadas (prazo do pedido estourado) e retenção LGPD pendente. Dados 100%
+  server-side; alerta sensível de LGPD só para admin; fornecedor (portal) é
+  barrado. Página com resumo + lista colorida por severidade. **Paridade
+  Express + Worker**: o Worker (nexus-cf) replica `/api/alertas` sobre o modelo
+  documento, com a montagem extraída em função pura (`montarAlertasWorker`)
+  coberta por testes unitários.
+- ✅ **Portal do Fornecedor** (self-service, escopo restrito): usuário com perfil
+  `fornecedor` vinculado a um `fornecedor_id`. Rotas `/api/portal/*` (pedidos,
+  enviar NF, perfil) sempre filtradas pelo vínculo — um fornecedor nunca vê
+  dados de outro (ownership enforced + testes). **Paridade Express + Worker**:
+  o Worker (nexus-cf) carrega `fornecedor_id` no JWT, provisiona usuário-fornecedor
+  via `POST /api/usuarios` e replica as rotas de portal com a mesma regra de
+  isolamento (`portalScope`/`pedidoPertence`), coberta por testes unitários.
+- ✅ **Fornecedores+ / credit bureau**: adaptador server-side `lib/credit_bureau.js`
+  com provedor selecionável por env (mock determinístico por padrão, Serasa/SPC
+  plugáveis com credencial). Endpoint `/api/credito/consultar` (Express + Worker)
+  e botão "Consultar bureau" no cadastro, realimentando a análise de crédito
+  (situação, pendências/protestos, faturamento estimado).
 - ✅ **Numeração atômica no servidor** — endpoint `POST /api/sequencia/:tipo`
-  (Express + Worker/D1) com UPSERT+RETURNING; PC já usa, com fallback offline.
-  Testado com 100 chamadas concorrentes → 100 números únicos. RC/RFQ/MAPA
-  podem usar o mesmo helper (`DB.sequencia`).
-- ⬜ **Recebimento ↔ 3-way match completo** (qtd e preço por item, não só total).
+  (Express + Worker/D1) com UPSERT+RETURNING; **PC, RC e RFQ** usam, com
+  fallback offline. Testado com 100 chamadas concorrentes → 100 números únicos.
+  (MAPA herda o número do RFQ/RC.)
+- ✅ **3-way match por item** (`js/lib/three_way.js`): confere a nota contra o
+  pedido e o recebimento item a item (qtd e preço, com tolerância). Integrado
+  ao gate de pagamento no Worker e no Express (rota `/pagar` com gate completo,
+  que antes só existia no Worker). Bloqueios respondem 409 e vão à auditoria.
+- ✅ **Recebimento por item** (Express: tabelas `recebimentos`/`recebimento_itens`
+  + endpoints + modal com quantidades): o gate **puxa automaticamente** o
+  recebido acumulado do pedido e o usa no 3-way (sem precisar informar no
+  pagamento). "Não paga o que não chegou" passa a ser automático.
+  **Paridade no Worker**: o gate agrega os docs de recebimento por `pc_id`
+  (`json_extract`) e alimenta o 3-way igualmente — validado em SQLite real.
 - ⬜ **Almoxarifado**: movimentação atômica de estoque no servidor.
 
 ### P2 — Inteligência adaptativa
@@ -96,8 +185,22 @@ posicionamento a perseguir.
 - ✅ **Auditoria ISO integrada** (esqueleto): `js/lib/iso.js` + página `iso`.
   Evidências derivadas automaticamente de IDF/SSMA/RBAC/logs/documentos,
   cobertura por norma (9001/14001/45001/27001), lacunas e CAPA. Ver §6.
-- ⬜ **Trilha de auditoria imutável** (hash encadeado em `audit_log`).
-- ⬜ **LGPD**: base legal, retenção e anonimização.
+- ✅ **Trilha de auditoria imutável** (`js/lib/auditoria.js`): hash SHA-256
+  encadeado no Express (`logs_sistema`) e no Worker (`audit_log`), com endpoint
+  `GET /api/auditoria/verificar` e botão na página ISO. Detecta adulteração,
+  remoção e reordenação. Express e Worker geram hashes idênticos.
+- ✅ **CAPA com workflow + ISO 14001** (`js/lib/capa.js` + página ISO): ciclo
+  Aberta → Em Ação → Verificação → Fechada, detecção de atraso por prazo e KPIs
+  (% no prazo). Aspectos/impactos ambientais (14001 §6.1) registráveis e
+  contados como evidência. CAPA e aspectos realimentam a cobertura ISO.
+- ✅ **LGPD** (`js/lib/lgpd.js` + página `lgpd`): RoPA com base legal (art. 7) e
+  retenção, solicitações do titular (DSAR) e **anonimização irreversível** de
+  dados pessoais de fornecedor (endpoint admin no Express e no Worker, com
+  trilha de auditoria). Direito de eliminação operacional.
+- ✅ **Retenção automatizada**: preview (dry-run) + execução por política
+  (`RETENCAO_FORNECEDOR_MESES`, padrão 60m) — anonimiza fornecedores inativos
+  além do período de guarda, no Express e no Worker. UI com lista antes de
+  expurgar.
 
 ---
 

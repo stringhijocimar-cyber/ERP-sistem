@@ -61,6 +61,10 @@
     push('27001-A.9', 'rbac', _n(dados.usuarios), _n(dados.usuarios) + ' usuário(s) com perfil de acesso (RBAC)');
     push('27001-A.12.4', 'logs', _n(dados.logs) + (dados.gateAtivo ? 1 : 0),
       _n(dados.logs) + ' registro(s) de auditoria' + (dados.gateAtivo ? ' + gate de pagamento ativo' : ''));
+    // CAPA ativa evidencia o processo de ação corretiva (9001/45001 §10.2).
+    push('9001-10.2', 'capa', _n(dados.capas), _n(dados.capas) + ' CAPA(s) registrada(s)');
+    // Aspectos e impactos ambientais (14001 §6.1).
+    push('14001-6.1', 'ambiental', _n(dados.aspectos), _n(dados.aspectos) + ' aspecto(s) ambiental(is) mapeado(s)');
     return ev;
   }
 

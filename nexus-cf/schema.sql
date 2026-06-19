@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   salt          TEXT NOT NULL,
   scopes        TEXT DEFAULT '[]',
+  fornecedor_id TEXT,
   ativo         INTEGER DEFAULT 1,
   created_at    TEXT DEFAULT (datetime('now'))
 );
@@ -49,7 +50,8 @@ CREATE TABLE IF NOT EXISTS logs (
 CREATE TABLE IF NOT EXISTS audit_log (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_id   TEXT, action TEXT NOT NULL, entity TEXT, entity_id TEXT,
-  payload    TEXT, created_at TEXT DEFAULT (datetime('now'))
+  payload    TEXT, created_at TEXT DEFAULT (datetime('now')),
+  hash       TEXT, hash_anterior TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_modulo  ON logs(modulo, criado_em);
