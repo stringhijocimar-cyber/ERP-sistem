@@ -88,7 +88,7 @@ contrato vencido sem aviso, incidente sem causa raiz (reincidência), e — o ma
 | **Financeiro** | **AP vencido c/ justificativa** | 🟥 **AUSENTE** | Média | Baixo | Onda 1 | Inadimplência oculta | Reabrir AP vencido exige justificativa | (a criar) | % AP>30d | Financeiro |
 | **Qualidade** | **Validação CNPJ Receita/SEFAZ** | ✅ **Validado** | Alta | Médio | feito | Fornecedor irregular | PC p/ CNPJ irregular → 409 | Teste `receita` | % irregulares | Qualidade |
 | **Qualidade** | **Detecção de duplicatas** | ✅ **Validado** | Média | Médio | feito | Cadastro duplicado | Duplicar CNPJ → 409 + `/api/duplicatas` | Teste `duplicatas` | nº duplicatas | Qualidade |
-| **Qualidade** | **Dupla aprovação dados bancários** | 🟥 **AUSENTE** | Alta | Médio | Onda 2 | Desvio de pagamento | Alterar conta exige 2 aprovações | (a criar) | % alterações 2N | Financeiro/SI |
+| **Qualidade** | **Dupla aprovação dados bancários** | ✅ **Validado** | Alta | Médio | feito | Desvio de pagamento | Alterar conta exige 2 aprovações | Teste `banco_dupla_aprovacao` | % alterações 2N | Financeiro/SI |
 | **SSMA** | **RCA obrigatório p/ encerrar incidente** | ✅ **Validado** | Alta | Baixo | feito | Reincidência | Encerrar sem RCA → 400 | Teste `ssma_rca` | % c/ RCA | SSMA |
 | **SSMA** | **Alertas treinamento/doc vencido (ASO/NRs)** | 🟥 **AUSENTE** | Alta | Médio | Onda 2 | Não conformidade legal | Doc vencido → alerta | (a criar) | % vencidos | SSMA |
 | **WMS** | **Endereçamento + FEFO/FIFO + lote** | 🟥 **AUSENTE** | Média | Alto | Onda 3 | Perda/validade | Saída FEFO | (a criar) | % FEFO | Suprimentos |

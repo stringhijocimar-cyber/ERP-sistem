@@ -103,6 +103,14 @@ function rcaCompleto({ causa_raiz, plano_acao } = {}){
 function alcadaPendente({ valor = 0, aprovadaPor = null, limite = 50000 } = {}){
   return (Number(valor) || 0) > limite && !String(aprovadaPor || '').trim();
 }
+// Dupla aprovação bancária: detecta alteração de banco/agência/conta. Pura (espelha o Express).
+function alteracaoBancariaSolicitada(atual, b){
+  const mudou = {};
+  for (const c of ['banco', 'agencia', 'conta']){
+    if (b[c] !== undefined && String(b[c] ?? '') !== String((atual && atual[c]) ?? '')) mudou[c] = b[c];
+  }
+  return Object.keys(mudou).length ? mudou : null;
+}
 // Qualidade de dados: detecção de duplicatas (CNPJ de fornecedor / NF). Pura.
 function normalizarCNPJ(s){ return String(s || '').replace(/\D/g, ''); }
 function detectarDuplicatas({ fornecedores = [], contas = [] } = {}){
@@ -775,9 +783,18 @@ export default {
           const f = await getDoc(env, 'fornecedores', ps.fornecedor_id);
           if (!f) return E('Fornecedor nao encontrado', 404);
           const patch = {};
-          for (const k of ['contato','email','telefone','banco','agencia','conta']) if (body[k] !== undefined) patch[k] = body[k];
+          for (const k of ['contato','email','telefone']) if (body[k] !== undefined) patch[k] = body[k];
+          // Dados bancários via portal entram PENDENTES de dupla aprovação interna.
+          const bankChange = alteracaoBancariaSolicitada(f, body);
+          if (bankChange){
+            patch.banco_pendente = bankChange.banco ?? f.banco;
+            patch.agencia_pendente = bankChange.agencia ?? f.agencia;
+            patch.conta_pendente = bankChange.conta ?? f.conta;
+            patch.banco_solicitado_por = `portal:${f.nome}`;
+            patch.banco_solicitado_em = new Date().toISOString();
+          }
           const r = await updateDoc(env, 'fornecedores', ps.fornecedor_id, patch);
-          await audit(env, user.sub, 'portal_perfil', 'fornecedores', ps.fornecedor_id, {});
+          await audit(env, user.sub, bankChange ? 'banco_alteracao_solicitada' : 'portal_perfil', 'fornecedores', ps.fornecedor_id, {});
           return r ? J(r) : E('nao encontrado', 404);
         }
         return E('rota de portal nao encontrada', 404);
@@ -1033,6 +1050,44 @@ export default {
         await audit(env, user.sub, 'create', 'fornecedores', r.id, {});
         return J(r);
       }
+      // Fornecedor — aprovação/rejeição de alteração bancária (dupla aprovação)
+      if (seg[0]==='fornecedores' && seg[2]==='aprovar-banco' && method==='POST'){
+        requireRole(user, ['admin','diretor','financeiro']);
+        const f = await getDoc(env, 'fornecedores', seg[1]);
+        if (!f) return E('Fornecedor nao encontrado', 404);
+        if (!f.banco_solicitado_por) return E('Nao ha alteracao bancaria pendente', 400);
+        if (f.banco_solicitado_por === user.name) return E('A aprovacao deve ser feita por outro usuario (segregacao)', 403);
+        const r = await updateDoc(env, 'fornecedores', seg[1], { banco: f.banco_pendente, agencia: f.agencia_pendente, conta: f.conta_pendente, banco_pendente: null, agencia_pendente: null, conta_pendente: null, banco_solicitado_por: null, banco_solicitado_em: null });
+        await audit(env, user.sub, 'banco_alteracao_aprovada', 'fornecedores', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
+      if (seg[0]==='fornecedores' && seg[2]==='rejeitar-banco' && method==='POST'){
+        requireRole(user, ['admin','diretor','financeiro']);
+        const f = await getDoc(env, 'fornecedores', seg[1]);
+        if (!f) return E('Fornecedor nao encontrado', 404);
+        if (!f.banco_solicitado_por) return E('Nao ha alteracao bancaria pendente', 400);
+        const r = await updateDoc(env, 'fornecedores', seg[1], { banco_pendente: null, agencia_pendente: null, conta_pendente: null, banco_solicitado_por: null, banco_solicitado_em: null });
+        await audit(env, user.sub, 'banco_alteracao_rejeitada', 'fornecedores', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
+      // Fornecedor — PUT: dados bancários ficam pendentes de 2ª aprovação
+      if (seg[0]==='fornecedores' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
+        const atual = await getDoc(env, 'fornecedores', seg[1]);
+        if (!atual) return E('nao encontrado', 404);
+        const bankChange = alteracaoBancariaSolicitada(atual, body);
+        const patch = { ...body };
+        delete patch.banco; delete patch.agencia; delete patch.conta; // nunca direto
+        if (bankChange){
+          patch.banco_pendente = bankChange.banco ?? atual.banco;
+          patch.agencia_pendente = bankChange.agencia ?? atual.agencia;
+          patch.conta_pendente = bankChange.conta ?? atual.conta;
+          patch.banco_solicitado_por = user.name;
+          patch.banco_solicitado_em = new Date().toISOString();
+        }
+        const r = await updateDoc(env, 'fornecedores', seg[1], patch);
+        await audit(env, user.sub, bankChange ? 'banco_alteracao_solicitada' : 'update', 'fornecedores', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
 
       // Pedido — situação cadastral do fornecedor antes da emissão (compliance)
       if (seg[0]==='pedidos' && !seg[1] && method==='POST'){
@@ -1070,4 +1125,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada };

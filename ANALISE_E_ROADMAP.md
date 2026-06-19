@@ -71,6 +71,13 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Dupla aprovação de dados bancários** (Onda 2): alteração de
+  banco/agência/conta de fornecedor (interna ou via portal) não vale na hora —
+  fica **pendente** até a aprovação de uma 2ª pessoa
+  (`POST /api/fornecedores/:id/aprovar-banco` | `rejeitar-banco`, perfil
+  admin/diretor/financeiro, **solicitante ≠ aprovador**). Fecha o risco de
+  desvio de pagamento. **Paridade Express + Worker** (helper puro
+  `alteracaoBancariaSolicitada`). Coberto por testes.
 - ✅ **Detecção de duplicatas** (Onda 2): prevenção de CNPJ duplicado no cadastro
   de fornecedor (409, compara só dígitos) + relatório `GET /api/duplicatas`
   (fornecedores por CNPJ e NFs repetidas em contas a pagar). **Paridade Express
