@@ -18,6 +18,7 @@ import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-
 import './public/js/lib/lgpd.js'      // define globalThis.LGPD (anonimização/retenção)
 import { consultarCredito } from './lib/credit_bureau.js'
 import { consultarReceita, consultarCadastroCNPJ } from './lib/receita.js'
+import { analisarFinanceiro } from './lib/analise_financeira.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
 const Auditoria = globalThis.Auditoria
@@ -641,6 +642,20 @@ app.get('/api/cnpj/:cnpj', requireAuth, async (req, res) => {
   try {
     const data = await consultarCadastroCNPJ(req.params.cnpj, { provider: process.env.RECEITA_PROVIDER })
     res.json(ok(data))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
+// Análise financeira prévia: bureau (mercado) + Receita → parecer automático.
+app.post('/api/analise-financeira', requireAuth, async (req, res) => {
+  try {
+    const cnpj = req.body && req.body.cnpj
+    const bureau = await consultarCredito(cnpj, { provider: process.env.CREDIT_BUREAU_PROVIDER })
+    let receita = {}
+    try { receita = await consultarReceita(cnpj, { provider: process.env.RECEITA_PROVIDER }) } catch (_) { /* sem situação não impede o parecer */ }
+    const parecer = analisarFinanceiro({ bureau, receita })
+    res.json(ok({ ...parecer, bureau, receita }))
   } catch (e) {
     res.status(400).json(err(e.message))
   }

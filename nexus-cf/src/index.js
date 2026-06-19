@@ -625,14 +625,13 @@ async function retencaoExecutarFornecedores(env, user){
 }
 
 // Consulta a bureau de crédito (provedor por env; mock determinístico padrão).
-function consultarCreditoBureau(cnpjRaw, provider){
+// Bureau mock determinístico (mesma fórmula da lib/credit_bureau.js do Express).
+function bureauMock(cnpjRaw){
   const cnpj = String(cnpjRaw||'').replace(/\D/g,'');
-  if (cnpj.length !== 14) return E('CNPJ inválido (14 dígitos)', 400);
-  const prov = String(provider||'mock').toLowerCase();
-  if (prov !== 'mock') return E('Provedor de bureau não configurado: ' + prov, 400);
+  if (cnpj.length !== 14) return null;
   let h = 0; for (const ch of cnpj) h = (h*31 + (ch.charCodeAt(0)-48)) % 1000003;
   const score = 300 + (h % 700);
-  return J({
+  return {
     cnpj, fonte:'mock',
     situacao: (h % 13 === 0) ? 'INAPTA' : 'ATIVA',
     score_externo: score,
@@ -640,7 +639,38 @@ function consultarCreditoBureau(cnpjRaw, provider){
     pendencias: (h % 7 === 0) ? (1 + (h % 3)) : 0,
     protestos: (h % 11 === 0) ? 1 : 0,
     faturamento_estimado: 120000 * (1 + (h % 60)),
-  });
+  };
+}
+function consultarCreditoBureau(cnpjRaw, provider){
+  const prov = String(provider||'mock').toLowerCase();
+  if (prov !== 'mock') return E('Provedor de bureau não configurado: ' + prov, 400);
+  const d = bureauMock(cnpjRaw);
+  return d ? J(d) : E('CNPJ inválido (14 dígitos)', 400);
+}
+
+// Parecer financeiro prévio (espelha lib/analise_financeira.js do Express). Pura.
+function analisarFinanceiro({ bureau = {}, receita = {} } = {}){
+  const fatores = [];
+  let score = Number(bureau.score_0_100);
+  if (!isFinite(score)) score = 50;
+  fatores.push({ fator: 'Score de crédito (bureau)', impacto: 0, detalhe: `${bureau.score_externo ?? '—'} (${isFinite(Number(bureau.score_0_100)) ? bureau.score_0_100 : '—'}/100)` });
+  const pend = Number(bureau.pendencias) || 0;
+  if (pend > 0){ const p = Math.min(pend * 8, 30); score -= p; fatores.push({ fator: 'Pendências financeiras', impacto: -p, detalhe: `${pend} pendência(s)` }); }
+  const prot = Number(bureau.protestos) || 0;
+  if (prot > 0){ const p = Math.min(prot * 12, 30); score -= p; fatores.push({ fator: 'Protestos', impacto: -p, detalhe: `${prot} protesto(s)` }); }
+  const sit = receita.situacao_cadastral || bureau.situacao || 'ATIVA';
+  const regular = receita.regular !== undefined ? !!receita.regular : (sit === 'ATIVA');
+  let recusaCadastral = false;
+  if (!regular){ score -= 40; recusaCadastral = true; fatores.push({ fator: 'Situação cadastral', impacto: -40, detalhe: sit }); }
+  else fatores.push({ fator: 'Situação cadastral', impacto: 0, detalhe: sit });
+  const fat = Number(bureau.faturamento_estimado) || 0;
+  if (fat >= 1000000){ score += 5; fatores.push({ fator: 'Faturamento estimado', impacto: +5, detalhe: `R$ ${Math.round(fat).toLocaleString('pt-BR')}` }); }
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  let nivel, recomendacao;
+  if (recusaCadastral || score < 40){ nivel = 'Alto'; recomendacao = 'Recusar'; }
+  else if (score < 65){ nivel = 'Médio'; recomendacao = 'Aprovar com ressalvas'; }
+  else { nivel = 'Baixo'; recomendacao = 'Aprovar'; }
+  return { score, nivel, recomendacao, fatores, situacao_cadastral: sit, regular, score_bureau: bureau.score_externo ?? null, pendencias: pend, protestos: prot, faturamento_estimado: fat };
 }
 
 // Situação cadastral (Receita/SEFAZ) — mock determinístico (mesma distribuição
@@ -1030,6 +1060,15 @@ export default {
         return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
       }
 
+      // Análise financeira prévia: POST /api/analise-financeira { cnpj }
+      if (seg[0]==='analise-financeira' && method==='POST'){
+        const bureau = bureauMock(body && body.cnpj);
+        if (!bureau) return E('CNPJ invalido (14 digitos)', 400);
+        const receita = situacaoReceitaMock(body && body.cnpj) || {};
+        const parecer = analisarFinanceiro({ bureau, receita });
+        return J({ ...parecer, bureau, receita });
+      }
+
       // Cadastro completo por CNPJ (proxy server-side): GET /api/cnpj/:cnpj
       if (seg[0]==='cnpj' && seg[1] && method==='GET'){
         const prov = String(env.RECEITA_PROVIDER||'mock').toLowerCase();
@@ -1239,4 +1278,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock };

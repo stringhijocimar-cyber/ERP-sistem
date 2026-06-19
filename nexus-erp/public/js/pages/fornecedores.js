@@ -978,8 +978,12 @@ function openNovoFornecedor() {
       <button type="button" id="btn_receita" onclick="consultarReceitaNoCadastro()" class="btn btn-secondary btn-sm" style="margin-left:6px">
         <i class="fas fa-id-card"></i> Situação cadastral
       </button>
+      <button type="button" id="btn_analise" onclick="analiseFinanceiraNoCadastro()" class="btn btn-secondary btn-sm" style="margin-left:6px;background:rgba(37,99,235,.1);border-color:#2563eb;color:#2563eb">
+        <i class="fas fa-scale-balanced"></i> Análise financeira
+      </button>
       <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Score interno + consulta externa (bureau/Receita) por CNPJ.</span>
       <div id="credito_result" style="display:none;margin-top:10px"></div>
+      <div id="analise_result" style="display:none;margin-top:10px"></div>
     </div>
 
     <div style="margin-top:12px;padding:10px;background:rgba(37,99,235,0.06);border-radius:8px;border:1px solid rgba(37,99,235,0.15)">
@@ -1090,6 +1094,41 @@ async function consultarReceitaNoCadastro() {
   const tipo = r.regular ? 'success' : 'error';
   const aviso = r.regular ? '' : ' — emissão de pedido será bloqueada';
   showToast(`Receita (${r.fonte}): situação ${r.situacao_cadastral}${aviso}`, tipo, 7000);
+}
+
+async function analiseFinanceiraNoCadastro() {
+  const cnpj = document.getElementById('nf_cnpj')?.value || '';
+  if (cnpj.replace(/\D/g, '').length !== 14) { showToast('Informe o CNPJ completo antes da análise financeira', 'warning'); return; }
+  if (!(window.DB && typeof DB.analiseFinanceira === 'function')) { showToast('Análise financeira indisponível.', 'error'); return; }
+  const btn = document.getElementById('btn_analise');
+  const box = document.getElementById('analise_result');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analisando...'; }
+  const r = await DB.analiseFinanceira(cnpj);
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-scale-balanced"></i> Análise financeira'; }
+  if (!r) { showToast('Não foi possível gerar a análise agora.', 'error'); return; }
+  window._analiseResult = r;
+  const cor = r.recomendacao === 'Aprovar' ? '#16a34a' : (r.recomendacao === 'Recusar' ? '#dc2626' : '#d97706');
+  const fatores = (r.fatores || []).map(f => `
+    <li style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;font-size:12px">
+      <span>${f.fator} ${f.detalhe ? `<span style="color:var(--text-muted)">(${f.detalhe})</span>` : ''}</span>
+      <strong style="color:${f.impacto >= 0 ? '#16a34a' : '#dc2626'}">${f.impacto > 0 ? '+' : ''}${f.impacto}</strong>
+    </li>`).join('');
+  if (box) {
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="border:1px solid ${cor}40;background:${cor}0d;border-radius:10px;padding:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div>
+            <span style="font-size:24px;font-weight:800;color:${cor}">${r.score}</span><span style="font-size:11px;color:var(--text-muted)">/100</span>
+            <span style="margin-left:8px;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;background:${cor}1f;color:${cor}">${r.recomendacao} · risco ${r.nivel}</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-muted)">Situação: ${r.situacao_cadastral} · ${r.pendencias} pend. · ${r.protestos} prot.</div>
+        </div>
+        <ul style="list-style:none;padding:0;margin:8px 0 0">${fatores}</ul>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:6px">Parecer automático (bureau + Receita) — apoio à homologação Financeiro/Compliance.</div>
+      </div>`;
+  }
+  showToast(`Análise: ${r.recomendacao} (score ${r.score}/100, risco ${r.nivel})`, r.recomendacao === 'Recusar' ? 'error' : 'info', 6000);
 }
 
 function _renderCreditoResult(res) {
