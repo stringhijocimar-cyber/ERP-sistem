@@ -673,6 +673,25 @@ app.put('/api/portal/perfil', requireAuth, requirePortal, (req, res) => {
   res.json(ok(db.prepare(`SELECT id, nome, contato, email, telefone, banco, agencia, conta FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)))
 })
 
+// Normalização de CNPJ em SQL (só dígitos) — usada na detecção de duplicatas.
+const CNPJ_NORM = `REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(cnpj,''),'.',''),'/',''),'-',''),' ','')`
+
+// Relatório de duplicatas: fornecedores por CNPJ e NFs repetidas em contas a pagar.
+app.get('/api/duplicatas', requireAuth, (req, res) => {
+  const grpForn = db.prepare(`SELECT ${CNPJ_NORM} cnpj, COUNT(*) n FROM fornecedores WHERE ${CNPJ_NORM} <> '' GROUP BY ${CNPJ_NORM} HAVING n > 1`).all()
+  const fornecedores = grpForn.map(g => ({
+    cnpj: g.cnpj, total: g.n,
+    ocorrencias: db.prepare(`SELECT id, nome, ativo FROM fornecedores WHERE ${CNPJ_NORM} = ?`).all(g.cnpj),
+  }))
+  const grpNF = db.prepare(`SELECT nota_fiscal, COUNT(*) n FROM contas_pagar
+      WHERE nota_fiscal IS NOT NULL AND nota_fiscal <> '' AND nota_fiscal <> '—' GROUP BY nota_fiscal HAVING n > 1`).all()
+  const notas_fiscais = grpNF.map(g => ({
+    nota_fiscal: g.nota_fiscal, total: g.n,
+    ocorrencias: db.prepare(`SELECT id, fornecedor_nome, valor FROM contas_pagar WHERE nota_fiscal = ?`).all(g.nota_fiscal),
+  }))
+  res.json(ok({ resumo: { fornecedores_dup: fornecedores.length, nf_dup: notas_fiscais.length }, fornecedores, notas_fiscais }))
+})
+
 app.get('/api/fornecedores', requireAuth, (req, res) => {
   const { q = '', ativo = '1', limit = 100, offset = 0 } = req.query
   let sql = `SELECT f.*, COALESCE(ROUND(AVG(a.nota_media), 1), 0) as score_calculado, COUNT(a.id) as total_avaliacoes
@@ -699,6 +718,12 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   const b = req.body || {}
   const nome = b.nome
   if (!nome) return res.status(400).json(err('Nome obrigatório'))
+  // Qualidade de dados: bloqueia CNPJ duplicado (compara só dígitos).
+  const cnpjDig = String(b.cnpj || '').replace(/\D/g, '')
+  if (cnpjDig) {
+    const dup = db.prepare(`SELECT id, nome FROM fornecedores WHERE ${CNPJ_NORM} = ?`).get(cnpjDig)
+    if (dup) return res.status(409).json(err(`CNPJ já cadastrado no fornecedor "${dup.nome}" (#${dup.id}) — duplicata`))
+  }
   // Aceita aliases vindos do frontend (contato_nome, prazo_pagamento).
   const contato = b.contato ?? b.contato_nome ?? null
   const prazo = b.prazo_entrega ?? b.prazo_pagamento ?? 7

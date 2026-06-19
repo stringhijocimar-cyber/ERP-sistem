@@ -87,7 +87,7 @@ contrato vencido sem aviso, incidente sem causa raiz (reincidência), e — o ma
 | **Financeiro** | **Alçada por valor (R$50k→Diretor)** | ✅ **Validado** | Alta | Baixo | feito | Pagto alto sem aprovação | Pagar >50k sem Diretor → 409 | Teste `alcada` | % >50k aprovados | Financeiro |
 | **Financeiro** | **AP vencido c/ justificativa** | 🟥 **AUSENTE** | Média | Baixo | Onda 1 | Inadimplência oculta | Reabrir AP vencido exige justificativa | (a criar) | % AP>30d | Financeiro |
 | **Qualidade** | **Validação CNPJ Receita/SEFAZ** | ✅ **Validado** | Alta | Médio | feito | Fornecedor irregular | PC p/ CNPJ irregular → 409 | Teste `receita` | % irregulares | Qualidade |
-| **Qualidade** | **Detecção de duplicatas** | 🟥 **AUSENTE** | Média | Médio | Onda 2 | Cadastro duplicado | Duplicar CNPJ → alerta | (a criar) | nº duplicatas | Qualidade |
+| **Qualidade** | **Detecção de duplicatas** | ✅ **Validado** | Média | Médio | feito | Cadastro duplicado | Duplicar CNPJ → 409 + `/api/duplicatas` | Teste `duplicatas` | nº duplicatas | Qualidade |
 | **Qualidade** | **Dupla aprovação dados bancários** | 🟥 **AUSENTE** | Alta | Médio | Onda 2 | Desvio de pagamento | Alterar conta exige 2 aprovações | (a criar) | % alterações 2N | Financeiro/SI |
 | **SSMA** | **RCA obrigatório p/ encerrar incidente** | ✅ **Validado** | Alta | Baixo | feito | Reincidência | Encerrar sem RCA → 400 | Teste `ssma_rca` | % c/ RCA | SSMA |
 | **SSMA** | **Alertas treinamento/doc vencido (ASO/NRs)** | 🟥 **AUSENTE** | Alta | Médio | Onda 2 | Não conformidade legal | Doc vencido → alerta | (a criar) | % vencidos | SSMA |

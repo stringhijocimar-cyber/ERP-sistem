@@ -71,6 +71,10 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Detecção de duplicatas** (Onda 2): prevenção de CNPJ duplicado no cadastro
+  de fornecedor (409, compara só dígitos) + relatório `GET /api/duplicatas`
+  (fornecedores por CNPJ e NFs repetidas em contas a pagar). **Paridade Express
+  + Worker** (helper puro `detectarDuplicatas`). Coberto por testes.
 - ✅ **Validação de situação cadastral (Receita/SEFAZ)** (Onda 2): adaptador
   server-side `lib/receita.js` (provedor selecionável por `RECEITA_PROVIDER`,
   mock determinístico por padrão). Endpoint `/api/receita/consultar` (Express +

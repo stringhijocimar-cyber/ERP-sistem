@@ -103,6 +103,17 @@ function rcaCompleto({ causa_raiz, plano_acao } = {}){
 function alcadaPendente({ valor = 0, aprovadaPor = null, limite = 50000 } = {}){
   return (Number(valor) || 0) > limite && !String(aprovadaPor || '').trim();
 }
+// Qualidade de dados: detecção de duplicatas (CNPJ de fornecedor / NF). Pura.
+function normalizarCNPJ(s){ return String(s || '').replace(/\D/g, ''); }
+function detectarDuplicatas({ fornecedores = [], contas = [] } = {}){
+  const fmap = {};
+  for (const f of fornecedores){ const c = normalizarCNPJ(f.cnpj); if (!c) continue; (fmap[c] = fmap[c] || []).push({ id: f.id, nome: f.nome, ativo: f.ativo }); }
+  const fornDup = Object.entries(fmap).filter(([, v]) => v.length > 1).map(([cnpj, ocorrencias]) => ({ cnpj, total: ocorrencias.length, ocorrencias }));
+  const nmap = {};
+  for (const c of contas){ const nf = String(c.nota_fiscal || '').trim(); if (!nf || nf === '—') continue; (nmap[nf] = nmap[nf] || []).push({ id: c.id, fornecedor_nome: c.fornecedor_nome, valor: c.valor }); }
+  const nfDup = Object.entries(nmap).filter(([, v]) => v.length > 1).map(([nota_fiscal, ocorrencias]) => ({ nota_fiscal, total: ocorrencias.length, ocorrencias }));
+  return { resumo: { fornecedores_dup: fornDup.length, nf_dup: nfDup.length }, fornecedores: fornDup, notas_fiscais: nfDup };
+}
 
 // ===== Central de Alertas: montagem pura (espelha coletarAlertas do Express) =====
 const _SEV_PESO = { alta: 3, media: 2, baixa: 1 };
@@ -924,6 +935,14 @@ export default {
         return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
       }
 
+      // Relatório de duplicatas: GET /api/duplicatas (fornecedor por CNPJ / NF)
+      if (seg[0]==='duplicatas' && method==='GET'){
+        const all = { searchParams: new URLSearchParams() };
+        const fornecedores = await listDocs(env, 'fornecedores', all);
+        const contas = await listDocs(env, 'contas_pagar', all);
+        return J(detectarDuplicatas({ fornecedores, contas }));
+      }
+
       // LGPD — anonimizar fornecedor: POST /api/lgpd/anonimizar/fornecedores/:id
       if (seg[0]==='lgpd' && seg[1]==='anonimizar' && seg[2]==='fornecedores' && seg[3] && method==='POST') return await anonimizarFornecedor(env, seg[3], user);
       // LGPD — retenção: preview (GET) e execução (POST)
@@ -1001,6 +1020,20 @@ export default {
         return J(r);
       }
 
+      // Fornecedor — bloqueia CNPJ duplicado no cadastro (qualidade de dados)
+      if (seg[0]==='fornecedores' && !seg[1] && method==='POST'){
+        const dig = normalizarCNPJ(body.cnpj);
+        if (dig){
+          const all = { searchParams: new URLSearchParams() };
+          const existentes = await listDocs(env, 'fornecedores', all);
+          const dup = existentes.find(f => normalizarCNPJ(f.cnpj) === dig);
+          if (dup) return E(`CNPJ ja cadastrado no fornecedor "${dup.nome}" (#${dup.id}) - duplicata`, 409);
+        }
+        const r = await createDoc(env, 'fornecedores', body);
+        await audit(env, user.sub, 'create', 'fornecedores', r.id, {});
+        return J(r);
+      }
+
       // Pedido — situação cadastral do fornecedor antes da emissão (compliance)
       if (seg[0]==='pedidos' && !seg[1] && method==='POST'){
         if (body.fornecedor_id && (env.ENFORCE_RECEITA_PO ?? '1') !== '0'){
@@ -1037,4 +1070,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas };
