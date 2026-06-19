@@ -71,6 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Validação de situação cadastral (Receita/SEFAZ)** (Onda 2): adaptador
+  server-side `lib/receita.js` (provedor selecionável por `RECEITA_PROVIDER`,
+  mock determinístico por padrão). Endpoint `/api/receita/consultar` (Express +
+  Worker) e botão "Situação cadastral" no cadastro. **Gate**: a emissão de PC é
+  bloqueada (409) para fornecedor com CNPJ irregular (INAPTA/SUSPENSA/BAIXADA/
+  NULA). Paridade Express + Worker (mesma distribuição por CNPJ). Coberto por testes.
 - ✅ **Alçada de pagamento >R$50k** (Onda 1 — conclui a onda): o gate de pagamento
   bloqueia contas acima do limiar sem aprovação prévia de Diretor
   (`POST /api/contas-pagar/:id/aprovar-alcada`, perfil diretor/admin — distinto
