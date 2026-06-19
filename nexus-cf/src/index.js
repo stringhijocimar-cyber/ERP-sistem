@@ -131,6 +131,12 @@ function montarFluxoCaixa(contas = [], { semanas = 8, hoje } = {}){
   return { semanas: buckets, por_contrato, resumo: { planejado_total: _r2(planTot), realizado_total: _r2(realTot), desvio_total: _r2(realTot - planTot) } };
 }
 
+// Fornecedor homologado = aprovado por Financeiro E Compliance. Pura (espelha o Express).
+function fornecedorHomologado(f){
+  if (!f) return false;
+  if (f.status === 'Homologado') return true;
+  return !!(String(f.aprovado_financeiro_por || '').trim() && String(f.aprovado_compliance_por || '').trim());
+}
 // Dupla aprovação bancária: detecta alteração de banco/agência/conta. Pura (espelha o Express).
 function alteracaoBancariaSolicitada(atual, b){
   const mudou = {};
@@ -1130,6 +1136,29 @@ export default {
         await audit(env, user.sub, 'create', 'fornecedores', r.id, {});
         return J(r);
       }
+      // Fornecedor — homologação de cadastro (Financeiro + Compliance)
+      if (seg[0]==='fornecedores' && seg[2]==='homologar' && (seg[3]==='financeiro' || seg[3]==='compliance') && method==='POST'){
+        const etapa = seg[3];
+        requireRole(user, etapa === 'financeiro' ? ['admin','financeiro'] : ['admin','diretor','compliance']);
+        const f = await getDoc(env, 'fornecedores', seg[1]);
+        if (!f) return E('Fornecedor nao encontrado', 404);
+        if (f.status === 'Homologado') return E('Fornecedor ja homologado', 409);
+        const patch = etapa === 'financeiro'
+          ? { aprovado_financeiro_por: user.name, aprovado_financeiro_em: new Date().toISOString() }
+          : { aprovado_compliance_por: user.name, aprovado_compliance_em: new Date().toISOString() };
+        if (({ ...f, ...patch }).aprovado_financeiro_por && ({ ...f, ...patch }).aprovado_compliance_por) patch.status = 'Homologado';
+        const r = await updateDoc(env, 'fornecedores', seg[1], patch);
+        await audit(env, user.sub, `homologacao_${etapa}`, 'fornecedores', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
+      if (seg[0]==='fornecedores' && seg[2]==='reprovar-homologacao' && method==='POST'){
+        requireRole(user, ['admin','diretor','compliance','financeiro']);
+        const f = await getDoc(env, 'fornecedores', seg[1]);
+        if (!f) return E('Fornecedor nao encontrado', 404);
+        const r = await updateDoc(env, 'fornecedores', seg[1], { status: 'Reprovado', aprovado_financeiro_por: null, aprovado_financeiro_em: null, aprovado_compliance_por: null, aprovado_compliance_em: null });
+        await audit(env, user.sub, 'homologacao_reprovada', 'fornecedores', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
       // Fornecedor — aprovação/rejeição de alteração bancária (dupla aprovação)
       if (seg[0]==='fornecedores' && seg[2]==='aprovar-banco' && method==='POST'){
         requireRole(user, ['admin','diretor','financeiro']);
@@ -1169,11 +1198,16 @@ export default {
         return r ? J(r) : E('nao encontrado', 404);
       }
 
-      // Pedido — situação cadastral do fornecedor antes da emissão (compliance)
+      // Pedido — homologação + situação cadastral do fornecedor antes da emissão
       if (seg[0]==='pedidos' && !seg[1] && method==='POST'){
-        if (body.fornecedor_id && (env.ENFORCE_RECEITA_PO ?? '1') !== '0'){
+        if (body.fornecedor_id){
           const f = await getDoc(env, 'fornecedores', body.fornecedor_id);
-          if (f && f.cnpj){
+          // Compliance: fornecedor precisa estar HOMOLOGADO (Financeiro + Compliance).
+          if (f && (env.ENFORCE_HOMOLOGACAO_PO ?? '1') !== '0' && !fornecedorHomologado(f)){
+            await audit(env, user.sub, 'po_bloqueada_homologacao', 'pedidos', null, {});
+            return E('Emissao bloqueada: fornecedor nao homologado (pendente de aprovacao Financeiro/Compliance)', 409);
+          }
+          if (f && f.cnpj && (env.ENFORCE_RECEITA_PO ?? '1') !== '0'){
             const s = situacaoReceitaMock(f.cnpj);
             if (s && !s.regular){
               await audit(env, user.sub, 'po_bloqueada_receita', 'pedidos', null, { situacao: s.situacao_cadastral });
@@ -1205,4 +1239,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado };

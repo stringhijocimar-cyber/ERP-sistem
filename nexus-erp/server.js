@@ -127,6 +127,11 @@ ensureColumns('fornecedores', [
   ['conta_pendente', 'conta_pendente TEXT'],
   ['banco_solicitado_por', 'banco_solicitado_por TEXT'],
   ['banco_solicitado_em', 'banco_solicitado_em TEXT'],
+  // Homologação de cadastro: dupla aprovação Financeiro + Compliance.
+  ['aprovado_financeiro_por', 'aprovado_financeiro_por TEXT'],
+  ['aprovado_financeiro_em', 'aprovado_financeiro_em TEXT'],
+  ['aprovado_compliance_por', 'aprovado_compliance_por TEXT'],
+  ['aprovado_compliance_em', 'aprovado_compliance_em TEXT'],
 ])
 // Gate de pagamento precisa de NF e origem na conta a pagar.
 ensureColumns('contas_pagar', [
@@ -778,6 +783,45 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   res.status(201).json(ok(f))
 })
 
+// Fornecedor homologado = aprovado por Financeiro E Compliance. Pura (espelhada no Worker).
+function fornecedorHomologado(f) {
+  if (!f) return false
+  if (f.status === 'Homologado') return true
+  return !!(String(f.aprovado_financeiro_por || '').trim() && String(f.aprovado_compliance_por || '').trim())
+}
+
+// Aplica uma etapa de homologação e promove a 'Homologado' quando ambas existem.
+function _registrarHomologacao(req, res, etapa) {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  if (f.status === 'Homologado') return res.status(409).json(err('Fornecedor já homologado'))
+  const col = etapa === 'financeiro'
+    ? { por: 'aprovado_financeiro_por', em: 'aprovado_financeiro_em' }
+    : { por: 'aprovado_compliance_por', em: 'aprovado_compliance_em' }
+  db.prepare(`UPDATE fornecedores SET ${col.por}=?, ${col.em}=datetime('now'), updated_at=datetime('now') WHERE id=?`).run(req.user.nome, req.params.id)
+  const at = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  let homologado = false
+  if (at.aprovado_financeiro_por && at.aprovado_compliance_por) {
+    db.prepare(`UPDATE fornecedores SET status='Homologado', updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+    homologado = true
+  }
+  log(req.user.usuario_id, req.user.nome, `homologacao_${etapa}`, 'fornecedores', `Aprovação ${etapa}: ${f.nome}${homologado ? ' → HOMOLOGADO' : ''}`)
+  res.json(ok(db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)))
+}
+
+// Etapa Financeiro (perfil financeiro/admin).
+app.post('/api/fornecedores/:id/homologar/financeiro', requireAuth, requireRole('admin', 'financeiro'), (req, res) => _registrarHomologacao(req, res, 'financeiro'))
+// Etapa Compliance (perfil compliance/diretor/admin).
+app.post('/api/fornecedores/:id/homologar/compliance', requireAuth, requireRole('admin', 'diretor', 'compliance'), (req, res) => _registrarHomologacao(req, res, 'compliance'))
+// Reprovação da homologação (volta o cadastro ao estado bloqueado).
+app.post('/api/fornecedores/:id/reprovar-homologacao', requireAuth, requireRole('admin', 'diretor', 'compliance', 'financeiro'), (req, res) => {
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  db.prepare(`UPDATE fornecedores SET status='Reprovado', aprovado_financeiro_por=NULL, aprovado_financeiro_em=NULL, aprovado_compliance_por=NULL, aprovado_compliance_em=NULL, updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'homologacao_reprovada', 'fornecedores', `Homologação reprovada: ${f.nome} (${req.body?.motivo || 'sem motivo'})`)
+  res.json(ok(db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)))
+})
+
 // Detecta alteração de dados bancários (banco/agência/conta) no corpo vs. atual.
 function alteracaoBancariaSolicitada(atual, b) {
   const mudou = {}
@@ -1207,7 +1251,12 @@ app.get('/api/pedidos/:id', requireAuth, (req, res) => {
 app.post('/api/pedidos', requireAuth, async (req, res) => {
   const { mapa_id, mapa_numero, rc_id, fornecedor_id, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, itens = [] } = req.body
   if (!fornecedor_id) return res.status(400).json(err('Fornecedor obrigatório'))
-  const f = db.prepare(`SELECT nome, cnpj FROM fornecedores WHERE id = ?`).get(fornecedor_id)
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(fornecedor_id)
+  // Compliance: fornecedor precisa estar HOMOLOGADO (Financeiro + Compliance).
+  if (f && (process.env.ENFORCE_HOMOLOGACAO_PO ?? '1') !== '0' && !fornecedorHomologado(f)) {
+    log(req.user.usuario_id, req.user.nome, 'po_bloqueada_homologacao', 'pedidos_compra', `Fornecedor ${f.nome} não homologado`)
+    return res.status(409).json(err('Emissão bloqueada: fornecedor não homologado (pendente de aprovação Financeiro/Compliance)'))
+  }
   // Compliance: valida a situação cadastral (Receita/SEFAZ) antes de emitir a PC.
   if (f && f.cnpj && (process.env.ENFORCE_RECEITA_PO ?? '1') !== '0') {
     try {
