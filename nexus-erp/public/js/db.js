@@ -492,6 +492,11 @@ window.DB = {
     catch (e) { return null; }
   },
 
+  async consultarReceita(cnpj) {
+    try { return await _apiFetch('/api/receita/consultar', { method: 'POST', body: JSON.stringify({ cnpj }) }); }
+    catch (e) { return null; }
+  },
+
   // Compatibilidade com código legado que usa logAction()
   log: (acao, modulo, desc) => Logs.registrar(acao, modulo, desc),
 };

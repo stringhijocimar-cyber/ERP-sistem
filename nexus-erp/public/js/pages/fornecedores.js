@@ -920,7 +920,10 @@ function openNovoFornecedor() {
       <button type="button" id="btn_bureau" onclick="consultarBureauNoCadastro()" class="btn btn-secondary btn-sm" style="margin-left:6px">
         <i class="fas fa-building-columns"></i> Consultar bureau
       </button>
-      <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Score interno + consulta externa (bureau) por CNPJ.</span>
+      <button type="button" id="btn_receita" onclick="consultarReceitaNoCadastro()" class="btn btn-secondary btn-sm" style="margin-left:6px">
+        <i class="fas fa-id-card"></i> Situação cadastral
+      </button>
+      <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Score interno + consulta externa (bureau/Receita) por CNPJ.</span>
       <div id="credito_result" style="display:none;margin-top:10px"></div>
     </div>
 
@@ -1017,6 +1020,21 @@ async function consultarBureauNoCadastro() {
   }
   analisarCreditoNoCadastro(); // reavalia já com os dados do bureau
   showToast(`Bureau (${r.fonte}): score ${r.score_externo} · ${r.situacao} · ${r.pendencias} pendência(s)`, 'info', 6000);
+}
+
+async function consultarReceitaNoCadastro() {
+  const cnpj = document.getElementById('nf_cnpj')?.value || '';
+  if (cnpj.replace(/\D/g, '').length !== 14) { showToast('Informe o CNPJ completo antes de consultar a situação cadastral', 'warning'); return; }
+  if (!(window.DB && typeof DB.consultarReceita === 'function')) { showToast('Consulta de situação cadastral indisponível.', 'error'); return; }
+  const btn = document.getElementById('btn_receita');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Consultando...'; }
+  const r = await DB.consultarReceita(cnpj);
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-id-card"></i> Situação cadastral'; }
+  if (!r) { showToast('Consulta de situação cadastral indisponível no momento.', 'error'); return; }
+  window._receitaResult = r;
+  const tipo = r.regular ? 'success' : 'error';
+  const aviso = r.regular ? '' : ' — emissão de pedido será bloqueada';
+  showToast(`Receita (${r.fonte}): situação ${r.situacao_cadastral}${aviso}`, tipo, 7000);
 }
 
 function _renderCreditoResult(res) {

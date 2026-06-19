@@ -17,6 +17,7 @@ import './public/js/lib/auditoria.js' // define globalThis.Auditoria (hash encad
 import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-way por item)
 import './public/js/lib/lgpd.js'      // define globalThis.LGPD (anonimização/retenção)
 import { consultarCredito } from './lib/credit_bureau.js'
+import { consultarReceita } from './lib/receita.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -603,6 +604,16 @@ app.post('/api/credito/consultar', requireAuth, async (req, res) => {
   }
 })
 
+// Situação cadastral (Receita/SEFAZ): consulta avulsa do CNPJ.
+app.post('/api/receita/consultar', requireAuth, async (req, res) => {
+  try {
+    const data = await consultarReceita(req.body && req.body.cnpj, { provider: process.env.RECEITA_PROVIDER })
+    res.json(ok(data))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
 // Numeração atômica: POST /api/sequencia/PC → { numero: 'PC-2026-0001', ... }
 app.post('/api/sequencia/:tipo', requireAuth, (req, res) => {
   try {
@@ -1094,10 +1105,20 @@ app.get('/api/pedidos/:id', requireAuth, (req, res) => {
   res.json(ok({ ...pc, itens, historico }))
 })
 
-app.post('/api/pedidos', requireAuth, (req, res) => {
+app.post('/api/pedidos', requireAuth, async (req, res) => {
   const { mapa_id, mapa_numero, rc_id, fornecedor_id, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, itens = [] } = req.body
   if (!fornecedor_id) return res.status(400).json(err('Fornecedor obrigatório'))
-  const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fornecedor_id)
+  const f = db.prepare(`SELECT nome, cnpj FROM fornecedores WHERE id = ?`).get(fornecedor_id)
+  // Compliance: valida a situação cadastral (Receita/SEFAZ) antes de emitir a PC.
+  if (f && f.cnpj && (process.env.ENFORCE_RECEITA_PO ?? '1') !== '0') {
+    try {
+      const sit = await consultarReceita(f.cnpj, { provider: process.env.RECEITA_PROVIDER })
+      if (!sit.regular) {
+        log(req.user.usuario_id, req.user.nome, 'po_bloqueada_receita', 'pedidos_compra', `Fornecedor ${f.nome} com situação ${sit.situacao_cadastral}`)
+        return res.status(409).json(err(`Emissão bloqueada: fornecedor com situação cadastral irregular na Receita (${sit.situacao_cadastral})`))
+      }
+    } catch (e) { /* CNPJ inválido/sem provedor não bloqueia a emissão aqui */ }
+  }
   const numero = nextPC()
   const r = db.prepare(
     `INSERT INTO pedidos_compra(numero, mapa_id, mapa_numero, rc_id, fornecedor_id, fornecedor_nome, status, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, comprador_id, comprador_nome)

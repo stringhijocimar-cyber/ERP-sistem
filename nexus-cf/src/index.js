@@ -590,6 +590,17 @@ function consultarCreditoBureau(cnpjRaw, provider){
   });
 }
 
+// Situação cadastral (Receita/SEFAZ) — mock determinístico (mesma distribuição
+// do lib/receita.js do Express). Pura: devolve normalizado ou null se CNPJ inválido.
+const _RECEITA_SITU = ['ATIVA','ATIVA','ATIVA','ATIVA','SUSPENSA','INAPTA','BAIXADA','NULA'];
+function situacaoReceitaMock(cnpjRaw){
+  const cnpj = String(cnpjRaw||'').replace(/\D/g,'');
+  if (cnpj.length !== 14) return null;
+  let h = 0; for (const ch of cnpj) h = (h*31 + (ch.charCodeAt(0)-48)) % 1000003;
+  const situacao_cadastral = _RECEITA_SITU[h % _RECEITA_SITU.length];
+  return { cnpj, fonte:'mock', situacao_cadastral, regular: situacao_cadastral === 'ATIVA' };
+}
+
 // Numeração atômica por tipo/ano (UPSERT + RETURNING numa instrução).
 const TIPOS_SEQ = new Set(['PC','RC','RFQ','MAPA','CP']);
 async function proximaSequencia(env, tipoRaw, anoRaw){
@@ -905,6 +916,14 @@ export default {
       // Consulta a bureau de crédito: POST /api/credito/consultar { cnpj }
       if (seg[0]==='credito' && seg[1]==='consultar' && method==='POST') return consultarCreditoBureau(body && body.cnpj, env.CREDIT_BUREAU_PROVIDER);
 
+      // Situação cadastral (Receita/SEFAZ): POST /api/receita/consultar { cnpj }
+      if (seg[0]==='receita' && seg[1]==='consultar' && method==='POST'){
+        const prov = String(env.RECEITA_PROVIDER||'mock').toLowerCase();
+        if (prov !== 'mock') return E('Provedor de situacao cadastral nao configurado: ' + prov, 400);
+        const s = situacaoReceitaMock(body && body.cnpj);
+        return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
+      }
+
       // LGPD — anonimizar fornecedor: POST /api/lgpd/anonimizar/fornecedores/:id
       if (seg[0]==='lgpd' && seg[1]==='anonimizar' && seg[2]==='fornecedores' && seg[3] && method==='POST') return await anonimizarFornecedor(env, seg[3], user);
       // LGPD — retenção: preview (GET) e execução (POST)
@@ -982,6 +1001,23 @@ export default {
         return J(r);
       }
 
+      // Pedido — situação cadastral do fornecedor antes da emissão (compliance)
+      if (seg[0]==='pedidos' && !seg[1] && method==='POST'){
+        if (body.fornecedor_id && (env.ENFORCE_RECEITA_PO ?? '1') !== '0'){
+          const f = await getDoc(env, 'fornecedores', body.fornecedor_id);
+          if (f && f.cnpj){
+            const s = situacaoReceitaMock(f.cnpj);
+            if (s && !s.regular){
+              await audit(env, user.sub, 'po_bloqueada_receita', 'pedidos', null, { situacao: s.situacao_cadastral });
+              return E(`Emissao bloqueada: fornecedor com situacao cadastral irregular na Receita (${s.situacao_cadastral})`, 409);
+            }
+          }
+        }
+        const r = await createDoc(env, 'pedidos', body);
+        await audit(env, user.sub, 'create', 'pedidos', r.id, {});
+        return J(r);
+      }
+
       // CRUD generico
       if (TABLES[seg[0]]){
         const table = TABLES[seg[0]];
@@ -1001,4 +1037,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock };
