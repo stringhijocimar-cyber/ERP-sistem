@@ -18,6 +18,7 @@ import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-
 import './public/js/lib/lgpd.js'      // define globalThis.LGPD (anonimização/retenção)
 import { consultarCredito } from './lib/credit_bureau.js'
 import { consultarReceita } from './lib/receita.js'
+import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -600,6 +601,14 @@ app.get('/api/bi', requireAuth, (req, res) => {
   if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao painel gerencial', 403))
   const dias = Math.max(1, Math.min(parseInt(req.query.dias) || 30, 365))
   res.json(ok(coletarKPIs({ dias, isAdmin: req.user.perfil === 'admin' })))
+})
+
+// Fluxo de caixa (saídas): comparativo semanal planejado × realizado por contrato.
+app.get('/api/fluxo-caixa', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao fluxo de caixa', 403))
+  const semanas = Math.max(1, Math.min(parseInt(req.query.semanas) || 8, 52))
+  const contas = db.prepare(`SELECT valor, data_vencimento, data_pagamento, status, contrato_id, pc_numero FROM contas_pagar`).all()
+  res.json(ok(montarFluxoCaixa(contas, { semanas })))
 })
 
 // Consulta a bureau de crédito (provedor por env; mock por padrão).

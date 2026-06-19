@@ -71,6 +71,11 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Fluxo de caixa planejado × realizado** (Onda 2): `GET /api/fluxo-caixa`
+  compara, por semana e por contrato, o planejado (vencimentos) contra o
+  realizado (pagamentos), com desvios. Lib pura `lib/fluxo_caixa.js`; bloco no
+  Dashboard BI (tabela semanal + maiores desvios por contrato). **Paridade
+  Express + Worker** (saída idêntica, provada por teste). Coberto por testes.
 - ✅ **Dupla aprovação de dados bancários** (Onda 2): alteração de
   banco/agência/conta de fornecedor (interna ou via portal) não vale na hora —
   fica **pendente** até a aprovação de uma 2ª pessoa

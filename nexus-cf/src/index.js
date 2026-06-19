@@ -103,6 +103,34 @@ function rcaCompleto({ causa_raiz, plano_acao } = {}){
 function alcadaPendente({ valor = 0, aprovadaPor = null, limite = 50000 } = {}){
   return (Number(valor) || 0) > limite && !String(aprovadaPor || '').trim();
 }
+// Fluxo de caixa semanal planejado × realizado por contrato. Pura (espelha lib/fluxo_caixa.js).
+const _r2 = n => Math.round(n * 100) / 100;
+function _inicioSemana(ymd){ const d = new Date(ymd + 'T00:00:00Z'); const dow = (d.getUTCDay() + 6) % 7; return _addDias(ymd, -dow); }
+function montarFluxoCaixa(contas = [], { semanas = 8, hoje } = {}){
+  const base = hoje || _hojeStr();
+  const inicio = _inicioSemana(base);
+  const n = Math.max(1, Math.min(Number(semanas) || 8, 52));
+  const fimWindow = _addDias(inicio, n * 7);
+  const buckets = [];
+  for (let i = 0; i < n; i++){ const ini = _addDias(inicio, i * 7); buckets.push({ semana: ini, inicio: ini, fim: _addDias(ini, 7), planejado: 0, realizado: 0, desvio: 0 }); }
+  const inWin = ymd => ymd >= inicio && ymd < fimWindow;
+  const idx = ymd => Math.floor((Date.parse(ymd + 'T00:00:00Z') - Date.parse(inicio + 'T00:00:00Z')) / (7 * 864e5));
+  const contratos = {}; let planTot = 0, realTot = 0;
+  for (const c of contas){
+    const valor = Number(c.valor) || 0;
+    const venc = String(c.data_vencimento || c.vencimento || '').slice(0, 10);
+    const pag = String(c.data_pagamento || '').slice(0, 10);
+    const ckey = String(c.contrato_id || c.contrato || c.pc_numero || 'Sem contrato');
+    if (!contratos[ckey]) contratos[ckey] = { contrato: ckey, planejado: 0, realizado: 0, desvio: 0 };
+    if (venc && inWin(venc) && c.status !== 'Cancelado'){ buckets[idx(venc)].planejado += valor; contratos[ckey].planejado += valor; planTot += valor; }
+    if (pag && c.status === 'Pago' && inWin(pag)){ buckets[idx(pag)].realizado += valor; contratos[ckey].realizado += valor; realTot += valor; }
+  }
+  for (const b of buckets){ b.planejado = _r2(b.planejado); b.realizado = _r2(b.realizado); b.desvio = _r2(b.realizado - b.planejado); }
+  const por_contrato = Object.values(contratos).map(c => ({ contrato: c.contrato, planejado: _r2(c.planejado), realizado: _r2(c.realizado), desvio: _r2(c.realizado - c.planejado) }))
+    .filter(c => c.planejado || c.realizado).sort((a, b) => Math.abs(b.desvio) - Math.abs(a.desvio));
+  return { semanas: buckets, por_contrato, resumo: { planejado_total: _r2(planTot), realizado_total: _r2(realTot), desvio_total: _r2(realTot - planTot) } };
+}
+
 // Dupla aprovação bancária: detecta alteração de banco/agência/conta. Pura (espelha o Express).
 function alteracaoBancariaSolicitada(atual, b){
   const mudou = {};
@@ -835,6 +863,14 @@ export default {
         return J(montarKPIsWorker({ contas, pedidos, fornecedores, contratos, bloqueios, liberados, vencidosLGPD, dias, isAdmin, meses }));
       }
 
+      // ---- Fluxo de caixa (saídas): semanal planejado × realizado por contrato ----
+      if (seg[0]==='fluxo-caixa' && method==='GET'){
+        if (user.role === 'fornecedor') return E('Sem acesso ao fluxo de caixa', 403);
+        const semanas = Math.max(1, Math.min(parseInt(url.searchParams.get('semanas')) || 8, 52));
+        const contas = await listDocs(env, 'contas_pagar', { searchParams: new URLSearchParams() });
+        return J(montarFluxoCaixa(contas, { semanas }));
+      }
+
       // Logs de aplicacao
       if (seg[0]==='logs'){
         if (method==='POST'){
@@ -1125,4 +1161,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa };

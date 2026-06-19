@@ -70,9 +70,58 @@ async function renderBI() {
           <a href="#" onclick="navigate('alertas')" style="font-size:12px;display:inline-block;margin-top:8px">Ver central de alertas →</a>
         </div>
       </div>
+      <div id="bi_fluxo" style="margin-top:18px"></div>
       <div style="font-size:10px;color:var(--text-muted);margin-top:16px">Gerado em ${new Date(k.gerado_em).toLocaleString('pt-BR')}</div>`;
+    renderFluxoCaixa(money);
   } catch (e) {
     document.getElementById('bi_body').innerHTML = `<div style="color:#dc2626;font-size:13px">${e.message}</div>`;
+  }
+}
+
+// Bloco de fluxo de caixa (saídas) — comparativo semanal planejado × realizado.
+async function renderFluxoCaixa(money) {
+  const box = document.getElementById('bi_fluxo');
+  if (!box) return;
+  try {
+    const fx = await apiAuth('/api/fluxo-caixa?semanas=8');
+    const sd = v => `<span style="color:${v > 0 ? '#dc2626' : (v < 0 ? '#16a34a' : 'var(--text-muted)')}">${v > 0 ? '+' : ''}${money(v)}</span>`;
+    const linhas = fx.semanas.map(s => `
+      <tr>
+        <td style="padding:5px 8px">${s.inicio}</td>
+        <td style="padding:5px 8px;text-align:right">${money(s.planejado)}</td>
+        <td style="padding:5px 8px;text-align:right">${money(s.realizado)}</td>
+        <td style="padding:5px 8px;text-align:right">${sd(s.desvio)}</td>
+      </tr>`).join('');
+    const top = fx.por_contrato.slice(0, 5).map(c => `
+      <tr><td style="padding:4px 8px">${c.contrato}</td>
+        <td style="padding:4px 8px;text-align:right">${money(c.planejado)}</td>
+        <td style="padding:4px 8px;text-align:right">${money(c.realizado)}</td>
+        <td style="padding:4px 8px;text-align:right">${sd(c.desvio)}</td></tr>`).join('');
+    box.innerHTML = `
+      <div class="info-card" style="padding:16px">
+        <h3 style="font-size:14px;margin:0 0 8px"><i class="fas fa-money-bill-trend-up"></i> Fluxo de caixa (saídas) — planejado × realizado</h3>
+        <div style="display:flex;gap:24px;flex-wrap:wrap">
+          <div style="flex:1;min-width:300px">
+            <table class="table" style="width:100%;font-size:12px;border-collapse:collapse">
+              <thead><tr style="color:var(--text-muted);text-align:left">
+                <th style="padding:5px 8px">Semana</th><th style="padding:5px 8px;text-align:right">Planejado</th>
+                <th style="padding:5px 8px;text-align:right">Realizado</th><th style="padding:5px 8px;text-align:right">Desvio</th>
+              </tr></thead><tbody>${linhas}</tbody>
+            </table>
+          </div>
+          <div style="flex:1;min-width:300px">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Maiores desvios por contrato</div>
+            <table class="table" style="width:100%;font-size:12px;border-collapse:collapse">
+              <thead><tr style="color:var(--text-muted);text-align:left">
+                <th style="padding:4px 8px">Contrato</th><th style="padding:4px 8px;text-align:right">Plan.</th>
+                <th style="padding:4px 8px;text-align:right">Real.</th><th style="padding:4px 8px;text-align:right">Desvio</th>
+              </tr></thead><tbody>${top || '<tr><td style="padding:6px 8px;color:var(--text-muted)" colspan="4">Sem movimento na janela.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>`;
+  } catch (e) {
+    box.innerHTML = `<div style="color:#dc2626;font-size:12px">Fluxo de caixa indisponível: ${e.message}</div>`;
   }
 }
 
