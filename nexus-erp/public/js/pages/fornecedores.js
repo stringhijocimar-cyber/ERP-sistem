@@ -123,7 +123,8 @@ function _normalizarFornecedor(f) {
 // ─── CARREGAR FORNECEDORES DA API D1 ────────────────────────
 async function loadFornecedores() {
   try {
-    const res = await fetch('/api/fornecedores?ativo=todos');
+    const token = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
+    const res = await fetch('/api/fornecedores?ativo=todos', { headers: { 'Authorization': `Bearer ${token}` } });
     const json = await res.json();
     if (json.success && Array.isArray(json.data)) {
       FA_FORNECEDORES = json.data.map(_normalizarFornecedor);
@@ -833,7 +834,8 @@ async function consultarCNPJBusca() {
 async function _fetchCNPJ(clean) {
   // PRIMEIRO: tenta proxy backend (sem CORS)
   try {
-    const res = await fetch(`/api/cnpj/${clean}`, { signal: AbortSignal.timeout(12000) });
+    const _tk = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
+    const res = await fetch(`/api/cnpj/${clean}`, { signal: AbortSignal.timeout(12000), headers: { 'Authorization': `Bearer ${_tk}` } });
     if (res.ok) {
       const json = await res.json();
       if (json?.success && json?.data) return json.data;

@@ -12,6 +12,31 @@
 (function () {
   'use strict';
 
+  // ── Interceptor global de fetch: injeta o token JWT em toda chamada /api/ ──
+  // Corrige páginas que faziam fetch('/api/...') sem Authorization (401 → vazio).
+  // Não sobrescreve um header Authorization já definido, e só age se houver token.
+  if (!window.__fetchAuthPatched) {
+    window.__fetchAuthPatched = true;
+    const _origFetch = window.fetch.bind(window);
+    const _tk = () => { try { return sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || ''; } catch (e) { return ''; } };
+    window.fetch = function (input, init) {
+      try {
+        const url = typeof input === 'string' ? input : (input && input.url) || '';
+        const isApi = url.indexOf('/api/') === 0 || url.indexOf(location.origin + '/api/') === 0;
+        if (isApi) {
+          const token = _tk();
+          if (token) {
+            init = Object.assign({}, init);
+            const headers = new Headers((init && init.headers) || (typeof input !== 'string' && input && input.headers) || {});
+            if (!headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + token);
+            init.headers = headers;
+          }
+        }
+      } catch (e) { /* nunca quebra a requisição */ }
+      return _origFetch(input, init);
+    };
+  }
+
   // -- Configuracao central de regras (ajuste conforme sua operacao) --------
   window.NEXUS_CONFIG = window.NEXUS_CONFIG || {
     lastro: {
