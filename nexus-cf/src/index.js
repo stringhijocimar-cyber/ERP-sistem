@@ -748,6 +748,28 @@ function cadastroCNPJMock(cnpjRaw){
   };
 }
 
+// ── Notificações + e-mail (espelha lib/email.js + escopo do Express) ──
+const _emailValido = e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(e || '').trim());
+async function enviarEmail({ to, assunto, corpo } = {}, opts = {}){
+  const provider = (opts.provider || 'mock').toLowerCase();
+  if (!_emailValido(to)) return { status:'erro', to, provider, motivo:'destinatário inválido' };
+  if (!assunto) return { status:'erro', to, provider, motivo:'assunto obrigatório' };
+  if (provider === 'mock') return { status:'simulado', to, assunto, provider, corpo_len: String(corpo || '').length };
+  throw new Error('Provedor de e-mail não configurado: ' + provider);
+}
+// Uma notificação está no escopo do usuário se: é dele, do seu perfil, ou global.
+function notificacaoNoEscopo(n, user){
+  if (!n || !user) return false;
+  if (n.usuario_id != null && n.usuario_id !== '' && String(n.usuario_id) === String(user.sub)) return true;
+  if (n.perfil && n.perfil === user.role) return true;
+  if ((n.usuario_id == null || n.usuario_id === '') && !n.perfil) return true;
+  return false;
+}
+async function notificarWorker(env, { usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null } = {}){
+  if (!titulo) return;
+  await createDoc(env, 'notificacoes', { usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, lida: 0, created_at: new Date().toISOString() });
+}
+
 // ── Emissão fiscal NF-e/NFS-e/CT-e (mock determinístico, espelha lib/nfe.js) ──
 const _NFE_TIPOS = { nfe:'NF-e', nfse:'NFS-e', cte:'CT-e' };
 const _nfeDigits = s => String(s||'').replace(/\D/g,'');
@@ -1124,6 +1146,36 @@ export default {
         return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
       }
 
+      // Notificações (in-app) — escopo por usuário/perfil/global
+      if (seg[0]==='notificacoes'){
+        const all = { searchParams: new URLSearchParams() };
+        if (seg[1]==='contagem' && method==='GET'){
+          const docs = await listDocs(env, 'notificacoes', all);
+          return J({ nao_lidas: docs.filter(x => !x.lida && notificacaoNoEscopo(x, user)).length });
+        }
+        if (seg[1]==='ler-todas' && method==='POST'){
+          const docs = await listDocs(env, 'notificacoes', all);
+          for (const x of docs) if (!x.lida && notificacaoNoEscopo(x, user)) await updateDoc(env, 'notificacoes', x.id, { lida: 1 });
+          return J({ ok: true });
+        }
+        if (seg[2]==='lida' && method==='POST'){
+          const x = await getDoc(env, 'notificacoes', seg[1]);
+          if (!x || !notificacaoNoEscopo(x, user)) return E('Notificacao nao encontrada', 404);
+          const r = await updateDoc(env, 'notificacoes', seg[1], { lida: 1 });
+          return r ? J({ ok: true }) : E('nao encontrado', 404);
+        }
+        if (method==='POST' && !seg[1]){
+          requireRole(user, ['admin','diretor','financeiro','compliance']);
+          if (!body.titulo) return E('Titulo obrigatorio', 400);
+          await notificarWorker(env, { usuario_id: body.usuario_id || null, perfil: body.perfil || null, titulo: body.titulo, mensagem: body.mensagem || '', tipo: body.tipo || 'info' });
+          return J({ ok: true }, 201);
+        }
+        if (method==='GET' && !seg[1]){
+          const docs = await listDocs(env, 'notificacoes', all);
+          return J(docs.filter(x => notificacaoNoEscopo(x, user)).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 100));
+        }
+      }
+
       // Fiscal — NF-e/NFS-e/CT-e
       if (seg[0]==='nfe'){
         if (method==='GET' && !seg[1]) return J(await listDocs(env, 'notas_fiscais', url));
@@ -1266,6 +1318,10 @@ export default {
         }
         const r = await createDoc(env, 'fornecedores', body);
         await audit(env, user.sub, 'create', 'fornecedores', r.id, {});
+        // Notifica Financeiro e Compliance: novo fornecedor a homologar.
+        const msg = `${body.nome || ''} aguarda aprovacao Financeiro + Compliance.`;
+        await notificarWorker(env, { perfil: 'financeiro', titulo: 'Novo fornecedor a homologar', mensagem: msg, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(r.id) });
+        await notificarWorker(env, { perfil: 'compliance', titulo: 'Novo fornecedor a homologar', mensagem: msg, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(r.id) });
         return J(r);
       }
       // Fornecedor — IDF (índice de desempenho): GET /api/fornecedores/:id/idf
@@ -1380,4 +1436,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo };

@@ -184,7 +184,7 @@ já existe como destino dos avisos):
 4. Rotina de **detecção de duplicatas** (fornecedor/material/NF).
 5. **Dupla aprovação** para CNPJ/conta bancária/e-mail de fornecedor.
 6. Checklist de aceite de contrato + controle de seguro (alerta).
-7. Notificações por e-mail/sistema (engatar nos alertas).
+7. ✅ **Notificações por e-mail/sistema** (store + sino + eventos de homologação/banco — entregue).
 
 ### Onda 3 — 3 a 6 meses · Financeiro bancário e operação de campo
 1. **CNAB 240/150**, **OFX**, **conciliação automática**, **pagamento em lote**, **DDA**, **PIX/Open Finance** (Sicoob/Bradesco).
