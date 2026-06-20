@@ -71,6 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Visibilidade do Contas a Pagar pós-recebimento** (Épico B, Fatia B1): a
+  conta a pagar nasce na emissão do PC; ao registrar o recebimento, a **NF é
+  anexada à conta** (gate enxerga a nota) e a conta é **devolvida na resposta**.
+  Filtro `GET /api/contas-pagar?pc_id=`; o **detalhe do pedido** lista as contas
+  geradas. Front: toast com a conta vinculada após o recebimento. **Paridade
+  Express + Worker**. Coberto por testes.
 - ✅ **WBS como entidade no backend** (Épico A, Fatia A1 — fundação): tabela
   `wbs_linhas` com vínculo a `contrato_id`/`projeto_id`/`centro_custo`/`lead_id`,
   CRUD (`/api/wbs`), cálculo de total e exclusão lógica. Validador puro
