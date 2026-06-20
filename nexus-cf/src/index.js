@@ -165,6 +165,9 @@ function exigeAceiteServico(pedido, temAceite){
   const ehServico = tipo === 'servico' || tipo === 'serviço' || tipo === 'serviço externo' || tipo === 'servico externo';
   return ehServico && !temAceite;
 }
+// CRM → Orçamentação: "passou de Qualificação" = Qualificação..Negociação. Pura (espelha o Express).
+const CRM_ETAPAS_ORDEM = ['Prospecção','Qualificação','Reunião Agendada','Proposta Enviada','Negociação','Fechado Ganho','Fechado Perdido'];
+function precisaOrcamentacao(estagio){ const i = CRM_ETAPAS_ORDEM.indexOf(estagio); return i >= 1 && i <= 4; }
 // WBS: uma linha pertence a um contrato quando o contrato_id bate. Pura (espelha o Express).
 function wbsPertenceAoContrato(linha, contratoId){
   return !!linha && String(linha.contrato_id ?? '') === String(contratoId ?? '');
@@ -1207,6 +1210,25 @@ export default {
         return J(r, 201);
       }
 
+      // CRM → Orçamentação (C1): leads pendentes + gatilho ao passar de Qualificação
+      if (seg[0]==='crm' && seg[1]==='orcamentacao' && method==='GET'){
+        const status = url.searchParams.get('status') || 'pendente';
+        const all = await listDocs(env, 'crm', { searchParams: new URLSearchParams() });
+        return J(all.filter(x => (x.orcamentacao_status || 'nao_iniciada') === status));
+      }
+      if (seg[0]==='crm' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
+        const cur = await getDoc(env, 'crm', seg[1]);
+        if (!cur) return E('Oportunidade nao encontrada', 404);
+        await updateDoc(env, 'crm', seg[1], { ...body });
+        if (precisaOrcamentacao(body.estagio) && (cur.orcamentacao_status || 'nao_iniciada') === 'nao_iniciada'){
+          await updateDoc(env, 'crm', seg[1], { orcamentacao_status: 'pendente', orcamentacao_em: new Date().toISOString() });
+          await notificarWorker(env, { perfil: 'orcamentista', titulo: 'Lead para precificar', mensagem: `Crie a estimativa de custos (WBS) do lead "${body.titulo || cur.titulo}".`, tipo: 'orcamentacao', ref_tipo: 'crm', ref_id: String(seg[1]) });
+        }
+        await audit(env, user.sub, 'update', 'crm', seg[1], {});
+        const fin = await getDoc(env, 'crm', seg[1]);
+        return fin ? J(fin) : E('nao encontrado', 404);
+      }
+
       // WBS — linhas de custo (entidade) com vínculo a contrato/projeto/lead
       if (seg[0]==='wbs'){
         if (method==='GET' && !seg[1]){
@@ -1225,6 +1247,11 @@ export default {
           const qtd = Number(b.quantidade) || 0, vUnit = Number(b.valor_unit_est) || 0;
           const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit;
           const r = await createDoc(env, 'wbs_linhas', { codigo: b.codigo ?? null, descricao: b.descricao ?? null, natureza: b.natureza ?? null, tipo: b.tipo || 'OPEX', contrato_id: b.contrato_id ?? null, projeto_id: b.projeto_id ?? null, centro_custo: b.centro_custo ?? null, lead_id: b.lead_id ?? null, origem: b.origem || 'contrato', unidade: b.unidade ?? null, quantidade: qtd, valor_unit_est: vUnit, valor_total_est: vTotal, custo_real: 0, nao_previsto: b.nao_previsto ? 1 : 0, ativo: 1 });
+          // C1: WBS de orçamentação vinculada a um lead → estimativa em andamento.
+          if (b.lead_id){
+            const lead = await getDoc(env, 'crm', b.lead_id);
+            if (lead && ['pendente', 'nao_iniciada'].includes(lead.orcamentacao_status || 'nao_iniciada')) await updateDoc(env, 'crm', b.lead_id, { orcamentacao_status: 'em_andamento' });
+          }
           await audit(env, user.sub, 'create', 'wbs_linhas', r.id, {});
           return J(r, 201);
         }
@@ -1552,4 +1579,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao };

@@ -71,6 +71,13 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **CRM → Orçamentação** (Épico C, Fatia C1): quando a oportunidade passa para
+  **Qualificação** (ou além, até Negociação), a orçamentação é marcada
+  **pendente** e o **orçamentista é alertado** (notificação + e-mail). Endpoint
+  `GET /api/crm/orcamentacao?status=` lista os leads a precificar; criar uma WBS
+  vinculada ao lead (`lead_id`, origem `orcamentacao`) marca a estimativa
+  **em andamento**. Banner no Controle de Custos com a ação "Criar estimativa".
+  **Paridade Express + Worker** (helper puro `precisaOrcamentacao`). Coberto por testes.
 - ✅ **Fluxo de serviço + aceite do requisitante** (Épico B, Fatia B2): pedido de
   serviço não entra no almoxarifado — o requisitante atesta a prestação com
   **checklist técnico** (`POST /api/pedidos/:id/aceite-servico`, só aceita com
