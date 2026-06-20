@@ -2900,3 +2900,17 @@ async function criarEstimativaLead(leadId, titulo) {
 }
 
 window.criarEstimativaLead = criarEstimativaLead;
+
+// ── C2: gerar proposta a partir da estimativa vinculada ao lead ──────────
+async function gerarPropostaDoLead(leadId, titulo) {
+  if (typeof apiAuth !== 'function') return;
+  const margem = parseFloat(prompt(`Proposta para "${titulo || 'lead'}".\nMargem (%) sobre o custo estimado:`, '20'));
+  if (isNaN(margem)) return;
+  try {
+    const p = await apiAuth('/api/propostas', { method: 'POST', body: JSON.stringify({ lead_id: leadId, margem }) });
+    if (typeof showToast === 'function') showToast(`Proposta ${p.numero} criada: custo R$ ${Number(p.custo_estimado).toLocaleString('pt-BR')} · valor R$ ${Number(p.valor_total).toLocaleString('pt-BR')} (margem ${margem}%).`, 'success', 8000);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Proposta não criada: ' + e.message, 'error', 7000);
+  }
+}
+window.gerarPropostaDoLead = gerarPropostaDoLead;
