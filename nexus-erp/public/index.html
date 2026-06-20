@@ -453,6 +453,13 @@
       <span class="breadcrumb-item active">Dashboard</span>
     </div>
     <div class="topbar-actions">
+      <!-- Sino de Notificações -->
+      <button class="topbar-btn" id="notifBell" onclick="navigate('notificacoes')" title="Notificações"
+        style="position:relative;font-size:14px;width:38px;display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-bell"></i>
+        <span id="notifBadge" style="display:none;position:absolute;top:4px;right:4px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:#dc2626;color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center"></span>
+      </button>
+
       <!-- Badge de Plano/Trial -->
       <div id="plano-badge-wrap" style="display:none">
         <span id="plano-badge" onclick="navigate('saas_dashboard')" style="cursor:pointer;padding:4px 12px;border-radius:20px;font-size:.72rem;font-weight:700;border:1px solid;transition:all .2s" title="Ver plano atual"></span>
@@ -592,6 +599,7 @@
 <script src="js/pages/alertas.js"></script>
 <script src="js/pages/bi.js"></script>
 <script src="js/pages/nfe.js"></script>
+<script src="js/pages/notificacoes.js"></script>
 <script src="js/pages/fluxo_compras.js"></script>
 <script src="js/pages/fluxo_aprovacao_rc.js"></script>
 <script src="js/pages/cadastro_massa.js"></script>

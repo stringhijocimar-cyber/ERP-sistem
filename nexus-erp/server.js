@@ -21,6 +21,7 @@ import { consultarReceita, consultarCadastroCNPJ } from './lib/receita.js'
 import { analisarFinanceiro } from './lib/analise_financeira.js'
 import { calcularIDF } from './lib/idf.js'
 import { emitirNotaFiscal, cancelarNotaFiscal } from './lib/nfe.js'
+import { enviarEmail } from './lib/email.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
 const Auditoria = globalThis.Auditoria
@@ -163,6 +164,15 @@ db.exec(`CREATE TABLE IF NOT EXISTS recebimento_itens (
   codigo_produto TEXT,
   descricao TEXT,
   quantidade_recebida REAL DEFAULT 0
+)`)
+// Notificações in-app (e e-mail via adaptador). Alvo por usuário OU por perfil.
+db.exec(`CREATE TABLE IF NOT EXISTS notificacoes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER, perfil TEXT,
+  titulo TEXT NOT NULL, mensagem TEXT,
+  tipo TEXT DEFAULT 'info', ref_tipo TEXT, ref_id TEXT,
+  lida INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
 )`)
 // Notas fiscais emitidas (NF-e / NFS-e / CT-e).
 db.exec(`CREATE TABLE IF NOT EXISTS notas_fiscais (
@@ -662,6 +672,56 @@ app.get('/api/cnpj/:cnpj', requireAuth, async (req, res) => {
 })
 
 // ════════════════════════════════════════════════════════════
+// NOTIFICAÇÕES (in-app + e-mail) — alvo por usuário ou por perfil
+// ════════════════════════════════════════════════════════════
+// Cria uma notificação e, opcionalmente, dispara e-mail (adaptador, mock).
+function notificar({ usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null, email = false } = {}) {
+  if (!titulo) return
+  db.prepare(`INSERT INTO notificacoes(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id) VALUES(?,?,?,?,?,?,?)`)
+    .run(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id)
+  if (email) {
+    try {
+      const dests = usuario_id
+        ? db.prepare(`SELECT email FROM usuarios WHERE id = ? AND email IS NOT NULL`).all(usuario_id)
+        : (perfil ? db.prepare(`SELECT email FROM usuarios WHERE perfil = ? AND ativo = 1 AND email IS NOT NULL`).all(perfil) : [])
+      for (const d of dests) enviarEmail({ to: d.email, assunto: titulo, corpo: mensagem }, { provider: process.env.EMAIL_PROVIDER }).catch(() => {})
+    } catch { /* e-mail nunca quebra a operação */ }
+  }
+}
+// Filtro de escopo do usuário logado (próprias + do seu perfil + globais).
+const _NOTIF_ESCOPO = `(usuario_id = ? OR perfil = ? OR (usuario_id IS NULL AND perfil IS NULL))`
+
+app.get('/api/notificacoes', requireAuth, (req, res) => {
+  const rows = db.prepare(`SELECT * FROM notificacoes WHERE ${_NOTIF_ESCOPO} ORDER BY created_at DESC LIMIT 100`).all(req.user.usuario_id, req.user.perfil)
+  res.json(ok(rows))
+})
+
+app.get('/api/notificacoes/contagem', requireAuth, (req, res) => {
+  const n = db.prepare(`SELECT COUNT(*) n FROM notificacoes WHERE lida = 0 AND ${_NOTIF_ESCOPO}`).get(req.user.usuario_id, req.user.perfil).n
+  res.json(ok({ nao_lidas: n }))
+})
+
+app.post('/api/notificacoes/ler-todas', requireAuth, (req, res) => {
+  db.prepare(`UPDATE notificacoes SET lida = 1 WHERE lida = 0 AND ${_NOTIF_ESCOPO}`).run(req.user.usuario_id, req.user.perfil)
+  res.json(ok({ ok: true }))
+})
+
+app.post('/api/notificacoes/:id/lida', requireAuth, (req, res) => {
+  const n = db.prepare(`SELECT * FROM notificacoes WHERE id = ? AND ${_NOTIF_ESCOPO}`).get(req.params.id, req.user.usuario_id, req.user.perfil)
+  if (!n) return res.status(404).json(err('Notificação não encontrada'))
+  db.prepare(`UPDATE notificacoes SET lida = 1 WHERE id = ?`).run(req.params.id)
+  res.json(ok({ ok: true }))
+})
+
+// Criação manual / broadcast (interno).
+app.post('/api/notificacoes', requireAuth, requireRole('admin', 'diretor', 'financeiro', 'compliance'), (req, res) => {
+  const b = req.body || {}
+  if (!b.titulo) return res.status(400).json(err('Título obrigatório'))
+  notificar({ usuario_id: b.usuario_id || null, perfil: b.perfil || null, titulo: b.titulo, mensagem: b.mensagem || '', tipo: b.tipo || 'info', email: !!b.email })
+  res.status(201).json(ok({ ok: true }))
+})
+
+// ════════════════════════════════════════════════════════════
 // FISCAL — emissão de NF-e / NFS-e / CT-e (adaptador server-side)
 // ════════════════════════════════════════════════════════════
 app.get('/api/nfe', requireAuth, (req, res) => {
@@ -869,6 +929,9 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   )
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'fornecedores', `Fornecedor criado: ${nome}`)
+  // Notifica Financeiro e Compliance: novo fornecedor aguardando homologação.
+  notificar({ perfil: 'financeiro', titulo: 'Novo fornecedor a homologar', mensagem: `${nome} aguarda aprovação Financeiro + Compliance.`, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(f.id), email: true })
+  notificar({ perfil: 'compliance', titulo: 'Novo fornecedor a homologar', mensagem: `${nome} aguarda aprovação Financeiro + Compliance.`, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(f.id) })
   res.status(201).json(ok(f))
 })
 
@@ -968,6 +1031,7 @@ app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
     db.prepare(`UPDATE fornecedores SET banco_pendente=?, agencia_pendente=?, conta_pendente=?, banco_solicitado_por=?, banco_solicitado_em=datetime('now') WHERE id=?`)
       .run(bankChange.banco ?? atual.banco, bankChange.agencia ?? atual.agencia, bankChange.conta ?? atual.conta, req.user.nome, req.params.id)
     log(req.user.usuario_id, req.user.nome, 'banco_alteracao_solicitada', 'fornecedores', `Alteração bancária pendente de aprovação: ${atual.nome}`)
+    notificar({ perfil: 'financeiro', titulo: 'Alteração bancária a aprovar', mensagem: `Dados bancários de ${atual.nome} aguardam 2ª aprovação.`, tipo: 'banco', ref_tipo: 'fornecedor', ref_id: String(req.params.id), email: true })
   }
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Editar', 'fornecedores', `Fornecedor atualizado: ${v('nome')}`)

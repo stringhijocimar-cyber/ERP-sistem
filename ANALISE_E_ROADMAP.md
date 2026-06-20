@@ -71,6 +71,13 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Notificações (in-app + e-mail)** (Onda 2): store de notificações com alvo
+  por usuário, perfil ou global; sino no topbar com contador de não-lidas;
+  página de notificações (marcar lida / todas). Adaptador de e-mail
+  `lib/email.js` (provedor por `EMAIL_PROVIDER`, mock). Disparos em eventos
+  reais: novo fornecedor → Financeiro + Compliance (homologação); alteração
+  bancária pendente → Financeiro. **Paridade Express + Worker** (adaptador de
+  e-mail + escopo `notificacaoNoEscopo`). Coberto por testes.
 - ✅ **Emissão fiscal NF-e/NFS-e/CT-e** (Onda 2): adaptador server-side
   `lib/nfe.js` (provedor por `NFE_PROVIDER`, mock determinístico; Focus NF-e/
   eNotas/NFe.io plugáveis). Endpoints `/api/nfe/emitir`, `/api/nfe`,
