@@ -748,6 +748,42 @@ function cadastroCNPJMock(cnpjRaw){
   };
 }
 
+// ── Emissão fiscal NF-e/NFS-e/CT-e (mock determinístico, espelha lib/nfe.js) ──
+const _NFE_TIPOS = { nfe:'NF-e', nfse:'NFS-e', cte:'CT-e' };
+const _nfeDigits = s => String(s||'').replace(/\D/g,'');
+function _nfeValidar(tipo, d){
+  const erros = [];
+  if (!_NFE_TIPOS[tipo]) erros.push('tipo inválido (nfe|nfse|cte)');
+  if (_nfeDigits(d.cnpj_emitente).length !== 14) erros.push('CNPJ do emitente inválido');
+  if (_nfeDigits(d.cnpj_destinatario).length !== 14 && _nfeDigits(d.cpf_destinatario).length !== 11) erros.push('documento do destinatário inválido');
+  if (!(Number(d.valor) > 0)) erros.push('valor deve ser maior que zero');
+  if (!d.descricao && !(Array.isArray(d.itens) && d.itens.length)) erros.push('informe itens ou descrição');
+  return erros;
+}
+function _nfeChave(d, numero){
+  const base = _nfeDigits(d.cnpj_emitente) + _nfeDigits(String(numero)) + _nfeDigits(String(Math.round(Number(d.valor) * 100)));
+  let seed = 0; for (const c of base) seed = (seed * 31 + c.charCodeAt(0)) % 1000000007;
+  return (String(seed) + base + '0'.repeat(44)).replace(/\D/g, '').slice(0, 44);
+}
+async function emitirNotaFiscal(dados = {}, opts = {}){
+  const tipo = String(dados.tipo || 'nfe').toLowerCase();
+  const erros = _nfeValidar(tipo, dados);
+  if (erros.length) return { status:'rejeitada', tipo, motivo: erros.join('; ') };
+  const provider = (opts.provider || 'mock').toLowerCase();
+  if (provider !== 'mock') throw new Error('Provedor de NF-e não configurado: ' + provider);
+  const numero = Number(dados.numero) || 1, serie = Number(dados.serie) || 1;
+  const chave = _nfeChave(dados, numero);
+  return { status:'autorizada', tipo, tipo_label:_NFE_TIPOS[tipo], numero, serie, chave, protocolo:'1'+chave.slice(0,14), danfe_url:`/danfe/${chave}.pdf`, valor:Number(dados.valor), fonte:'mock' };
+}
+function cancelarNotaFiscal(chave, justificativa, opts = {}){
+  const ch = _nfeDigits(chave);
+  if (ch.length !== 44) return { status:'erro', motivo:'chave inválida (44 dígitos)' };
+  if (String(justificativa || '').trim().length < 15) return { status:'rejeitada', motivo:'justificativa de cancelamento exige no mínimo 15 caracteres (regra SEFAZ)' };
+  const provider = (opts.provider || 'mock').toLowerCase();
+  if (provider !== 'mock') throw new Error('Provedor de NF-e não configurado: ' + provider);
+  return { status:'cancelada', chave: ch, protocolo:'2'+ch.slice(0,14) };
+}
+
 // Numeração atômica por tipo/ano (UPSERT + RETURNING numa instrução).
 const TIPOS_SEQ = new Set(['PC','RC','RFQ','MAPA','CP']);
 async function proximaSequencia(env, tipoRaw, anoRaw){
@@ -1088,6 +1124,35 @@ export default {
         return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
       }
 
+      // Fiscal — NF-e/NFS-e/CT-e
+      if (seg[0]==='nfe'){
+        if (method==='GET' && !seg[1]) return J(await listDocs(env, 'notas_fiscais', url));
+        if (method==='GET' && seg[1] && seg[1] !== 'emitir'){ const d = await getDoc(env, 'notas_fiscais', seg[1]); return d ? J(d) : E('Nota nao encontrada', 404); }
+        if (seg[1]==='emitir' && method==='POST'){
+          requireRole(user, ['admin','financeiro','fiscal']);
+          const serie = Number(body.serie) || 1;
+          const existentes = await listDocs(env, 'notas_fiscais', { searchParams: new URLSearchParams() });
+          const numero = Number(body.numero) || (existentes.filter(n => Number(n.serie) === serie).length + 1);
+          let r; try { r = await emitirNotaFiscal({ ...body, numero, serie }, { provider: env.NFE_PROVIDER }); } catch(e){ return E(e.message, 400); }
+          if (r.status !== 'autorizada') return E('Emissao rejeitada: ' + (r.motivo || 'dados invalidos'), 422);
+          const destinatario = body.cnpj_destinatario || body.cpf_destinatario || body.destinatario || '';
+          const doc = await createDoc(env, 'notas_fiscais', { ...r, cnpj_emitente: body.cnpj_emitente || '', destinatario, descricao: body.descricao || '', pedido_id: body.pedido_id || null, emitido_por: user.name });
+          await audit(env, user.sub, 'nfe_emitir', 'notas_fiscais', doc.id, { chave: r.chave });
+          return J(doc, 201);
+        }
+        if (seg[2]==='cancelar' && method==='POST'){
+          requireRole(user, ['admin','financeiro','fiscal']);
+          const n = await getDoc(env, 'notas_fiscais', seg[1]);
+          if (!n) return E('Nota nao encontrada', 404);
+          if (n.status === 'cancelada') return E('Nota ja cancelada', 409);
+          let r; try { r = cancelarNotaFiscal(n.chave, body && body.justificativa, { provider: env.NFE_PROVIDER }); } catch(e){ return E(e.message, 400); }
+          if (r.status !== 'cancelada') return E(r.motivo || 'cancelamento rejeitado', 400);
+          const upd = await updateDoc(env, 'notas_fiscais', seg[1], { status:'cancelada', justificativa_cancel: String(body.justificativa).trim() });
+          await audit(env, user.sub, 'nfe_cancelar', 'notas_fiscais', seg[1], {});
+          return upd ? J(upd) : E('nao encontrado', 404);
+        }
+      }
+
       // Análise financeira prévia: POST /api/analise-financeira { cnpj }
       if (seg[0]==='analise-financeira' && method==='POST'){
         const bureau = bureauMock(body && body.cnpj);
@@ -1315,4 +1380,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal };
