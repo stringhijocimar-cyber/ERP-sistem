@@ -103,7 +103,7 @@ function _renderEmpresaSidebarLogo() {
            <div style="width:36px;height:36px;border-radius:8px;background:${cor};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:#fff;flex-shrink:0">${ini}</div>
            <div style="min-width:0">
              <div style="font-size:13px;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:155px">${emp.fantasia || emp.nome}</div>
-             <div style="font-size:10px;color:var(--text-muted)">ERP · Gestão Integrada</div>
+             <div style="font-size:10px;color:var(--text-muted)">Horus · Governança</div>
            </div>
          </div>`;
   }
