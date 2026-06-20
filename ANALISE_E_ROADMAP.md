@@ -74,9 +74,14 @@ posicionamento a perseguir.
 - ✅ **WBS como entidade no backend** (Épico A, Fatia A1 — fundação): tabela
   `wbs_linhas` com vínculo a `contrato_id`/`projeto_id`/`centro_custo`/`lead_id`,
   CRUD (`/api/wbs`), cálculo de total e exclusão lógica. Validador puro
-  `wbsPertenceAoContrato` (base da amarração OS↔Contrato↔WBS). **Paridade
-  Express + Worker**. Coberto por testes. *(Próximo: A2 — OS amarrada a
-  contrato/overhead usando esta entidade.)*
+  `wbsPertenceAoContrato`. **Paridade Express + Worker**. Coberto por testes.
+- ✅ **OS amarrada a Contrato/Overhead + WBS coerente** (Épico A, Fatia A2): a OS
+  exige **Contrato** OU **centro de custo de overhead** (lista fixa,
+  `/api/overhead-centros`); a linha WBS referenciada (`wbs_linha_id`) precisa
+  **pertencer ao contrato** da OS (409 se de outro contrato — fim da alocação
+  errada); tipo de recurso inclui **"Mão de Obra"** (`material|servico|locacao|
+  mao_obra`). Front com a opção "Somente Mão de Obra". **Paridade Express +
+  Worker**. Coberto por testes.
 - ✅ **Notificações (in-app + e-mail)** (Onda 2): store de notificações com alvo
   por usuário, perfil ou global; sino no topbar com contador de não-lidas;
   página de notificações (marcar lida / todas). Adaptador de e-mail

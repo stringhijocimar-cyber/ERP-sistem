@@ -1304,11 +1304,26 @@ export default {
         return r ? J(r) : E('nao encontrado', 404);
       }
 
-      // OS — criação/edição com WBS obrigatória (compliance, espelha o Express)
+      // Centros de custo de overhead (OS administrativa). Lista fixa por env.
+      if (seg[0]==='overhead-centros' && method==='GET'){
+        return J((env.OVERHEAD_CENTROS || 'Administrativo,TI,RH,Comercial,Financeiro,SSMA,Diretoria,Manutenção Interna').split(',').map(s => s.trim()).filter(Boolean));
+      }
+      // OS — criação com WBS + amarração a Contrato/Overhead (A2, espelha o Express)
       if (seg[0]==='os' && !seg[1] && method==='POST'){
         if (!body.titulo) return E('Titulo obrigatorio', 400);
         if (!body.wbs || !String(body.wbs).trim()) return E('Vinculo WBS obrigatorio na OS (rastreabilidade de custo)', 400);
-        const r = await createDoc(env, 'os', { ...body, wbs: String(body.wbs).trim() });
+        const centros = (env.OVERHEAD_CENTROS || 'Administrativo,TI,RH,Comercial,Financeiro,SSMA,Diretoria,Manutenção Interna').split(',').map(s => s.trim());
+        const tiposRec = ['material', 'servico', 'locacao', 'mao_obra'];
+        if (!body.contrato_id && !body.centro_custo_overhead) return E('Informe o Contrato ou o centro de custo de overhead (OS administrativa)', 400);
+        if (body.centro_custo_overhead && !centros.includes(body.centro_custo_overhead)) return E('Centro de custo de overhead invalido', 400);
+        const tipo = body.tipo_recurso ? String(body.tipo_recurso).toLowerCase() : 'material';
+        if (!tiposRec.includes(tipo)) return E('Tipo de recurso invalido (material, servico, locacao, mao_obra)', 400);
+        if (body.wbs_linha_id){
+          const linha = await getDoc(env, 'wbs_linhas', body.wbs_linha_id);
+          if (!linha) return E('Linha WBS informada nao existe', 400);
+          if (body.contrato_id && !wbsPertenceAoContrato(linha, body.contrato_id)) return E('A linha WBS nao pertence ao contrato da OS', 409);
+        }
+        const r = await createDoc(env, 'os', { ...body, wbs: String(body.wbs).trim(), tipo_recurso: tipo });
         await audit(env, user.sub, 'create', 'os', r.id, {});
         return J(r);
       }
