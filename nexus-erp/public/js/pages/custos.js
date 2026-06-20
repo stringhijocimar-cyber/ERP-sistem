@@ -534,6 +534,8 @@ function renderCustos() {
       </div>`;
     return;
   }
+  // C1: banner de leads aguardando precificação (orçamentação) — pós-render.
+  setTimeout(() => { try { _mostrarLeadsOrcamentacao(); } catch (e) {} }, 150);
   const projetos = _custosGetProjects();
   if (!projetos.length) {
     document.getElementById('mainContent').innerHTML = `
@@ -2861,3 +2863,40 @@ window._custosRenderAba = function() {
   else if (t === 'realizado') container.innerHTML = _custosTabRealizado();
   else if (t === 'integracao') container.innerHTML = _custosTabIntegracao();
 };
+
+// ── C1: leads do CRM aguardando precificação (orçamentação) ──────────────
+async function _mostrarLeadsOrcamentacao() {
+  const main = document.getElementById('mainContent');
+  if (!main || typeof apiAuth !== 'function') return;
+  let leads = [];
+  try { leads = await apiAuth('/api/crm/orcamentacao?status=pendente') || []; } catch (e) { return; }
+  const old = document.getElementById('orcamentacao_banner');
+  if (old) old.remove();
+  if (!leads.length) return;
+  const div = document.createElement('div');
+  div.id = 'orcamentacao_banner';
+  div.style.cssText = 'margin:0 0 16px;padding:14px 16px;border:1px solid rgba(217,119,6,.35);background:rgba(217,119,6,.07);border-radius:10px';
+  div.innerHTML = `
+    <div style="font-size:13px;font-weight:700;color:#d97706;margin-bottom:8px">
+      <i class="fas fa-calculator" style="margin-right:6px"></i>${leads.length} lead(s) aguardando estimativa de custos (WBS)
+    </div>
+    ${leads.map(l => `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;padding:5px 0;border-top:1px dashed rgba(0,0,0,.06)">
+        <span><b>${l.titulo || 'Lead'}</b> — ${l.cliente || ''} ${l.valor ? '· R$ ' + Number(l.valor).toLocaleString('pt-BR') : ''} <span style="color:var(--text-muted)">(${l.estagio})</span></span>
+        <button class="btn btn-primary btn-sm" style="padding:2px 8px;font-size:11px" onclick="criarEstimativaLead('${l.id}','${(l.titulo||'').replace(/'/g,'')}')"><i class="fas fa-plus"></i> Criar estimativa</button>
+      </div>`).join('')}`;
+  main.insertBefore(div, main.firstChild);
+}
+
+async function criarEstimativaLead(leadId, titulo) {
+  const desc = prompt(`Estimativa de custos para "${titulo}".\nDescreva a 1ª linha da WBS (ex.: Mobilização):`, 'Estimativa inicial');
+  if (!desc) return;
+  const valor = parseFloat(prompt('Valor estimado (R$) desta linha:', '0')) || 0;
+  try {
+    await apiAuth('/api/wbs', { method: 'POST', body: JSON.stringify({ descricao: desc, lead_id: leadId, origem: 'orcamentacao', valor_total_est: valor }) });
+    if (typeof showToast === 'function') showToast('Estimativa iniciada e vinculada ao lead. O comercial já pode preparar a proposta.', 'success', 6000);
+    _mostrarLeadsOrcamentacao();
+  } catch (e) { if (typeof showToast === 'function') showToast('Falha: ' + e.message, 'error'); }
+}
+
+window.criarEstimativaLead = criarEstimativaLead;

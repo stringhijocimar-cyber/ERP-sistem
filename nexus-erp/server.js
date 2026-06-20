@@ -132,6 +132,12 @@ ensureColumns('ssma_ocorrencias', [
   ['causa_raiz', 'causa_raiz TEXT'],
   ['plano_acao', 'plano_acao TEXT'],
 ])
+// CRM → Orçamentação (C1): ao passar de Qualificação, o lead precisa de
+// estimativa de custos (WBS) e o orçamentista é alertado.
+ensureColumns('crm_oportunidades', [
+  ['orcamentacao_status', "orcamentacao_status TEXT DEFAULT 'nao_iniciada'"],
+  ['orcamentacao_em', 'orcamentacao_em TEXT'],
+])
 // Dupla aprovação de dados bancários: alterações ficam pendentes até 2º aval.
 ensureColumns('fornecedores', [
   ['banco_pendente', 'banco_pendente TEXT'],
@@ -770,6 +776,10 @@ app.post('/api/wbs', requireAuth, (req, res) => {
     .run(b.codigo ?? null, b.descricao ?? null, b.natureza ?? null, b.tipo || 'OPEX',
       b.contrato_id ?? null, b.projeto_id ?? null, b.centro_custo ?? null, b.lead_id ?? null, b.origem || 'contrato',
       b.unidade ?? null, qtd, vUnit, vTotal, b.nao_previsto ? 1 : 0)
+  // C1: WBS de orçamentação vinculada a um lead → marca a estimativa em andamento.
+  if (b.lead_id) {
+    db.prepare(`UPDATE crm_oportunidades SET orcamentacao_status='em_andamento' WHERE id = ? AND orcamentacao_status IN ('pendente','nao_iniciada')`).run(b.lead_id)
+  }
   res.status(201).json(ok(db.prepare(`SELECT * FROM wbs_linhas WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
@@ -1864,6 +1874,14 @@ app.put('/api/contratos/:id', requireAuth, (req, res) => {
 // ════════════════════════════════════════════════════════════
 // CRM
 // ════════════════════════════════════════════════════════════
+// Etapas do funil em ordem. "Passou de Qualificação" = Qualificação até
+// Negociação (não vale para Prospecção nem para os fechados). Pura (espelhada no Worker).
+const CRM_ETAPAS_ORDEM = ['Prospecção', 'Qualificação', 'Reunião Agendada', 'Proposta Enviada', 'Negociação', 'Fechado Ganho', 'Fechado Perdido']
+function precisaOrcamentacao(estagio) {
+  const i = CRM_ETAPAS_ORDEM.indexOf(estagio)
+  return i >= 1 && i <= 4
+}
+
 app.get('/api/crm', requireAuth, (req, res) => {
   const rows = db.prepare(`SELECT * FROM crm_oportunidades ORDER BY created_at DESC`).all()
   res.json(ok(rows))
@@ -1880,10 +1898,24 @@ app.post('/api/crm', requireAuth, (req, res) => {
 })
 
 app.put('/api/crm/:id', requireAuth, (req, res) => {
+  const cur = db.prepare(`SELECT * FROM crm_oportunidades WHERE id = ?`).get(req.params.id)
+  if (!cur) return res.status(404).json(err('Oportunidade não encontrada'))
   const { titulo, cliente, valor, estagio, probabilidade, data_fechamento, observacoes } = req.body
   db.prepare(`UPDATE crm_oportunidades SET titulo=?,cliente=?,valor=?,estagio=?,probabilidade=?,data_fechamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
     .run(titulo, cliente, valor, estagio, probabilidade, data_fechamento, observacoes, req.params.id)
+  // C1: passou para Qualificação (ou além) e ainda não orçado → dispara orçamentação.
+  if (precisaOrcamentacao(estagio) && cur.orcamentacao_status === 'nao_iniciada') {
+    db.prepare(`UPDATE crm_oportunidades SET orcamentacao_status='pendente', orcamentacao_em=datetime('now') WHERE id=?`).run(req.params.id)
+    notificar({ perfil: 'orcamentista', titulo: 'Lead para precificar', mensagem: `Crie a estimativa de custos (WBS) do lead "${titulo || cur.titulo}" — ${cliente || cur.cliente}.`, tipo: 'orcamentacao', ref_tipo: 'crm', ref_id: String(req.params.id), email: true })
+    log(req.user.usuario_id, req.user.nome, 'orcamentacao_disparada', 'crm_oportunidades', `Orçamentação pendente para o lead ${titulo || cur.titulo}`)
+  }
   res.json(ok(db.prepare(`SELECT * FROM crm_oportunidades WHERE id = ?`).get(req.params.id)))
+})
+
+// Leads aguardando precificação (visão do orçamentista / Controle de Custos).
+app.get('/api/crm/orcamentacao', requireAuth, (req, res) => {
+  const status = req.query.status || 'pendente'
+  res.json(ok(db.prepare(`SELECT * FROM crm_oportunidades WHERE orcamentacao_status = ? ORDER BY orcamentacao_em DESC, created_at DESC`).all(status)))
 })
 
 app.delete('/api/crm/:id', requireAuth, (req, res) => {
