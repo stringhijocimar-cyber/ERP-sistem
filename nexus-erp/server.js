@@ -165,6 +165,16 @@ db.exec(`CREATE TABLE IF NOT EXISTS recebimento_itens (
   descricao TEXT,
   quantidade_recebida REAL DEFAULT 0
 )`)
+// WBS — linhas de custo (estrutura analítica) com vínculo a contrato/projeto/lead.
+db.exec(`CREATE TABLE IF NOT EXISTS wbs_linhas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  codigo TEXT, descricao TEXT, natureza TEXT, tipo TEXT DEFAULT 'OPEX',
+  contrato_id INTEGER, projeto_id INTEGER, centro_custo TEXT, lead_id INTEGER,
+  origem TEXT DEFAULT 'contrato',
+  unidade TEXT, quantidade REAL DEFAULT 0, valor_unit_est REAL DEFAULT 0, valor_total_est REAL DEFAULT 0,
+  custo_real REAL DEFAULT 0, nao_previsto INTEGER DEFAULT 0, ativo INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+)`)
 // Notificações in-app (e e-mail via adaptador). Alvo por usuário OU por perfil.
 db.exec(`CREATE TABLE IF NOT EXISTS notificacoes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -669,6 +679,60 @@ app.get('/api/cnpj/:cnpj', requireAuth, async (req, res) => {
   } catch (e) {
     res.status(400).json(err(e.message))
   }
+})
+
+// ════════════════════════════════════════════════════════════
+// WBS — linhas de custo (entidade no backend, vínculo a contrato/projeto)
+// ════════════════════════════════════════════════════════════
+// Uma linha WBS "pertence" a um contrato quando o contrato_id bate (base da
+// amarração OS↔Contrato↔WBS). Pura (espelhada no Worker).
+function wbsPertenceAoContrato(linha, contratoId) {
+  return !!linha && String(linha.contrato_id ?? '') === String(contratoId ?? '')
+}
+
+app.get('/api/wbs', requireAuth, (req, res) => {
+  const { contrato_id, projeto_id, lead_id, ativo = '1' } = req.query
+  const where = []; const p = []
+  if (contrato_id) { where.push('contrato_id = ?'); p.push(contrato_id) }
+  if (projeto_id) { where.push('projeto_id = ?'); p.push(projeto_id) }
+  if (lead_id) { where.push('lead_id = ?'); p.push(lead_id) }
+  if (ativo !== 'todos') { where.push('ativo = ?'); p.push(ativo === '0' ? 0 : 1) }
+  const sql = `SELECT * FROM wbs_linhas ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY codigo, id`
+  res.json(ok(db.prepare(sql).all(...p)))
+})
+
+app.post('/api/wbs', requireAuth, (req, res) => {
+  const b = req.body || {}
+  if (!b.descricao && !b.codigo) return res.status(400).json(err('Informe ao menos código ou descrição'))
+  const qtd = Number(b.quantidade) || 0
+  const vUnit = Number(b.valor_unit_est) || 0
+  const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit
+  const r = db.prepare(`INSERT INTO wbs_linhas(codigo, descricao, natureza, tipo, contrato_id, projeto_id, centro_custo, lead_id, origem, unidade, quantidade, valor_unit_est, valor_total_est, nao_previsto)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(b.codigo ?? null, b.descricao ?? null, b.natureza ?? null, b.tipo || 'OPEX',
+      b.contrato_id ?? null, b.projeto_id ?? null, b.centro_custo ?? null, b.lead_id ?? null, b.origem || 'contrato',
+      b.unidade ?? null, qtd, vUnit, vTotal, b.nao_previsto ? 1 : 0)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM wbs_linhas WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+app.put('/api/wbs/:id', requireAuth, (req, res) => {
+  const cur = db.prepare(`SELECT * FROM wbs_linhas WHERE id = ?`).get(req.params.id)
+  if (!cur) return res.status(404).json(err('Linha WBS não encontrada'))
+  const b = req.body || {}
+  const v = (campo) => b[campo] !== undefined ? b[campo] : cur[campo]
+  const qtd = Number(v('quantidade')) || 0
+  const vUnit = Number(v('valor_unit_est')) || 0
+  const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit
+  db.prepare(`UPDATE wbs_linhas SET codigo=?, descricao=?, natureza=?, tipo=?, contrato_id=?, projeto_id=?, centro_custo=?, lead_id=?, origem=?, unidade=?, quantidade=?, valor_unit_est=?, valor_total_est=?, custo_real=?, nao_previsto=?, updated_at=datetime('now') WHERE id=?`)
+    .run(v('codigo'), v('descricao'), v('natureza'), v('tipo'), v('contrato_id'), v('projeto_id'), v('centro_custo'), v('lead_id'), v('origem'), v('unidade'), qtd, vUnit, vTotal, Number(v('custo_real')) || 0, b.nao_previsto != null ? (b.nao_previsto ? 1 : 0) : cur.nao_previsto, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM wbs_linhas WHERE id = ?`).get(req.params.id)))
+})
+
+app.delete('/api/wbs/:id', requireAuth, (req, res) => {
+  const cur = db.prepare(`SELECT * FROM wbs_linhas WHERE id = ?`).get(req.params.id)
+  if (!cur) return res.status(404).json(err('Linha WBS não encontrada'))
+  db.prepare(`UPDATE wbs_linhas SET ativo=0, updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+  res.json(ok({ ok: true }))
 })
 
 // ════════════════════════════════════════════════════════════
