@@ -404,6 +404,10 @@ function loginAs(profile, emailLogin) {
     const navBI = document.getElementById('nav-bi');
     if (navBI) navBI.style.display = profile === 'fornecedor' ? 'none' : 'block';
 
+    // Documentos Fiscais (NF-e): interno — oculto para o fornecedor
+    const navNFe = document.getElementById('nav-nfe');
+    if (navNFe) navNFe.style.display = profile === 'fornecedor' ? 'none' : 'block';
+
     // Registra log
     logAction('Login', 'Sistema', `Acesso realizado: ${currentUser.name} (${profile})`);
 
@@ -533,6 +537,7 @@ const PAGE_META = {
   portal: { label: 'Portal do Fornecedor', icon: 'store' },
   alertas: { label: 'Central de Alertas', icon: 'bell' },
   bi: { label: 'Dashboard BI', icon: 'chart-line' },
+  nfe: { label: 'Documentos Fiscais', icon: 'file-invoice-dollar' },
   meu_painel: { label: 'Meu Painel de Pendências', icon: 'th-large' },
   equipe: { label: 'Equipe / Mobilização', icon: 'users' },
   frota: { label: 'Frota / Equipamentos', icon: 'truck' },
@@ -618,6 +623,7 @@ function navigate(page) {
     portal: function() { if(typeof renderPortal === 'function') renderPortal(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Portal...</p>'; },
     alertas: function() { if(typeof renderAlertas === 'function') renderAlertas(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Alertas...</p>'; },
     bi: function() { if(typeof renderBI === 'function') renderBI(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando BI...</p>'; },
+    nfe: function() { if(typeof renderNFe === 'function') renderNFe(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Fiscal...</p>'; },
     meu_painel: function() { if(typeof renderMeuPainel === 'function') renderMeuPainel(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Meu Painel...</p>'; },
     equipe: renderEquipe,
     frota: renderFrota,

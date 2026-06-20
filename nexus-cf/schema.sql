@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS projetos     ( id TEXT PRIMARY KEY, payload TEXT NOT 
 CREATE TABLE IF NOT EXISTS ssma         ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 CREATE TABLE IF NOT EXISTS almoxarifado ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 CREATE TABLE IF NOT EXISTS recebimentos ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS notas_fiscais ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 
 CREATE TABLE IF NOT EXISTS permissoes ( user_id TEXT PRIMARY KEY, permissoes TEXT DEFAULT '[]' );
 CREATE TABLE IF NOT EXISTS config     ( chave TEXT PRIMARY KEY, valor TEXT );

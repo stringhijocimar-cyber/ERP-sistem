@@ -20,6 +20,7 @@ import { consultarCredito } from './lib/credit_bureau.js'
 import { consultarReceita, consultarCadastroCNPJ } from './lib/receita.js'
 import { analisarFinanceiro } from './lib/analise_financeira.js'
 import { calcularIDF } from './lib/idf.js'
+import { emitirNotaFiscal, cancelarNotaFiscal } from './lib/nfe.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
 const Auditoria = globalThis.Auditoria
@@ -162,6 +163,18 @@ db.exec(`CREATE TABLE IF NOT EXISTS recebimento_itens (
   codigo_produto TEXT,
   descricao TEXT,
   quantidade_recebida REAL DEFAULT 0
+)`)
+// Notas fiscais emitidas (NF-e / NFS-e / CT-e).
+db.exec(`CREATE TABLE IF NOT EXISTS notas_fiscais (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tipo TEXT, numero INTEGER, serie INTEGER,
+  chave TEXT, protocolo TEXT, status TEXT DEFAULT 'autorizada',
+  valor REAL DEFAULT 0,
+  cnpj_emitente TEXT, destinatario TEXT, descricao TEXT,
+  danfe_url TEXT, pedido_id INTEGER,
+  justificativa_cancel TEXT, emitido_por TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
 )`)
 // Soma do que já foi recebido por item de um pedido (chave: código ou descrição).
 function itensRecebidosAcumulados(pcId) {
@@ -643,6 +656,54 @@ app.get('/api/cnpj/:cnpj', requireAuth, async (req, res) => {
   try {
     const data = await consultarCadastroCNPJ(req.params.cnpj, { provider: process.env.RECEITA_PROVIDER })
     res.json(ok(data))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
+// ════════════════════════════════════════════════════════════
+// FISCAL — emissão de NF-e / NFS-e / CT-e (adaptador server-side)
+// ════════════════════════════════════════════════════════════
+app.get('/api/nfe', requireAuth, (req, res) => {
+  res.json(ok(db.prepare(`SELECT * FROM notas_fiscais ORDER BY created_at DESC LIMIT 200`).all()))
+})
+
+app.get('/api/nfe/:id', requireAuth, (req, res) => {
+  const n = db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(req.params.id)
+  if (!n) return res.status(404).json(err('Nota não encontrada'))
+  res.json(ok(n))
+})
+
+app.post('/api/nfe/emitir', requireAuth, requireRole('admin', 'financeiro', 'fiscal'), async (req, res) => {
+  const b = req.body || {}
+  // Numeração por série quando não informada.
+  const serie = Number(b.serie) || 1
+  const numero = Number(b.numero) || (db.prepare(`SELECT COUNT(*) n FROM notas_fiscais WHERE serie = ?`).get(serie).n + 1)
+  try {
+    const r = await emitirNotaFiscal({ ...b, numero, serie }, { provider: process.env.NFE_PROVIDER })
+    if (r.status !== 'autorizada') return res.status(422).json(err('Emissão rejeitada: ' + (r.motivo || 'dados inválidos')))
+    const destinatario = b.cnpj_destinatario || b.cpf_destinatario || b.destinatario || ''
+    const ins = db.prepare(`INSERT INTO notas_fiscais(tipo, numero, serie, chave, protocolo, status, valor, cnpj_emitente, destinatario, descricao, danfe_url, pedido_id, emitido_por)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(r.tipo, r.numero, r.serie, r.chave, r.protocolo, r.status, r.valor, b.cnpj_emitente || '', destinatario, b.descricao || '', r.danfe_url, b.pedido_id || null, req.user.nome)
+    log(req.user.usuario_id, req.user.nome, 'nfe_emitir', 'notas_fiscais', `${r.tipo_label} ${r.numero}/${r.serie} autorizada (chave ${r.chave})`)
+    res.status(201).json(ok(db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(ins.lastInsertRowid)))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
+app.post('/api/nfe/:id/cancelar', requireAuth, requireRole('admin', 'financeiro', 'fiscal'), (req, res) => {
+  const n = db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(req.params.id)
+  if (!n) return res.status(404).json(err('Nota não encontrada'))
+  if (n.status === 'cancelada') return res.status(409).json(err('Nota já cancelada'))
+  try {
+    const r = cancelarNotaFiscal(n.chave, req.body && req.body.justificativa, { provider: process.env.NFE_PROVIDER })
+    if (r.status !== 'cancelada') return res.status(400).json(err(r.motivo || 'cancelamento rejeitado'))
+    db.prepare(`UPDATE notas_fiscais SET status='cancelada', justificativa_cancel=?, updated_at=datetime('now') WHERE id=?`)
+      .run(String(req.body.justificativa).trim(), req.params.id)
+    log(req.user.usuario_id, req.user.nome, 'nfe_cancelar', 'notas_fiscais', `Nota ${n.numero}/${n.serie} cancelada`)
+    res.json(ok(db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(req.params.id)))
   } catch (e) {
     res.status(400).json(err(e.message))
   }

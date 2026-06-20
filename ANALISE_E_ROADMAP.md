@@ -71,6 +71,14 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Emissão fiscal NF-e/NFS-e/CT-e** (Onda 2): adaptador server-side
+  `lib/nfe.js` (provedor por `NFE_PROVIDER`, mock determinístico; Focus NF-e/
+  eNotas/NFe.io plugáveis). Endpoints `/api/nfe/emitir`, `/api/nfe`,
+  `/api/nfe/:id/cancelar` — validação de campos, chave de acesso de 44 dígitos,
+  DANFE e **cancelamento com justificativa mínima de 15 caracteres (regra
+  SEFAZ)**. Página "Documentos Fiscais" (emitir/listar/cancelar). Persistência
+  em `notas_fiscais`. **Paridade Express + Worker** (emissão idêntica, provada
+  por teste).
 - ✅ **IDF — Índice de Desempenho do Fornecedor** (`GET /api/fornecedores/:id/idf`):
   consolida sinais reais — **OTD** (entregas no prazo, de `pedidos_compra`) +
   **avaliações** — num score 0–100 e classificação A/B/C/D. Exibido no detalhe

@@ -92,7 +92,7 @@ contrato vencido sem aviso, incidente sem causa raiz (reincidência), e — o ma
 | **SSMA** | **RCA obrigatório p/ encerrar incidente** | ✅ **Validado** | Alta | Baixo | feito | Reincidência | Encerrar sem RCA → 400 | Teste `ssma_rca` | % c/ RCA | SSMA |
 | **SSMA** | **Alertas treinamento/doc vencido (ASO/NRs)** | 🟥 **AUSENTE** | Alta | Médio | Onda 2 | Não conformidade legal | Doc vencido → alerta | (a criar) | % vencidos | SSMA |
 | **WMS** | **Endereçamento + FEFO/FIFO + lote** | 🟥 **AUSENTE** | Média | Alto | Onda 3 | Perda/validade | Saída FEFO | (a criar) | % FEFO | Suprimentos |
-| **Fiscal** | **NF-e/NFS-e/CT-e** | ⬜ Planejado | Alta | Médio | Onda 2 | Bloqueio fiscal | Emitir NF-e homolog. | (a criar) | % emitidas no ERP | Fiscal |
+| **Fiscal** | **NF-e/NFS-e/CT-e** | ✅ **Validado** | Alta | Médio | feito | Bloqueio fiscal | Emitir → autorizada; cancelar exige 15+ | Teste `nfe` | % emitidas no ERP | Fiscal |
 | **Financeiro** | **CNAB/OFX/PIX/Open Finance** | ⬜ Planejado | Alta | Alto | Onda 3 | Erro manual/conciliação | Importar OFX e conciliar | (a criar) | % conciliação auto | Financeiro |
 | **Fiscal/Contábil** | **Contabilidade + SPED** | ⬜ Planejado | Crítica | Muito alto | Onda 4 | Não substitui externos | Gerar SPED válido | (a criar) | % SPED aceito | Contabilidade |
 | **RH** | **Folha + eSocial (S-2200/2210/2245)** | ⬜ Planejado | Crítica | Muito alto | Onda 4 | Multa trabalhista | Evento eSocial homolog. | (a criar) | % eventos ok | RH |
