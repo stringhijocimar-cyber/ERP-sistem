@@ -1150,6 +1150,27 @@ export default {
         return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
       }
 
+      // Recebimento — liga à conta a pagar do pedido e anexa a NF (B1, espelha o Express)
+      if (seg[0]==='recebimentos' && !seg[1] && method==='POST'){
+        const r = await createDoc(env, 'recebimentos', body);
+        let contas = [];
+        const pc = body.pc_id || body.pedido_id;
+        if (pc){
+          const all = await listDocs(env, 'contas_pagar', { searchParams: new URLSearchParams() });
+          contas = all.filter(c => String(c.pedido_id ?? c.pc_id ?? '') === String(pc));
+          if (body.nf_numero){
+            for (const c of contas){
+              if (!c.nota_fiscal || c.nota_fiscal === '' || c.nota_fiscal === '—'){
+                await updateDoc(env, 'contas_pagar', c.id, { nota_fiscal: body.nf_numero });
+                c.nota_fiscal = body.nf_numero;
+              }
+            }
+          }
+        }
+        await audit(env, user.sub, 'create', 'recebimentos', r.id, {});
+        return J({ ...r, contas_pagar: contas }, 201);
+      }
+
       // WBS — linhas de custo (entidade) com vínculo a contrato/projeto/lead
       if (seg[0]==='wbs'){
         if (method==='GET' && !seg[1]){

@@ -1694,7 +1694,7 @@ async function _salvarRecebimentoPedido(pedidoId, numItens) {
 
   // Persiste também na API D1
   try {
-    await fetch('/api/recebimentos', {
+    const _resp = await fetch('/api/recebimentos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1716,6 +1716,14 @@ async function _salvarRecebimentoPedido(pedidoId, numItens) {
         cp_gerado:        false
       })
     });
+    // Mostra a(s) conta(s) a pagar vinculada(s) ao pedido (NF anexada).
+    try {
+      const _j = await _resp.json();
+      const _cp = _j && _j.data && _j.data.contas_pagar;
+      if (Array.isArray(_cp) && _cp.length && typeof showToast === 'function') {
+        showToast(`Conta a pagar ${_cp.map(c => c.numero).join(', ')} atualizada com a NF (veja em Financeiro › Contas a Pagar).`, 'success', 6000);
+      }
+    } catch(_) {}
   } catch(e) { console.warn('API recebimentos:', e); }
 
   // 4. Gera Conta a Pagar automaticamente (se não for antecipado)

@@ -1505,7 +1505,9 @@ app.get('/api/pedidos/:id', requireAuth, (req, res) => {
   if (!pc) return res.status(404).json(err('PC não encontrado'))
   const itens = db.prepare(`SELECT * FROM pc_itens WHERE pc_id = ?`).all(req.params.id)
   const historico = db.prepare(`SELECT * FROM pc_historico WHERE pc_id = ? ORDER BY created_at DESC`).all(req.params.id)
-  res.json(ok({ ...pc, itens, historico }))
+  // Visibilidade: contas a pagar geradas a partir deste pedido (B1).
+  const contas_pagar = db.prepare(`SELECT id, numero, valor, status, nota_fiscal, data_vencimento FROM contas_pagar WHERE pc_id = ?`).all(req.params.id)
+  res.json(ok({ ...pc, itens, historico, contas_pagar }))
 })
 
 app.post('/api/pedidos', requireAuth, async (req, res) => {
@@ -1604,10 +1606,11 @@ app.post('/api/pedidos/:id/cancelar', requireAuth, (req, res) => {
 // CONTAS A PAGAR
 // ════════════════════════════════════════════════════════════
 app.get('/api/contas-pagar', requireAuth, (req, res) => {
-  const { status, q = '' } = req.query
+  const { status, q = '', pc_id } = req.query
   let sql = `SELECT cp.*, f.nome as fornecedor FROM contas_pagar cp LEFT JOIN fornecedores f ON f.id = cp.fornecedor_id`
   const where = []; const params = []
   if (status) { where.push('cp.status = ?'); params.push(status) }
+  if (pc_id) { where.push('cp.pc_id = ?'); params.push(pc_id) }
   if (q) { where.push('(cp.numero LIKE ? OR cp.descricao LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
   if (where.length) sql += ' WHERE ' + where.join(' AND ')
   sql += ' ORDER BY cp.data_vencimento ASC'
@@ -1636,21 +1639,30 @@ app.get('/api/recebimentos', requireAuth, (req, res) => {
 
 app.post('/api/recebimentos', requireAuth, (req, res) => {
   const b = req.body || {}
+  const pcId = b.pc_id ?? b.pedido_id ?? null   // o front envia "pedido_id"
   const r = db.prepare(
     `INSERT INTO recebimentos(pc_id, nf_numero, valor_nf, status, conferente, observacoes)
      VALUES(?,?,?,?,?,?)`
-  ).run(b.pc_id ?? null, b.nf_numero ?? null, b.valor_nf ?? 0, b.status ?? 'Conforme',
+  ).run(pcId, b.nf_numero ?? null, b.valor_nf ?? 0, b.status ?? 'Conforme',
         b.conferente ?? req.user.nome, b.observacoes ?? null)
   const recId = r.lastInsertRowid
   const itens = Array.isArray(b.itens) ? b.itens : []
   const ins = db.prepare(`INSERT INTO recebimento_itens(recebimento_id, pc_id, codigo_produto, descricao, quantidade_recebida) VALUES(?,?,?,?,?)`)
   for (const it of itens) {
-    ins.run(recId, b.pc_id ?? null, it.codigo_produto ?? it.codigo ?? null, it.descricao ?? it.desc ?? null,
+    ins.run(recId, pcId, it.codigo_produto ?? it.codigo ?? null, it.descricao ?? it.desc ?? null,
             Number(it.quantidade_recebida ?? it.qtd_recebida ?? it.qtd ?? 0) || 0)
   }
+  // Liga o recebimento à(s) conta(s) a pagar do pedido: anexa a NF (que nasceu
+  // na emissão do PC) para o gate enxergar a nota e a conta ficar localizável.
+  let contas = []
+  if (pcId && b.nf_numero) {
+    db.prepare(`UPDATE contas_pagar SET nota_fiscal = ?, updated_at = datetime('now')
+       WHERE pc_id = ? AND (nota_fiscal IS NULL OR nota_fiscal = '' OR nota_fiscal = '—')`).run(b.nf_numero, pcId)
+  }
+  if (pcId) contas = db.prepare(`SELECT id, numero, valor, status, nota_fiscal, data_vencimento FROM contas_pagar WHERE pc_id = ?`).all(pcId)
   log(req.user.usuario_id, req.user.nome, 'Receber', 'recebimentos', `Recebimento NF ${b.nf_numero || '—'} (${itens.length} item(ns))`)
   const rec = db.prepare(`SELECT * FROM recebimentos WHERE id = ?`).get(recId)
-  res.status(201).json(ok({ ...rec, itens: db.prepare(`SELECT * FROM recebimento_itens WHERE recebimento_id = ?`).all(recId) }))
+  res.status(201).json(ok({ ...rec, itens: db.prepare(`SELECT * FROM recebimento_itens WHERE recebimento_id = ?`).all(recId), contas_pagar: contas }))
 })
 
 // GATE DE PAGAMENTO: "nada paga sem lastro" + 3-way por item. Segregação: só
