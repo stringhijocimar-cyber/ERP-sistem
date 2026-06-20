@@ -71,6 +71,13 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Fluxo de serviço + aceite do requisitante** (Épico B, Fatia B2): pedido de
+  serviço não entra no almoxarifado — o requisitante atesta a prestação com
+  **checklist técnico** (`POST /api/pedidos/:id/aceite-servico`, só aceita com
+  todos os itens conformes). O **gate de pagamento exige o aceite** para
+  serviços (em vez do recebimento físico/3-way) — sem aceite, bloqueia.
+  `GET /api/aceites-servico`. Modal de aceite no front. **Paridade Express +
+  Worker** (helper puro `exigeAceiteServico`). Coberto por testes.
 - ✅ **Visibilidade do Contas a Pagar pós-recebimento** (Épico B, Fatia B1): a
   conta a pagar nasce na emissão do PC; ao registrar o recebimento, a **NF é
   anexada à conta** (gate enxerga a nota) e a conta é **devolvida na resposta**.

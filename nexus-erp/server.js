@@ -108,6 +108,8 @@ ensureColumns('usuarios', [
 ensureColumns('pedidos_compra', [
   ['nf_numero', 'nf_numero TEXT'],
   ['nf_valor', 'nf_valor REAL'],
+  // B2: serviço segue fluxo de aceite (não almoxarifado/3-way físico).
+  ['tipo_compra', "tipo_compra TEXT DEFAULT 'material'"],
 ])
 // Compliance de compras: a RC precisa de tipo (classificação de gasto) e de
 // vínculo WBS (rastreabilidade custo → contrato → projeto).
@@ -170,6 +172,15 @@ db.exec(`CREATE TABLE IF NOT EXISTS recebimento_itens (
   codigo_produto TEXT,
   descricao TEXT,
   quantidade_recebida REAL DEFAULT 0
+)`)
+// Aceite de serviço (fluxo de serviço, B2): o requisitante atesta a prestação
+// com checklist técnico — substitui o recebimento físico para serviços.
+db.exec(`CREATE TABLE IF NOT EXISTS aceites_servico (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pedido_id INTEGER, os_id INTEGER,
+  checklist TEXT, aceito INTEGER DEFAULT 0, aceito_por TEXT, aceito_em TEXT,
+  especificacao TEXT, observacoes TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
 )`)
 // WBS — linhas de custo (estrutura analítica) com vínculo a contrato/projeto/lead.
 db.exec(`CREATE TABLE IF NOT EXISTS wbs_linhas (
@@ -685,6 +696,47 @@ app.get('/api/cnpj/:cnpj', requireAuth, async (req, res) => {
   } catch (e) {
     res.status(400).json(err(e.message))
   }
+})
+
+// ════════════════════════════════════════════════════════════
+// ACEITE DE SERVIÇO — fluxo de serviço (B2): requisitante atesta a prestação
+// ════════════════════════════════════════════════════════════
+// Pedido de serviço só paga com aceite do requisitante. Pura (espelhada no Worker).
+function exigeAceiteServico(pedido, temAceite) {
+  const tipo = String((pedido && pedido.tipo_compra) || 'material').toLowerCase()
+  const ehServico = tipo === 'servico' || tipo === 'serviço' || tipo === 'serviço externo' || tipo === 'servico externo'
+  return ehServico && !temAceite
+}
+
+app.get('/api/aceites-servico', requireAuth, (req, res) => {
+  const { pedido_id, os_id } = req.query
+  const where = []; const p = []
+  if (pedido_id) { where.push('pedido_id = ?'); p.push(pedido_id) }
+  if (os_id) { where.push('os_id = ?'); p.push(os_id) }
+  const sql = `SELECT * FROM aceites_servico ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC`
+  res.json(ok(db.prepare(sql).all(...p)))
+})
+
+// O requisitante registra o aceite (ou recusa) do serviço com o checklist técnico.
+app.post('/api/pedidos/:id/aceite-servico', requireAuth, (req, res) => {
+  const ped = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(req.params.id)
+  if (!ped) return res.status(404).json(err('Pedido não encontrado'))
+  const b = req.body || {}
+  const checklist = Array.isArray(b.checklist) ? b.checklist : []
+  if (!checklist.length) return res.status(400).json(err('Informe o checklist de recebimento do serviço (especificação técnica)'))
+  // Só aceita se todos os itens do checklist estiverem conformes (salvo recusa explícita).
+  const todosConformes = checklist.every(c => c && (c.conforme === true || c.conforme === 1))
+  const aceito = b.aceitar === false ? 0 : (todosConformes ? 1 : 0)
+  if (b.aceitar !== false && !todosConformes) {
+    return res.status(409).json(err('Aceite bloqueado: há itens não conformes no checklist'))
+  }
+  const r = db.prepare(`INSERT INTO aceites_servico(pedido_id, os_id, checklist, aceito, aceito_por, aceito_em, especificacao, observacoes)
+     VALUES(?,?,?,?,?,datetime('now'),?,?)`)
+    .run(req.params.id, b.os_id ?? null, JSON.stringify(checklist), aceito, req.user.nome, b.especificacao ?? null, b.observacoes ?? null)
+  // Marca o pedido como serviço (segue o fluxo de aceite, não almoxarifado).
+  db.prepare(`UPDATE pedidos_compra SET tipo_compra='servico', updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+  log(req.user.usuario_id, req.user.nome, aceito ? 'aceite_servico' : 'aceite_servico_recusado', 'pedidos_compra', `Aceite de serviço do pedido ${ped.numero}: ${aceito ? 'ACEITO' : 'recusado/pendente'}`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM aceites_servico WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
 // ════════════════════════════════════════════════════════════
@@ -1697,6 +1749,12 @@ app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'finan
   // Alçada por valor: acima do limiar exige aprovação prévia de Diretor.
   if (alcadaPendente({ valor: conta.valor, aprovadaPor: conta.alcada_aprovada_por })) {
     motivos.push(`acima de R$ ${ALCADA_PAGAMENTO_VALOR} sem aprovação de alçada (Diretor Financeiro)`)
+  }
+  // Serviço: paga com ACEITE do requisitante (não com recebimento físico/3-way).
+  if (conta.pc_id) {
+    const ped = db.prepare(`SELECT tipo_compra FROM pedidos_compra WHERE id = ?`).get(conta.pc_id)
+    const temAceite = !!db.prepare(`SELECT 1 FROM aceites_servico WHERE pedido_id = ? AND aceito = 1 LIMIT 1`).get(conta.pc_id)
+    if (exigeAceiteServico(ped, temAceite)) motivos.push('serviço sem aceite do requisitante (checklist de recebimento)')
   }
   if (motivos.length) {
     log(req.user.usuario_id, req.user.nome, 'payment_blocked', 'contas_pagar', `Bloqueio: ${motivos.join('; ')}`)
