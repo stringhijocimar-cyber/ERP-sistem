@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Horus">
+  <rect width="64" height="64" rx="14" fill="#0B1F33"/>
+  <g fill="none" stroke="#00B8B8" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <!-- sobrancelha -->
+    <path d="M15 23 Q31 14 49 21"/>
+    <!-- pálpebra superior -->
+    <path d="M13 33 Q31 19 51 31"/>
+    <!-- pálpebra inferior -->
+    <path d="M13 33 Q29 43 45 35"/>
+    <!-- cauda (gota vertical) -->
+    <path d="M31 41 L26 55"/>
+    <!-- espiral / curva -->
+    <path d="M45 35 Q57 37 53 47 Q51 53 44 51"/>
+  </g>
+  <!-- pupila -->
+  <circle cx="29.5" cy="32" r="5.4" fill="#00B8B8"/>
+</svg>
