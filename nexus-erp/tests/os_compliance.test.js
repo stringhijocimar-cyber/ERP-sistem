@@ -38,7 +38,7 @@ describe('OS — WBS obrigatória', () => {
   })
 
   it('grava a WBS (aparada) quando válida', async () => {
-    const r = await novaOS({ titulo: 'Parada programada', wbs: '  4.2.1  ' })
+    const r = await novaOS({ titulo: 'Parada programada', wbs: '  4.2.1  ', contrato_id: 1 })
     expect(r.status).toBe(201)
     expect(r.body.data.wbs).toBe('4.2.1')
   })
@@ -47,7 +47,7 @@ describe('OS — WBS obrigatória', () => {
 describe('OS — PUT preserva WBS', () => {
   let osId
   beforeAll(async () => {
-    osId = (await novaOS({ titulo: 'Manutenção', wbs: '5.0' })).body.data.id
+    osId = (await novaOS({ titulo: 'Manutenção', wbs: '5.0', contrato_id: 1 })).body.data.id
   })
 
   it('não permite remover a WBS (400)', async () => {

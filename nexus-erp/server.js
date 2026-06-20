@@ -116,8 +116,14 @@ ensureColumns('requisicoes_compra', [
   ['wbs', 'wbs TEXT'],
 ])
 // Rastreabilidade de custo na origem: a OS também exige vínculo WBS.
+// A2: amarração a Contrato OU centro de custo de overhead, tipo de recurso e
+// referência à linha WBS no backend (para validar pertencimento ao contrato).
 ensureColumns('ordens_servico', [
   ['wbs', 'wbs TEXT'],
+  ['contrato_id', 'contrato_id INTEGER'],
+  ['centro_custo_overhead', 'centro_custo_overhead TEXT'],
+  ['tipo_recurso', 'tipo_recurso TEXT'],
+  ['wbs_linha_id', 'wbs_linha_id INTEGER'],
 ])
 // SSMA: encerrar incidente exige RCA (causa raiz + plano de ação).
 ensureColumns('ssma_ocorrencias', [
@@ -1142,16 +1148,45 @@ app.get('/api/os/:id', requireAuth, (req, res) => {
   res.json(ok({ ...os, fluxo }))
 })
 
+// Centros de custo de overhead (OS administrativa sem contrato). Lista fixa,
+// sobrescrevível por env OVERHEAD_CENTROS (csv).
+const OVERHEAD_CENTROS = (process.env.OVERHEAD_CENTROS || 'Administrativo,TI,RH,Comercial,Financeiro,SSMA,Diretoria,Manutenção Interna').split(',').map(s => s.trim()).filter(Boolean)
+const TIPOS_RECURSO = ['material', 'servico', 'locacao', 'mao_obra']
+
+app.get('/api/overhead-centros', requireAuth, (req, res) => res.json(ok(OVERHEAD_CENTROS)))
+
+// Valida a amarração da OS: Contrato OU overhead; tipo de recurso; e WBS (se
+// referenciar uma linha do backend) pertencente ao contrato. Devolve {erro,code}.
+function validarVinculoOS(b) {
+  const contrato_id = b.contrato_id || null
+  const overhead = b.centro_custo_overhead || null
+  if (!contrato_id && !overhead) return { erro: 'Informe o Contrato ou o centro de custo de overhead (OS administrativa)' }
+  if (overhead && !OVERHEAD_CENTROS.includes(overhead)) return { erro: 'Centro de custo de overhead inválido' }
+  const tipo = b.tipo_recurso ? String(b.tipo_recurso).toLowerCase() : null
+  if (tipo && !TIPOS_RECURSO.includes(tipo)) return { erro: 'Tipo de recurso inválido (material, servico, locacao, mao_obra)' }
+  if (b.wbs_linha_id) {
+    const linha = db.prepare(`SELECT * FROM wbs_linhas WHERE id = ?`).get(b.wbs_linha_id)
+    if (!linha) return { erro: 'Linha WBS informada não existe' }
+    if (contrato_id && !wbsPertenceAoContrato(linha, contrato_id)) return { erro: 'A linha WBS não pertence ao contrato da OS', code: 409 }
+  }
+  return { ok: true, tipo }
+}
+
 app.post('/api/os', requireAuth, (req, res) => {
-  const { titulo, descricao, departamento, prioridade, valor_estimado, centro_custo, projeto, data_necessidade, wbs } = req.body
+  const b = req.body || {}
+  const { titulo, descricao, departamento, prioridade, valor_estimado, centro_custo, projeto, data_necessidade, wbs } = b
   if (!titulo) return res.status(400).json(err('Título obrigatório'))
   // Compliance: WBS obrigatória para rastreabilidade de custo na origem da demanda.
   if (!wbs || !String(wbs).trim()) return res.status(400).json(err('Vínculo WBS obrigatório na OS (rastreabilidade de custo)'))
+  // A2: amarração obrigatória a Contrato ou overhead + WBS coerente com o contrato.
+  const vin = validarVinculoOS(b)
+  if (vin.erro) return res.status(vin.code || 400).json(err(vin.erro, vin.code || 400))
   const numero = nextOS()
   const r = db.prepare(
-    `INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, titulo, descricao, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valor_estimado || 0, centro_custo, projeto, data_necessidade, String(wbs).trim())
+    `INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs, contrato_id, centro_custo_overhead, tipo_recurso, wbs_linha_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, titulo, descricao, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valor_estimado || 0, centro_custo, projeto, data_necessidade, String(wbs).trim(),
+    b.contrato_id || null, b.centro_custo_overhead || null, vin.tipo || 'material', b.wbs_linha_id || null)
   const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'os', `OS criada: ${numero}`)
   res.status(201).json(ok(os))
@@ -1167,9 +1202,17 @@ app.put('/api/os/:id', requireAuth, (req, res) => {
     if (!String(req.body.wbs).trim()) return res.status(400).json(err('WBS não pode ser removida da OS'))
     wbs = String(req.body.wbs).trim()
   }
+  // Campos de amarração (mantêm o atual quando omitidos); revalida se mudarem.
+  const v = (campo) => req.body[campo] !== undefined ? req.body[campo] : cur[campo]
+  const efetivo = { contrato_id: v('contrato_id'), centro_custo_overhead: v('centro_custo_overhead'), tipo_recurso: v('tipo_recurso'), wbs_linha_id: v('wbs_linha_id') }
+  if (['contrato_id', 'centro_custo_overhead', 'tipo_recurso', 'wbs_linha_id'].some(k => req.body[k] !== undefined)) {
+    const vin = validarVinculoOS(efetivo)
+    if (vin.erro) return res.status(vin.code || 400).json(err(vin.erro, vin.code || 400))
+  }
   db.prepare(
-    `UPDATE ordens_servico SET titulo=?,descricao=?,departamento=?,prioridade=?,status=?,valor_estimado=?,centro_custo=?,projeto=?,data_necessidade=?,wbs=?,updated_at=datetime('now') WHERE id=?`
-  ).run(titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs, req.params.id)
+    `UPDATE ordens_servico SET titulo=?,descricao=?,departamento=?,prioridade=?,status=?,valor_estimado=?,centro_custo=?,projeto=?,data_necessidade=?,wbs=?,contrato_id=?,centro_custo_overhead=?,tipo_recurso=?,wbs_linha_id=?,updated_at=datetime('now') WHERE id=?`
+  ).run(titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs,
+    efetivo.contrato_id || null, efetivo.centro_custo_overhead || null, efetivo.tipo_recurso || cur.tipo_recurso, efetivo.wbs_linha_id || null, req.params.id)
   const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Editar', 'os', `OS atualizada: ${os.numero}`)
   res.json(ok(os))

@@ -773,12 +773,15 @@ function openNovaOS() {
     <!-- NECESSIDADE DE COMPRA / SERVIÇO EXTERNO -->
     <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:14px;margin-top:10px">
       <div style="font-size:12px;font-weight:600;color:#f59e0b;margin-bottom:10px"><i class="fas fa-shopping-cart"></i> Necessidade de Compra ou Serviço Externo</div>
-      <div style="display:flex;gap:16px;margin-bottom:10px">
+      <div style="display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)">
           <input type="checkbox" id="nos_compra_material" style="accent-color:var(--orange)"> Compra de Material
         </label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)">
           <input type="checkbox" id="nos_servico_externo" style="accent-color:var(--orange)"> Serviço Externo / Locação
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)" title="Sem compra/almoxarifado — aloca mão de obra na linha do contrato">
+          <input type="checkbox" id="nos_mao_obra" style="accent-color:var(--fa-teal)" onchange="if(this.checked){document.getElementById('nos_compra_material').checked=false;document.getElementById('nos_servico_externo').checked=false;}"> Somente Mão de Obra
         </label>
       </div>
       <div id="nos_itens_compra_wrap" style="display:none">
@@ -1026,6 +1029,10 @@ function salvarNovaOS() {
     // Vínculo WBS
     wbs_id: wbsIdFinal || null,
     wbs: wbsIdFinal || null, // campo canônico exigido pelo backend (compliance)
+    // Tipo de recurso (A2): mão de obra não gera compra/almoxarifado.
+    tipo_recurso: document.getElementById('nos_mao_obra')?.checked ? 'mao_obra'
+      : (document.getElementById('nos_servico_externo')?.checked ? 'servico'
+      : (document.getElementById('nos_compra_material')?.checked ? 'material' : 'mao_obra')),
     wbs_nao_previsto: isNaoP,
     wbs_descricao: wbsItemFinal ? `${wbsItemFinal.id} – ${wbsItemFinal.descricao}` : null,
     wbs_natureza: wbsItemFinal ? wbsItemFinal.natureza : null,
