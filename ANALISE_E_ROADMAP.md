@@ -71,6 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **WBS como entidade no backend** (Épico A, Fatia A1 — fundação): tabela
+  `wbs_linhas` com vínculo a `contrato_id`/`projeto_id`/`centro_custo`/`lead_id`,
+  CRUD (`/api/wbs`), cálculo de total e exclusão lógica. Validador puro
+  `wbsPertenceAoContrato` (base da amarração OS↔Contrato↔WBS). **Paridade
+  Express + Worker**. Coberto por testes. *(Próximo: A2 — OS amarrada a
+  contrato/overhead usando esta entidade.)*
 - ✅ **Notificações (in-app + e-mail)** (Onda 2): store de notificações com alvo
   por usuário, perfil ou global; sino no topbar com contador de não-lidas;
   página de notificações (marcar lida / todas). Adaptador de e-mail

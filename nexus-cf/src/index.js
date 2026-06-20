@@ -159,6 +159,10 @@ function calcularIDF({ pedidos = [], avaliacoes = [] } = {}){
   return { score: score != null ? _r1(score) : null, classificacao, otd_pct: otd != null ? _r1(otd) : null, entregas_consideradas: considerados, avaliacao_media: avalMedia != null ? _r1(avalMedia) : null, avaliacoes_qtd: notas.length, componentes };
 }
 
+// WBS: uma linha pertence a um contrato quando o contrato_id bate. Pura (espelha o Express).
+function wbsPertenceAoContrato(linha, contratoId){
+  return !!linha && String(linha.contrato_id ?? '') === String(contratoId ?? '');
+}
 // Fornecedor homologado = aprovado por Financeiro E Compliance. Pura (espelha o Express).
 function fornecedorHomologado(f){
   if (!f) return false;
@@ -1146,6 +1150,46 @@ export default {
         return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
       }
 
+      // WBS — linhas de custo (entidade) com vínculo a contrato/projeto/lead
+      if (seg[0]==='wbs'){
+        if (method==='GET' && !seg[1]){
+          const all = await listDocs(env, 'wbs_linhas', { searchParams: new URLSearchParams() });
+          const q = url.searchParams;
+          let rows = all;
+          for (const k of ['contrato_id', 'projeto_id', 'lead_id']) if (q.get(k)) rows = rows.filter(x => String(x[k] ?? '') === String(q.get(k)));
+          const ativo = q.get('ativo');
+          if (ativo !== 'todos') rows = rows.filter(x => (x.ativo ?? 1) === (ativo === '0' ? 0 : 1));
+          rows.sort((a, b) => String(a.codigo || '').localeCompare(String(b.codigo || '')));
+          return J(rows);
+        }
+        if (method==='POST' && !seg[1]){
+          const b = body || {};
+          if (!b.descricao && !b.codigo) return E('Informe ao menos codigo ou descricao', 400);
+          const qtd = Number(b.quantidade) || 0, vUnit = Number(b.valor_unit_est) || 0;
+          const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit;
+          const r = await createDoc(env, 'wbs_linhas', { codigo: b.codigo ?? null, descricao: b.descricao ?? null, natureza: b.natureza ?? null, tipo: b.tipo || 'OPEX', contrato_id: b.contrato_id ?? null, projeto_id: b.projeto_id ?? null, centro_custo: b.centro_custo ?? null, lead_id: b.lead_id ?? null, origem: b.origem || 'contrato', unidade: b.unidade ?? null, quantidade: qtd, valor_unit_est: vUnit, valor_total_est: vTotal, custo_real: 0, nao_previsto: b.nao_previsto ? 1 : 0, ativo: 1 });
+          await audit(env, user.sub, 'create', 'wbs_linhas', r.id, {});
+          return J(r, 201);
+        }
+        if ((method==='PUT' || method==='PATCH') && seg[1]){
+          const cur = await getDoc(env, 'wbs_linhas', seg[1]);
+          if (!cur) return E('Linha WBS nao encontrada', 404);
+          const b = body || {}; const v = k => b[k] !== undefined ? b[k] : cur[k];
+          const qtd = Number(v('quantidade')) || 0, vUnit = Number(v('valor_unit_est')) || 0;
+          const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit;
+          const r = await updateDoc(env, 'wbs_linhas', seg[1], { codigo: v('codigo'), descricao: v('descricao'), natureza: v('natureza'), tipo: v('tipo'), contrato_id: v('contrato_id'), projeto_id: v('projeto_id'), centro_custo: v('centro_custo'), lead_id: v('lead_id'), origem: v('origem'), unidade: v('unidade'), quantidade: qtd, valor_unit_est: vUnit, valor_total_est: vTotal, custo_real: Number(v('custo_real')) || 0, nao_previsto: b.nao_previsto != null ? (b.nao_previsto ? 1 : 0) : cur.nao_previsto });
+          await audit(env, user.sub, 'update', 'wbs_linhas', seg[1], {});
+          return r ? J(r) : E('nao encontrado', 404);
+        }
+        if (method==='DELETE' && seg[1]){
+          const cur = await getDoc(env, 'wbs_linhas', seg[1]);
+          if (!cur) return E('Linha WBS nao encontrada', 404);
+          const r = await updateDoc(env, 'wbs_linhas', seg[1], { ativo: 0 });
+          await audit(env, user.sub, 'delete', 'wbs_linhas', seg[1], {});
+          return r ? J({ ok: true }) : E('nao encontrado', 404);
+        }
+      }
+
       // Notificações (in-app) — escopo por usuário/perfil/global
       if (seg[0]==='notificacoes'){
         const all = { searchParams: new URLSearchParams() };
@@ -1436,4 +1480,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato };
