@@ -168,6 +168,12 @@ function exigeAceiteServico(pedido, temAceite){
 // CRM → Orçamentação: "passou de Qualificação" = Qualificação..Negociação. Pura (espelha o Express).
 const CRM_ETAPAS_ORDEM = ['Prospecção','Qualificação','Reunião Agendada','Proposta Enviada','Negociação','Fechado Ganho','Fechado Perdido'];
 function precisaOrcamentacao(estagio){ const i = CRM_ETAPAS_ORDEM.indexOf(estagio); return i >= 1 && i <= 4; }
+// Comercial só gera proposta com estimativa de custos vinculada. Pura (espelha o Express).
+function podeGerarProposta(lead, temEstimativa){
+  if (!lead) return { ok: false, motivo: 'lead/oportunidade nao encontrado' };
+  if (!temEstimativa) return { ok: false, motivo: 'lead sem estimativa de custos (WBS) - orcamentacao pendente' };
+  return { ok: true };
+}
 // WBS: uma linha pertence a um contrato quando o contrato_id bate. Pura (espelha o Express).
 function wbsPertenceAoContrato(linha, contratoId){
   return !!linha && String(linha.contrato_id ?? '') === String(contratoId ?? '');
@@ -1229,6 +1235,32 @@ export default {
         return fin ? J(fin) : E('nao encontrado', 404);
       }
 
+      // Propostas comerciais (C2) — só com estimativa de custos (WBS) do lead
+      if (seg[0]==='propostas'){
+        if (method==='GET' && !seg[1]){
+          const all = await listDocs(env, 'propostas', { searchParams: new URLSearchParams() });
+          const lead = url.searchParams.get('lead_id');
+          return J(lead ? all.filter(p => String(p.lead_id) === String(lead)) : all);
+        }
+        if (method==='POST' && !seg[1]){
+          const b = body || {};
+          const lead = b.lead_id ? await getDoc(env, 'crm', b.lead_id) : null;
+          const wbs = await listDocs(env, 'wbs_linhas', { searchParams: new URLSearchParams() });
+          const linhas = wbs.filter(w => String(w.lead_id ?? '') === String(b.lead_id) && (w.ativo ?? 1) !== 0);
+          const custo = linhas.reduce((s, w) => s + (Number(w.valor_total_est) || 0), 0);
+          const gate = podeGerarProposta(lead, linhas.length > 0);
+          if (!gate.ok) return E('Proposta bloqueada: ' + gate.motivo, 409);
+          const margem = Number(b.margem) || 0;
+          const valor_total = b.valor_total != null ? Number(b.valor_total) : custo * (1 + margem / 100);
+          const all = await listDocs(env, 'propostas', { searchParams: new URLSearchParams() });
+          const numero = `PROP-${new Date().getFullYear()}-${String(all.length + 1).padStart(3, '0')}`;
+          const r = await createDoc(env, 'propostas', { numero, lead_id: b.lead_id, cliente: b.cliente ?? (lead && lead.cliente), objeto: b.objeto ?? (lead && lead.titulo), custo_estimado: custo, margem, valor_total, status: 'Em Elaboração' });
+          await updateDoc(env, 'crm', b.lead_id, { orcamentacao_status: 'concluida' });
+          await audit(env, user.sub, 'proposta_criada', 'propostas', r.id, {});
+          return J(r, 201);
+        }
+      }
+
       // WBS — linhas de custo (entidade) com vínculo a contrato/projeto/lead
       if (seg[0]==='wbs'){
         if (method==='GET' && !seg[1]){
@@ -1579,4 +1611,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao, podeGerarProposta };

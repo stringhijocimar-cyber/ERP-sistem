@@ -71,6 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Orçamentação → Proposta** (Épico C, Fatia C2 — fecha CRM↔Custos↔Proposta):
+  o comercial só cria a proposta (`POST /api/propostas`) quando o lead tem
+  **estimativa de custos (WBS) vinculada** — senão bloqueia (409). O valor sai
+  do **custo estimado × margem**; criar a proposta marca a orçamentação do lead
+  como **concluída**. `GET /api/propostas?lead_id=`. **Paridade Express +
+  Worker** (helper puro `podeGerarProposta`). Coberto por testes.
 - ✅ **CRM → Orçamentação** (Épico C, Fatia C1): quando a oportunidade passa para
   **Qualificação** (ou além, até Negociação), a orçamentação é marcada
   **pendente** e o **orçamentista é alertado** (notificação + e-mail). Endpoint

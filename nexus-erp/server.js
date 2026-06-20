@@ -179,6 +179,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS recebimento_itens (
   descricao TEXT,
   quantidade_recebida REAL DEFAULT 0
 )`)
+// Propostas comerciais (C2): só nascem com estimativa de custos (WBS) do lead.
+db.exec(`CREATE TABLE IF NOT EXISTS propostas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  numero TEXT, lead_id INTEGER, cliente TEXT, objeto TEXT,
+  custo_estimado REAL DEFAULT 0, margem REAL DEFAULT 0, valor_total REAL DEFAULT 0,
+  status TEXT DEFAULT 'Em Elaboração',
+  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+)`)
 // Aceite de serviço (fluxo de serviço, B2): o requisitante atesta a prestação
 // com checklist técnico — substitui o recebimento físico para serviços.
 db.exec(`CREATE TABLE IF NOT EXISTS aceites_servico (
@@ -1921,6 +1929,46 @@ app.get('/api/crm/orcamentacao', requireAuth, (req, res) => {
 app.delete('/api/crm/:id', requireAuth, (req, res) => {
   db.prepare(`DELETE FROM crm_oportunidades WHERE id = ?`).run(req.params.id)
   res.json(ok(null))
+})
+
+// ════════════════════════════════════════════════════════════
+// PROPOSTAS COMERCIAIS (C2) — só com estimativa de custos (WBS) do lead
+// ════════════════════════════════════════════════════════════
+// Comercial só gera proposta quando há estimativa vinculada. Pura (espelhada no Worker).
+function podeGerarProposta(lead, temEstimativa) {
+  if (!lead) return { ok: false, motivo: 'lead/oportunidade não encontrado' }
+  if (!temEstimativa) return { ok: false, motivo: 'lead sem estimativa de custos (WBS) — orçamentação pendente' }
+  return { ok: true }
+}
+function nextProposta() {
+  const year = new Date().getFullYear()
+  const n = db.prepare(`SELECT COUNT(*) as n FROM propostas WHERE numero LIKE ?`).get(`PROP-${year}-%`).n
+  return `PROP-${year}-${String(n + 1).padStart(3, '0')}`
+}
+
+app.get('/api/propostas', requireAuth, (req, res) => {
+  const { lead_id } = req.query
+  const sql = `SELECT * FROM propostas ${lead_id ? 'WHERE lead_id = ?' : ''} ORDER BY created_at DESC`
+  res.json(ok(lead_id ? db.prepare(sql).all(lead_id) : db.prepare(sql).all()))
+})
+
+app.post('/api/propostas', requireAuth, (req, res) => {
+  const b = req.body || {}
+  const lead = b.lead_id ? db.prepare(`SELECT * FROM crm_oportunidades WHERE id = ?`).get(b.lead_id) : null
+  // Soma da estimativa (WBS de orçamentação vinculada ao lead).
+  const est = b.lead_id ? db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(valor_total_est),0) custo FROM wbs_linhas WHERE lead_id = ? AND ativo = 1`).get(b.lead_id) : { n: 0, custo: 0 }
+  const gate = podeGerarProposta(lead, est.n > 0)
+  if (!gate.ok) return res.status(409).json(err('Proposta bloqueada: ' + gate.motivo))
+  const margem = Number(b.margem) || 0
+  const valor_total = b.valor_total != null ? Number(b.valor_total) : est.custo * (1 + margem / 100)
+  const numero = nextProposta()
+  const r = db.prepare(`INSERT INTO propostas(numero, lead_id, cliente, objeto, custo_estimado, margem, valor_total, status)
+     VALUES(?,?,?,?,?,?,?,?)`)
+    .run(numero, b.lead_id, b.cliente ?? lead.cliente, b.objeto ?? lead.titulo, est.custo, margem, valor_total, 'Em Elaboração')
+  // Estimativa concluída: o ciclo CRM→Custos→Proposta fechou.
+  db.prepare(`UPDATE crm_oportunidades SET orcamentacao_status='concluida' WHERE id=?`).run(b.lead_id)
+  log(req.user.usuario_id, req.user.nome, 'proposta_criada', 'propostas', `Proposta ${numero} para ${b.cliente ?? lead.cliente} (R$ ${valor_total.toFixed(2)})`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM propostas WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
 // ════════════════════════════════════════════════════════════
