@@ -159,6 +159,12 @@ function calcularIDF({ pedidos = [], avaliacoes = [] } = {}){
   return { score: score != null ? _r1(score) : null, classificacao, otd_pct: otd != null ? _r1(otd) : null, entregas_consideradas: considerados, avaliacao_media: avalMedia != null ? _r1(avalMedia) : null, avaliacoes_qtd: notas.length, componentes };
 }
 
+// Serviço só paga com aceite do requisitante. Pura (espelha o Express).
+function exigeAceiteServico(pedido, temAceite){
+  const tipo = String((pedido && pedido.tipo_compra) || 'material').toLowerCase();
+  const ehServico = tipo === 'servico' || tipo === 'serviço' || tipo === 'serviço externo' || tipo === 'servico externo';
+  return ehServico && !temAceite;
+}
 // WBS: uma linha pertence a um contrato quando o contrato_id bate. Pura (espelha o Express).
 function wbsPertenceAoContrato(linha, contratoId){
   return !!linha && String(linha.contrato_id ?? '') === String(contratoId ?? '');
@@ -449,6 +455,15 @@ async function pagarConta(env, id, user){
   if (!conta) return E('conta nao encontrada', 404);
 
   const g = gateContaPagar(conta, env);
+  // Serviço: paga com ACEITE do requisitante (não recebimento físico/3-way).
+  const pcId = conta.pedido_id || conta.pc_id;
+  if (pcId){
+    const ped = await getDoc(env, 'pedidos', pcId);
+    const aceites = await listDocs(env, 'aceites_servico', { searchParams: new URLSearchParams() });
+    const temAceite = aceites.some(a => String(a.pedido_id ?? '') === String(pcId) && (a.aceito === 1 || a.aceito === true));
+    if (exigeAceiteServico(ped, temAceite)) g.motivos.push('servico sem aceite do requisitante (checklist de recebimento)');
+    g.ok = g.motivos.length === 0;
+  }
   if (!g.ok){
     await audit(env, user.sub, 'payment_blocked', 'contas_pagar', id, { motivos: g.motivos });
     return E('Pagamento bloqueado: ' + g.motivos.join('; '), 409);
@@ -1171,6 +1186,27 @@ export default {
         return J({ ...r, contas_pagar: contas }, 201);
       }
 
+      // Aceite de serviço (B2) — requisitante atesta a prestação
+      if (seg[0]==='aceites-servico' && method==='GET'){
+        const all = await listDocs(env, 'aceites_servico', { searchParams: new URLSearchParams() });
+        let rows = all;
+        for (const k of ['pedido_id', 'os_id']) if (url.searchParams.get(k)) rows = rows.filter(x => String(x[k] ?? '') === String(url.searchParams.get(k)));
+        return J(rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))));
+      }
+      if (seg[0]==='pedidos' && seg[2]==='aceite-servico' && method==='POST'){
+        const ped = await getDoc(env, 'pedidos', seg[1]);
+        if (!ped) return E('Pedido nao encontrado', 404);
+        const checklist = Array.isArray(body.checklist) ? body.checklist : [];
+        if (!checklist.length) return E('Informe o checklist de recebimento do servico (especificacao tecnica)', 400);
+        const todosConformes = checklist.every(c => c && (c.conforme === true || c.conforme === 1));
+        if (body.aceitar !== false && !todosConformes) return E('Aceite bloqueado: ha itens nao conformes no checklist', 409);
+        const aceito = body.aceitar === false ? 0 : (todosConformes ? 1 : 0);
+        const r = await createDoc(env, 'aceites_servico', { pedido_id: seg[1], os_id: body.os_id ?? null, checklist, aceito, aceito_por: user.name, aceito_em: new Date().toISOString(), especificacao: body.especificacao ?? null, observacoes: body.observacoes ?? null });
+        await updateDoc(env, 'pedidos', seg[1], { tipo_compra: 'servico' });
+        await audit(env, user.sub, aceito ? 'aceite_servico' : 'aceite_servico_recusado', 'pedidos', seg[1], {});
+        return J(r, 201);
+      }
+
       // WBS — linhas de custo (entidade) com vínculo a contrato/projeto/lead
       if (seg[0]==='wbs'){
         if (method==='GET' && !seg[1]){
@@ -1516,4 +1552,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico };
