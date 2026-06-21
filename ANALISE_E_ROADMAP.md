@@ -71,7 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
-- ✅ **OS ↔ WBS do backend (A2.1)**: o seletor de WBS da OS agora **lê de
+- ✅ **OS completa — conclusão lança custo na WBS**: `POST /api/os/:id/concluir`
+  conclui a OS e **acumula o custo realizado na linha WBS** (`custo_real`),
+  permitindo o comparativo **estimado × realizado** por linha. Ação "Concluir
+  (lançar custo)" no detalhe da OS; o id de backend é capturado ao salvar.
+  **Paridade Express + Worker**. Coberto por testes.
+- ✅ **OS ↔ WBS do backend (A2.1)**: o seletor de WBS da OS agora **lê de**
   `/api/wbs?contrato_id=`** (entidade real), permite **criar linha WBS no
   contrato** ali mesmo, e a OS é **persistida no `/api/os`** (dual-write) —
   disparando a validação A2 (WBS de outro contrato → 409). Resolve a desconexão

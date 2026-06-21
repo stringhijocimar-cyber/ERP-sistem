@@ -1443,6 +1443,26 @@ export default {
         await audit(env, user.sub, 'create', 'os', r.id, {});
         return J(r);
       }
+      // OS — concluir e lançar custo realizado na linha WBS (espelha o Express)
+      if (seg[0]==='os' && seg[2]==='concluir' && method==='POST'){
+        const os = await getDoc(env, 'os', seg[1]);
+        if (!os) return E('OS nao encontrada', 404);
+        if (os.status === 'Concluída') return E('OS ja concluida', 409);
+        const custo = Number(body && body.custo_realizado) || 0;
+        await updateDoc(env, 'os', seg[1], { status: 'Concluída' });
+        let wbs_linha = null;
+        if (os.wbs_linha_id && custo > 0){
+          const linha = await getDoc(env, 'wbs_linhas', os.wbs_linha_id);
+          if (linha){
+            const novo = (Number(linha.custo_real) || 0) + custo;
+            await updateDoc(env, 'wbs_linhas', os.wbs_linha_id, { custo_real: novo });
+            wbs_linha = { id: linha.id, codigo: linha.codigo, descricao: linha.descricao, valor_total_est: linha.valor_total_est, custo_real: novo };
+          }
+        }
+        await audit(env, user.sub, 'os_concluir', 'os', seg[1], {});
+        const fin = await getDoc(env, 'os', seg[1]);
+        return J({ os: fin, wbs_linha });
+      }
       if (seg[0]==='os' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
         const cur = await getDoc(env, 'os', seg[1]);
         if (!cur) return E('nao encontrado', 404);

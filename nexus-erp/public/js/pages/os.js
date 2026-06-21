@@ -665,8 +665,33 @@ function verDetalheOS(id) {
     <button class="btn btn-primary" onclick="closeModal();abrirAcaoMaterialOS('${os.id}','${os.descricao.replace(/'/g,"\\'").replace(/"/g,"&quot;")}')" title="Comprar Material ou contratar Serviço Externo" style="background:linear-gradient(135deg,var(--orange),#e67e22)">
       <i class="fas fa-shopping-cart"></i> Compras/RC
     </button>
+    ${os.status !== 'Concluída' ? `<button class="btn btn-success" onclick="concluirOSLancarCusto('${os.id}')" title="Concluir e lançar o custo realizado na linha WBS">
+      <i class="fas fa-flag-checkered"></i> Concluir (lançar custo)
+    </button>` : ''}
   `);
 }
+
+// Conclui a OS no servidor lançando o custo realizado na linha WBS.
+async function concluirOSLancarCusto(frontOsId) {
+  const os = _getOSList().find(o => o.id === frontOsId);
+  if (!os) return;
+  if (!os.os_backend_id) { showToast('Esta OS não está no servidor (criada antes da integração). Crie uma nova OS para usar o lançamento de custo.', 'warning', 8000); return; }
+  const custo = parseFloat(prompt('Custo realizado desta OS (R$) a lançar na linha WBS:', String(os.custo_realizado || 0)));
+  if (isNaN(custo)) return;
+  if (typeof apiAuth !== 'function') { showToast('Indisponível offline.', 'error'); return; }
+  try {
+    const r = await apiAuth(`/api/os/${os.os_backend_id}/concluir`, { method: 'POST', body: JSON.stringify({ custo_realizado: custo }) });
+    // Atualiza o cache local
+    const lista = _getOSList(); const idx = lista.findIndex(o => o.id === frontOsId);
+    if (idx >= 0) { lista[idx].status = 'Concluída'; lista[idx].custo_realizado = custo; _saveOSList(lista); }
+    const w = r && r.wbs_linha;
+    const msg = w ? `OS concluída. WBS ${w.codigo || ''}: realizado R$ ${Number(w.custo_real).toLocaleString('pt-BR')} de R$ ${Number(w.valor_total_est).toLocaleString('pt-BR')} estimado.` : 'OS concluída.';
+    showToast(msg, 'success', 8000);
+    closeModal();
+    if (typeof renderOS === 'function') renderOS();
+  } catch (e) { showToast('Falha ao concluir: ' + e.message, 'error', 7000); }
+}
+window.concluirOSLancarCusto = concluirOSLancarCusto;
 
 function openNovaOS() {
   if (!hasPermission('os', 'create')) { showToast('Sem permissão para criar OS', 'error'); return; }
@@ -901,7 +926,12 @@ async function _osSalvarNoBackend(novaOS, contrato) {
     valor_estimado: novaOS.custo_estimado || 0,
   };
   try {
-    await apiAuth('/api/os', { method: 'POST', body: JSON.stringify(payload) });
+    const resp = await apiAuth('/api/os', { method: 'POST', body: JSON.stringify(payload) });
+    // Guarda o id do backend para permitir concluir/lançar custo depois.
+    if (resp && resp.id) {
+      const lista = _getOSList(); const item = lista.find(o => o.id === novaOS.id);
+      if (item) { item.os_backend_id = resp.id; _saveOSList(lista); }
+    }
   } catch (e) {
     if (typeof showToast === 'function') showToast('Atenção: o servidor não aceitou a OS (' + e.message + '). Salva localmente.', 'warning', 7000);
   }
