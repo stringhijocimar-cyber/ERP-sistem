@@ -1296,6 +1296,22 @@ app.post('/api/os/:id/iniciar-fluxo', requireAuth, (req, res) => {
   res.json(ok(os))
 })
 
+// Conclui a OS e LANÇA o custo realizado na linha WBS (custo_real acumulado).
+app.post('/api/os/:id/concluir', requireAuth, (req, res) => {
+  const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
+  if (!os) return res.status(404).json(err('OS não encontrada'))
+  if (os.status === 'Concluída') return res.status(409).json(err('OS já concluída'))
+  const custo = Number(req.body?.custo_realizado) || 0
+  db.prepare(`UPDATE ordens_servico SET status='Concluída', updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+  let wbs_linha = null
+  if (os.wbs_linha_id && custo > 0) {
+    db.prepare(`UPDATE wbs_linhas SET custo_real = COALESCE(custo_real,0) + ?, updated_at=datetime('now') WHERE id=?`).run(custo, os.wbs_linha_id)
+    wbs_linha = db.prepare(`SELECT id, codigo, descricao, valor_total_est, custo_real FROM wbs_linhas WHERE id=?`).get(os.wbs_linha_id)
+  }
+  log(req.user.usuario_id, req.user.nome, 'os_concluir', 'os', `OS ${os.numero} concluída — custo realizado R$ ${custo.toFixed(2)} na WBS ${wbs_linha?.codigo || '—'}`)
+  res.json(ok({ os: db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id), wbs_linha }))
+})
+
 // ════════════════════════════════════════════════════════════
 // FLUXO DE APROVAÇÃO
 // ════════════════════════════════════════════════════════════
