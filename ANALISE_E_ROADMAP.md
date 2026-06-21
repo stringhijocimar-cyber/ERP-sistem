@@ -71,6 +71,11 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Controle de Custos — rollup estimado × realizado** (`GET /api/wbs/rollup`):
+  consolida as linhas WBS por contrato (estimado, realizado, desvio, % executado)
+  e mostra a seção "Custos por contrato (servidor)" na tela de Controle de
+  Custos. Fecha visualmente o ciclo conectado na OS. Lib pura `lib/wbs_rollup.js`;
+  **paridade Express + Worker**. Coberto por testes.
 - ✅ **OS completa — conclusão lança custo na WBS**: `POST /api/os/:id/concluir`
   conclui a OS e **acumula o custo realizado na linha WBS** (`custo_real`),
   permitindo o comparativo **estimado × realizado** por linha. Ação "Concluir

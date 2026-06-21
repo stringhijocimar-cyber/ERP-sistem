@@ -174,6 +174,22 @@ function podeGerarProposta(lead, temEstimativa){
   if (!temEstimativa) return { ok: false, motivo: 'lead sem estimativa de custos (WBS) - orcamentacao pendente' };
   return { ok: true };
 }
+// Rollup de custos WBS por contrato (estimado × realizado). Pura (espelha lib/wbs_rollup.js).
+function montarRollupWBS(linhas = []){
+  const _r2 = n => Math.round(n * 100) / 100, _r1 = n => Math.round(n * 10) / 10;
+  const map = {}; let estTot = 0, realTot = 0;
+  for (const l of linhas){
+    if ((l.ativo ?? 1) === 0) continue;
+    const chave = String(l.contrato_id ?? l.centro_custo ?? 'Sem contrato');
+    if (!map[chave]) map[chave] = { chave, estimado: 0, realizado: 0, linhas: 0 };
+    const est = Number(l.valor_total_est) || 0, real = Number(l.custo_real) || 0;
+    map[chave].estimado += est; map[chave].realizado += real; map[chave].linhas++;
+    estTot += est; realTot += real;
+  }
+  const grupos = Object.values(map).map(g => ({ chave: g.chave, estimado: _r2(g.estimado), realizado: _r2(g.realizado), desvio: _r2(g.realizado - g.estimado), pct: g.estimado ? _r1((g.realizado / g.estimado) * 100) : 0, linhas: g.linhas }))
+    .sort((a, b) => Math.abs(b.desvio) - Math.abs(a.desvio));
+  return { grupos, total: { estimado: _r2(estTot), realizado: _r2(realTot), desvio: _r2(realTot - estTot), linhas: linhas.length } };
+}
 // WBS: uma linha pertence a um contrato quando o contrato_id bate. Pura (espelha o Express).
 function wbsPertenceAoContrato(linha, contratoId){
   return !!linha && String(linha.contrato_id ?? '') === String(contratoId ?? '');
@@ -1263,6 +1279,12 @@ export default {
 
       // WBS — linhas de custo (entidade) com vínculo a contrato/projeto/lead
       if (seg[0]==='wbs'){
+        if (seg[1]==='rollup' && method==='GET'){
+          const all = await listDocs(env, 'wbs_linhas', { searchParams: new URLSearchParams() });
+          const cid = url.searchParams.get('contrato_id');
+          const linhas = (cid ? all.filter(l => String(l.contrato_id ?? '') === String(cid)) : all).filter(l => (l.ativo ?? 1) !== 0);
+          return J(montarRollupWBS(linhas));
+        }
         if (method==='GET' && !seg[1]){
           const all = await listDocs(env, 'wbs_linhas', { searchParams: new URLSearchParams() });
           const q = url.searchParams;
@@ -1631,4 +1653,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao, podeGerarProposta };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao, podeGerarProposta, montarRollupWBS };
