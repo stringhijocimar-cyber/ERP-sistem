@@ -534,8 +534,8 @@ function renderCustos() {
       </div>`;
     return;
   }
-  // C1: banner de leads aguardando precificação (orçamentação) — pós-render.
-  setTimeout(() => { try { _mostrarLeadsOrcamentacao(); } catch (e) {} }, 150);
+  // C1: banner de leads aguardando precificação + rollup estimado×realizado.
+  setTimeout(() => { try { _mostrarLeadsOrcamentacao(); } catch (e) {} try { _mostrarRollupCustos(); } catch (e) {} }, 150);
   const projetos = _custosGetProjects();
   if (!projetos.length) {
     document.getElementById('mainContent').innerHTML = `
@@ -2914,3 +2914,37 @@ async function gerarPropostaDoLead(leadId, titulo) {
   }
 }
 window.gerarPropostaDoLead = gerarPropostaDoLead;
+
+// ── Custos rollup: estimado × realizado por contrato (lê do backend) ─────
+async function _mostrarRollupCustos() {
+  const main = document.getElementById('mainContent');
+  if (!main || typeof apiAuth !== 'function') return;
+  let roll = null;
+  try { roll = await apiAuth('/api/wbs/rollup'); } catch (e) { return; }
+  const old = document.getElementById('rollup_custos'); if (old) old.remove();
+  if (!roll || !roll.grupos || !roll.grupos.length) return;
+  const fmt = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR');
+  const corDesv = v => v > 0 ? '#dc2626' : '#16a34a';
+  const div = document.createElement('div');
+  div.id = 'rollup_custos';
+  div.style.cssText = 'margin:0 0 16px;padding:14px 16px;border:1px solid rgba(8,145,178,.25);background:rgba(8,145,178,.05);border-radius:10px';
+  div.innerHTML = `
+    <div style="font-size:13px;font-weight:700;color:#0891b2;margin-bottom:8px"><i class="fas fa-server" style="margin-right:6px"></i>Custos por contrato — estimado × realizado (servidor)</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Total: estimado <b>${fmt(roll.total.estimado)}</b> · realizado <b>${fmt(roll.total.realizado)}</b> · desvio <b style="color:${corDesv(roll.total.desvio)}">${fmt(roll.total.desvio)}</b></div>
+    <table style="width:100%;font-size:12px;border-collapse:collapse">
+      <thead><tr style="color:var(--text-muted);text-align:left">
+        <th style="padding:4px 8px">Contrato</th><th style="padding:4px 8px;text-align:right">Estimado</th>
+        <th style="padding:4px 8px;text-align:right">Realizado</th><th style="padding:4px 8px;text-align:right">% exec.</th>
+        <th style="padding:4px 8px;text-align:right">Desvio</th></tr></thead>
+      <tbody>${roll.grupos.map(g => `
+        <tr style="border-top:1px solid rgba(0,0,0,.05)">
+          <td style="padding:4px 8px">${g.chave}</td>
+          <td style="padding:4px 8px;text-align:right">${fmt(g.estimado)}</td>
+          <td style="padding:4px 8px;text-align:right">${fmt(g.realizado)}</td>
+          <td style="padding:4px 8px;text-align:right">${g.pct}%</td>
+          <td style="padding:4px 8px;text-align:right;color:${corDesv(g.desvio)}">${fmt(g.desvio)}</td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+  main.insertBefore(div, main.firstChild);
+}
+window._mostrarRollupCustos = _mostrarRollupCustos;

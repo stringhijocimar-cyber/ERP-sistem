@@ -20,6 +20,7 @@ import { consultarCredito } from './lib/credit_bureau.js'
 import { consultarReceita, consultarCadastroCNPJ } from './lib/receita.js'
 import { analisarFinanceiro } from './lib/analise_financeira.js'
 import { calcularIDF } from './lib/idf.js'
+import { montarRollupWBS } from './lib/wbs_rollup.js'
 import { emitirNotaFiscal, cancelarNotaFiscal } from './lib/nfe.js'
 import { enviarEmail } from './lib/email.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
@@ -761,6 +762,15 @@ app.post('/api/pedidos/:id/aceite-servico', requireAuth, (req, res) => {
 function wbsPertenceAoContrato(linha, contratoId) {
   return !!linha && String(linha.contrato_id ?? '') === String(contratoId ?? '')
 }
+
+// Rollup de custos: estimado × realizado por contrato (Controle de Custos).
+app.get('/api/wbs/rollup', requireAuth, (req, res) => {
+  const { contrato_id } = req.query
+  const linhas = contrato_id
+    ? db.prepare(`SELECT * FROM wbs_linhas WHERE ativo = 1 AND contrato_id = ?`).all(contrato_id)
+    : db.prepare(`SELECT * FROM wbs_linhas WHERE ativo = 1`).all()
+  res.json(ok(montarRollupWBS(linhas)))
+})
 
 app.get('/api/wbs', requireAuth, (req, res) => {
   const { contrato_id, projeto_id, lead_id, ativo = '1' } = req.query
