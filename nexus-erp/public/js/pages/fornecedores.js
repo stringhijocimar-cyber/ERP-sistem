@@ -1,3 +1,15 @@
+// Guarda: idf.js carrega DEPOIS deste arquivo; garante _idfClassificacao para
+// evitar ReferenceError no render (idf.js sobrescreve com a versão completa).
+if (typeof window !== 'undefined' && typeof window._idfClassificacao !== 'function') {
+  window._idfClassificacao = function (nota) {
+    const n = Number(nota) || 0;
+    if (n >= 85) return { color: '#16a34a', bg: 'rgba(22,163,74,.12)', label: 'A — Excelente', icon: 'fa-star' };
+    if (n >= 70) return { color: '#2563eb', bg: 'rgba(37,99,235,.12)', label: 'B — Bom', icon: 'fa-thumbs-up' };
+    if (n >= 50) return { color: '#d97706', bg: 'rgba(217,119,6,.12)', label: 'C — Regular', icon: 'fa-exclamation' };
+    return { color: '#6b7280', bg: 'rgba(107,114,128,.12)', label: '— Sem dados', icon: 'fa-circle' };
+  };
+}
+
 // =====================================================
 // Fraser Alexander – Módulo Fornecedores
 // CRUD completo via /api/fornecedores (D1)
@@ -124,7 +136,8 @@ function _normalizarFornecedor(f) {
 async function loadFornecedores() {
   try {
     const token = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
-    const res = await fetch('/api/fornecedores?ativo=todos', { headers: { 'Authorization': `Bearer ${token}` } });
+    // Timeout para a chamada não pendurar a tela indefinidamente.
+    const res = await fetch('/api/fornecedores?ativo=todos', { headers: { 'Authorization': `Bearer ${token}` }, signal: AbortSignal.timeout(12000) });
     const json = await res.json();
     if (json.success && Array.isArray(json.data)) {
       FA_FORNECEDORES = json.data.map(_normalizarFornecedor);
@@ -227,6 +240,18 @@ function renderFornecedores() {
       <!-- Top fornecedores por IDF -->
       ${_renderTopFornecedoresIDF()}
     `;
+  }).catch((e) => {
+    console.error('[Fornecedores] falha ao renderizar:', e);
+    main.innerHTML = `
+      <div class="empty-state" style="padding:60px 24px;text-align:center">
+        <i class="fas fa-triangle-exclamation" style="font-size:42px;color:#d97706;opacity:.6"></i>
+        <p style="font-size:15px;font-weight:600;margin-top:12px">Não foi possível carregar os fornecedores</p>
+        <p style="font-size:12px;color:var(--text-muted)">${(e && e.message) || 'Erro inesperado'}</p>
+        <div style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" onclick="renderFornecedores()"><i class="fas fa-rotate-right"></i> Tentar novamente</button>
+          <button class="btn btn-primary btn-sm" onclick="openNovoFornecedor()"><i class="fas fa-plus"></i> Novo Fornecedor</button>
+        </div>
+      </div>`;
   });
 }
 
