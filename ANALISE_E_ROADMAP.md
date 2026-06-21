@@ -71,6 +71,13 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **OS ↔ WBS do backend (A2.1)**: o seletor de WBS da OS agora **lê de
+  `/api/wbs?contrato_id=`** (entidade real), permite **criar linha WBS no
+  contrato** ali mesmo, e a OS é **persistida no `/api/os`** (dual-write) —
+  disparando a validação A2 (WBS de outro contrato → 409). Resolve a desconexão
+  "custos da OS só no localStorage". *(Diagnóstico geral: o front é
+  localStorage-first e várias telas chamam endpoints inexistentes; conectar
+  módulo a módulo ao backend é o programa em curso — OS é o primeiro.)*
 - ✅ **Orçamentação → Proposta** (Épico C, Fatia C2 — fecha CRM↔Custos↔Proposta):
   o comercial só cria a proposta (`POST /api/propostas`) quando o lead tem
   **estimativa de custos (WBS) vinculada** — senão bloqueia (409). O valor sai

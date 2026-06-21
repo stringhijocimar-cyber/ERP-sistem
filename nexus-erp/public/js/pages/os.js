@@ -747,6 +747,7 @@ function openNovaOS() {
         <select class="form-control" id="nos_wbs_id" style="font-size:12px" onchange="_nosWBSChange()">
           <option value="">— Selecione o contrato primeiro —</option>
         </select>
+        <button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px;font-size:11px;padding:3px 9px" onclick="_nosCriarLinhaWBS()"><i class="fas fa-plus"></i> Nova linha WBS no contrato</button>
         <div style="font-size:10px;color:var(--text-muted);margin-top:4px">
           <i class="fas fa-info-circle" style="margin-right:3px"></i>O custo real desta OS será lançado automaticamente na linha WBS selecionada ao concluir.
           <span style="color:#ef4444;margin-left:6px">Se não encontrar a linha, selecione <b>⚠ Item Não Previsto</b>.</span>
@@ -837,8 +838,8 @@ function openNovaOS() {
   }, 100);
 }
 
-// Atualiza o select WBS quando o contrato muda
-function _nosContratoChange() {
+// Atualiza o select WBS quando o contrato muda — agora LÊ DO BACKEND (/api/wbs).
+async function _nosContratoChange() {
   const contrato = document.getElementById('nos_contrato')?.value;
   const selWbs = document.getElementById('nos_wbs_id');
   const info   = document.getElementById('nos_wbs_info');
@@ -848,14 +849,64 @@ function _nosContratoChange() {
     if (info) info.style.display = 'none';
     return;
   }
-  // Usa wbs_manager se disponível (filtrado por contrato)
-  if (typeof wbsGetOptionsForContrato === 'function') {
-    selWbs.innerHTML = wbsGetOptionsForContrato(contrato, '');
+  selWbs.innerHTML = '<option value="">Carregando linhas WBS…</option>';
+  let linhas = [];
+  try { if (typeof apiAuth === 'function') linhas = await apiAuth(`/api/wbs?contrato_id=${encodeURIComponent(contrato)}`) || []; } catch (e) {}
+  if (linhas.length) {
+    // value = id da linha WBS no backend (wbs_linha_id) → dispara a validação A2.
+    selWbs.innerHTML = '<option value="">— Selecione a linha WBS —</option>' +
+      linhas.map(l => `<option value="${l.id}" data-codigo="${l.codigo || l.id}" data-desc="${(l.descricao || '').replace(/"/g, '&quot;')}">${l.codigo ? l.codigo + ' · ' : ''}${l.descricao || '(sem descrição)'}${l.valor_total_est ? ' — R$ ' + Number(l.valor_total_est).toLocaleString('pt-BR') : ''}</option>`).join('') +
+      '<option value="NP">⚠ Item Não Previsto</option>';
   } else {
-    selWbs.innerHTML = _osWBSOptions('', contrato);
+    // Sem linhas no backend para este contrato: oferece criar (fallback ao localStorage se houver).
+    const fallback = (typeof wbsGetOptionsForContrato === 'function') ? wbsGetOptionsForContrato(contrato, '') : _osWBSOptions('', contrato);
+    selWbs.innerHTML = '<option value="">— Nenhuma linha WBS neste contrato. Clique em “Nova linha WBS”. —</option>' + (fallback || '');
   }
   if (info) info.style.display = 'none';
 }
+
+// Cria uma linha WBS no backend para o contrato selecionado (alimenta o seletor).
+async function _nosCriarLinhaWBS() {
+  const contrato = document.getElementById('nos_contrato')?.value;
+  if (!contrato) { showToast('Selecione o contrato primeiro.', 'warning'); return; }
+  if (typeof apiAuth !== 'function') { showToast('Indisponível offline.', 'error'); return; }
+  const codigo = prompt('Código da linha WBS (ex.: 1.1):', '');
+  if (codigo === null) return;
+  const descricao = prompt('Descrição da linha (ex.: Mão de obra mecânica):', '');
+  if (!descricao) { showToast('Descrição obrigatória.', 'warning'); return; }
+  const valor = parseFloat(prompt('Valor estimado da linha (R$):', '0')) || 0;
+  try {
+    await apiAuth('/api/wbs', { method: 'POST', body: JSON.stringify({ codigo, descricao, contrato_id: contrato, origem: 'contrato', valor_total_est: valor }) });
+    showToast('Linha WBS criada no contrato.', 'success');
+    await _nosContratoChange();
+  } catch (e) { showToast('Falha ao criar linha WBS: ' + e.message, 'error'); }
+}
+window._nosCriarLinhaWBS = _nosCriarLinhaWBS;
+
+// A2.1: persiste a OS no backend e dispara as validações (contrato/overhead/WBS).
+async function _osSalvarNoBackend(novaOS, contrato) {
+  if (typeof apiAuth !== 'function') return;
+  const sel = document.getElementById('nos_wbs_id');
+  const raw = novaOS.wbs_id;
+  const wbs_linha_id = (raw && /^\d+$/.test(String(raw))) ? Number(raw) : null;
+  let codigo = null;
+  try { const o = sel && sel.options[sel.selectedIndex]; codigo = (o && o.dataset && o.dataset.codigo) || (raw && raw !== 'NP' ? raw : null); } catch (e) {}
+  const payload = {
+    titulo: novaOS.descricao || ('OS ' + (novaOS.id || '')),
+    descricao: novaOS.descricao || '',
+    contrato_id: contrato || null,
+    tipo_recurso: novaOS.tipo_recurso || 'material',
+    wbs: codigo || 'NP',
+    wbs_linha_id: wbs_linha_id,
+    valor_estimado: novaOS.custo_estimado || 0,
+  };
+  try {
+    await apiAuth('/api/os', { method: 'POST', body: JSON.stringify(payload) });
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Atenção: o servidor não aceitou a OS (' + e.message + '). Salva localmente.', 'warning', 7000);
+  }
+}
+window._osSalvarNoBackend = _osSalvarNoBackend;
 
 // Exibe info da linha WBS selecionada no form Nova OS
 function _nosWBSChange() {
@@ -1083,6 +1134,9 @@ function salvarNovaOS() {
   const lista = _getOSList();
   lista.unshift(novaOS);
   _saveOSList(lista);
+
+  // A2.1: persiste a OS no backend (dispara a validação contrato/overhead/WBS).
+  _osSalvarNoBackend(novaOS, contrato);
 
   // Se custo realizado foi informado na criação, já lança no WBS
   if (novaOS.wbs_id && novaOS.custo_realizado > 0) {
