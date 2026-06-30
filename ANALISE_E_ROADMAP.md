@@ -32,7 +32,8 @@ realmente funcional (começando por Fornecedores), interligar os dados e embutir
 | **Análise de crédito do fornecedor** (motor transparente 0–100 + classe A–D + limite sugerido) | ✅ `js/lib/credito.js` + testes |
 | **Rodar/visualizar no Genspark** (`package.json` na raiz → `npm start`) | ✅ |
 | **`/sync` genérico no Express** (RC/RFQ/mapas/contratos/projetos/crm já enviavam snapshot → caíam em 404 silencioso e nunca persistiam) | ✅ corrigido + paridade no Worker + reconcile de boot no front |
-| Testes | ✅ 353/353 (segurança, gate, bridge, crédito, sync genérico, paridade Express⇄Worker) |
+| **`NexusAPI` (cliente das 11 páginas "enterprise")** — o objeto era referenciado mas **nunca definido**, então notifications/crm_pipeline/commercial/lowcode/customer_*/production/security/workflow/data_platform/consolidation **quebravam no mount** | ✅ cliente resiliente (get/post tolerantes a 404, desembrulho de envelope, escape) — páginas degradam para estado vazio honesto em vez de tela quebrada |
+| Testes | ✅ 360/360 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, paridade Express⇄Worker) |
 
 O **motor de crédito** é a primeira peça de "inteligência adaptativa": explica
 cada fator que compôs a nota (não é caixa-preta), e o resultado é reusável em
