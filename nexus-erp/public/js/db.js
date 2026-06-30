@@ -550,6 +550,39 @@ async function _syncEntityToD1(apiPath, lsKey, data) {
   }
 }
 
+// ── Helper público: sincroniza um snapshot (array) de qualquer
+//    entidade do allowlist do backend (/api/<entidade>/sync).
+//    Usado por módulos que guardam direto no localStorage
+//    (projetos/contratos/crm). Defensivo: nunca lança.
+window._syncSnapshot = function (entidade, data) {
+  try {
+    if (!entidade || !Array.isArray(data)) return;
+    _queueSync(`snap:${entidade}`, () => _syncEntityToD1(`/api/${entidade}`, null, data));
+  } catch (e) { /* silencioso por design */ }
+};
+
+// ── Reconcile de boot: para entidades só-localStorage, se o servidor
+//    ainda não tem o snapshot, empurra o que está local (one-shot,
+//    last-write-wins). Self-healing depois do fix do /sync no Express.
+window._reconcileSnapshotsOnBoot = async function () {
+  if (!_apiOk) return;
+  const alvos = [
+    { ent: 'projetos', key: 'fa_projetos_gantt' },
+    { ent: 'contratos', key: 'fa_contratos' },
+    { ent: 'crm',       key: 'fa_crm_data' },
+  ];
+  for (const { ent, key } of alvos) {
+    try {
+      const local = JSON.parse(localStorage.getItem(key) || '[]');
+      if (!Array.isArray(local) || local.length === 0) continue;
+      const remoto = await _apiFetch(`/api/${ent}/sync`).catch(() => []);
+      if (!Array.isArray(remoto) || remoto.length === 0) {
+        await _syncEntityToD1(`/api/${ent}`, key, local);
+      }
+    } catch (e) { /* segue para a próxima entidade */ }
+  }
+};
+
 // ─── PEDIDOS ──────────────────────────────────────────────────
 window._getPedidos = () => _lsGet(DB_CONFIG.keys.pedidos);
 window._savePedidos = (d) => {
@@ -663,6 +696,10 @@ window.DB._init = async function() {
       localStorage.setItem('fa_current_user', JSON.stringify(me));
     }
   } catch {}
+
+  // Reconcilia snapshots só-localStorage (projetos/contratos/crm) com o D1.
+  // Roda após o fix do /sync no Express; não bloqueia o boot se falhar.
+  try { await window._reconcileSnapshotsOnBoot(); } catch {}
 
   // Dispara evento para notificar módulos que o DB está pronto
   window.dispatchEvent(new CustomEvent('db:ready', { detail: { online: true } }));

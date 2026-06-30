@@ -5,7 +5,7 @@
 
 // ─── STORAGE HELPERS ─────────────────────────────────────────────────
 function _getProjetos()   { try { return JSON.parse(localStorage.getItem('fa_projetos_gantt') || '[]'); } catch(e) { return []; } }
-function _saveProjetos(d) { localStorage.setItem('fa_projetos_gantt', JSON.stringify(d)); }
+function _saveProjetos(d) { localStorage.setItem('fa_projetos_gantt', JSON.stringify(d)); try { window._syncSnapshot && window._syncSnapshot('projetos', d); } catch(e){} }
 function _getProjetoById(id) { return _getProjetos().find(p => p.id === id) || null; }
 
 // ─── ESTADO DO MÓDULO ─────────────────────────────────────────────────

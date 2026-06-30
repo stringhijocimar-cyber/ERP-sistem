@@ -31,7 +31,8 @@ realmente funcional (começando por Fornecedores), interligar os dados e embutir
 | **Dados financeiros** (faturamento, banco/agência/conta, limite) | ✅ persistidos |
 | **Análise de crédito do fornecedor** (motor transparente 0–100 + classe A–D + limite sugerido) | ✅ `js/lib/credito.js` + testes |
 | **Rodar/visualizar no Genspark** (`package.json` na raiz → `npm start`) | ✅ |
-| Testes | ✅ 23/23 (segurança, gate, bridge, crédito, integração fornecedores) |
+| **`/sync` genérico no Express** (RC/RFQ/mapas/contratos/projetos/crm já enviavam snapshot → caíam em 404 silencioso e nunca persistiam) | ✅ corrigido + paridade no Worker + reconcile de boot no front |
+| Testes | ✅ 353/353 (segurança, gate, bridge, crédito, sync genérico, paridade Express⇄Worker) |
 
 O **motor de crédito** é a primeira peça de "inteligência adaptativa": explica
 cada fator que compôs a nota (não é caixa-preta), e o resultado é reusável em
