@@ -1877,6 +1877,43 @@ app.post('/api/almoxarifado/:id/movimentar', requireAuth, (req, res) => {
 })
 
 // ════════════════════════════════════════════════════════════
+// Recursos do front de almoxarifado (materiais, movimentos, empréstimos,
+// inventários). Persistem o objeto enviado pelo front (antes só localStorage).
+// ════════════════════════════════════════════════════════════
+const _DOC_RES = { 'materiais': 'materiais', 'movimentos-estoque': 'movimentos_estoque', 'emprestimos': 'emprestimos', 'inventarios': 'inventarios' }
+for (const t of Object.values(_DOC_RES)) {
+  db.exec(`CREATE TABLE IF NOT EXISTS ${t} (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`)
+}
+function _registrarDocResource(rota, tabela) {
+  const parse = r => ({ id: r.id, ...JSON.parse(r.payload || '{}'), created_at: r.created_at })
+  app.get(`/api/${rota}`, requireAuth, (req, res) => {
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 1000, 2000))
+    res.json(ok(db.prepare(`SELECT id, payload, created_at FROM ${tabela} ORDER BY id DESC LIMIT ?`).all(limit).map(parse)))
+  })
+  app.get(`/api/${rota}/:id`, requireAuth, (req, res) => {
+    const r = db.prepare(`SELECT id, payload, created_at FROM ${tabela} WHERE id = ?`).get(req.params.id)
+    if (!r) return res.status(404).json(err('Registro não encontrado'))
+    res.json(ok(parse(r)))
+  })
+  app.post(`/api/${rota}`, requireAuth, (req, res) => {
+    const r = db.prepare(`INSERT INTO ${tabela}(payload) VALUES(?)`).run(JSON.stringify(req.body || {}))
+    res.status(201).json(ok({ id: r.lastInsertRowid, ...(req.body || {}) }))
+  })
+  app.put(`/api/${rota}/:id`, requireAuth, (req, res) => {
+    const cur = db.prepare(`SELECT payload FROM ${tabela} WHERE id = ?`).get(req.params.id)
+    if (!cur) return res.status(404).json(err('Registro não encontrado'))
+    const merged = { ...JSON.parse(cur.payload || '{}'), ...(req.body || {}) }
+    db.prepare(`UPDATE ${tabela} SET payload = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(merged), req.params.id)
+    res.json(ok({ id: Number(req.params.id), ...merged }))
+  })
+  app.delete(`/api/${rota}/:id`, requireAuth, (req, res) => {
+    db.prepare(`DELETE FROM ${tabela} WHERE id = ?`).run(req.params.id)
+    res.json(ok({ ok: true }))
+  })
+}
+for (const [rota, tabela] of Object.entries(_DOC_RES)) _registrarDocResource(rota, tabela)
+
+// ════════════════════════════════════════════════════════════
 // CONTRATOS
 // ════════════════════════════════════════════════════════════
 app.get('/api/contratos', requireAuth, (req, res) => {
