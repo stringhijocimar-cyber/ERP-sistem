@@ -415,6 +415,38 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
 })
 
 // ════════════════════════════════════════════════════════════
+// SYNC genérico: persiste o snapshot (array) que o front já envia para
+// /api/<entidade>/sync — antes o Express não tinha a rota e RC/RFQ/mapas/
+// contratos/projetos nunca persistiam (falha silenciosa no front).
+// Registrado ANTES das rotas /api/<ent>/:id para não ser interceptado.
+// ════════════════════════════════════════════════════════════
+db.exec(`CREATE TABLE IF NOT EXISTS sync_store (
+  entidade TEXT NOT NULL, item_id TEXT NOT NULL, payload TEXT,
+  updated_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (entidade, item_id)
+)`)
+const _SYNC_OK = new Set(['rc', 'rfq', 'mapas', 'contratos', 'projetos', 'crm', 'os', 'pedidos', 'fornecedores', 'contas-pagar', 'medicoes', 'ssma', 'avaliacoes'])
+
+app.post('/api/:entidade/sync', requireAuth, (req, res) => {
+  const ent = req.params.entidade
+  if (!_SYNC_OK.has(ent)) return res.status(404).json(err('Entidade não sincronizável'))
+  const data = Array.isArray(req.body && req.body.data) ? req.body.data : []
+  const up = db.prepare(`INSERT INTO sync_store(entidade, item_id, payload, updated_at) VALUES(?,?,?,datetime('now'))
+     ON CONFLICT(entidade, item_id) DO UPDATE SET payload=excluded.payload, updated_at=datetime('now')`)
+  const tx = db.transaction((rows) => {
+    rows.forEach((it, i) => up.run(ent, String((it && (it.id ?? it.numero)) ?? `i-${i}`), JSON.stringify(it || {})))
+  })
+  tx(data)
+  res.json(ok({ synced: data.length }))
+})
+
+app.get('/api/:entidade/sync', requireAuth, (req, res) => {
+  const ent = req.params.entidade
+  if (!_SYNC_OK.has(ent)) return res.status(404).json(err('Entidade não sincronizável'))
+  res.json(ok(db.prepare(`SELECT payload FROM sync_store WHERE entidade = ? ORDER BY updated_at DESC`).all(ent).map(r => JSON.parse(r.payload || '{}'))))
+})
+
+// ════════════════════════════════════════════════════════════
 // DASHBOARD
 // ════════════════════════════════════════════════════════════
 app.get('/api/dashboard', requireAuth, (req, res) => {

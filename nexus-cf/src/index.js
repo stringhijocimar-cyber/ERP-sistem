@@ -1160,13 +1160,22 @@ export default {
       if (seg[0]==='pedidos' && seg[2]==='cancelar' && method==='POST'){ const r=await updateDoc(env,'pedidos',seg[1],{ status:'Cancelado', motivo_cancelamento:body.motivo }); await audit(env,user.sub,'pedido_cancelar','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
       if (seg[0]==='fornecedores' && seg[2]==='avaliacoes' && method==='POST'){ const cur=await getDoc(env,'fornecedores',seg[1]); if(!cur) return E('nao encontrado',404); cur.avaliacoes=cur.avaliacoes||[]; cur.avaliacoes.push({ id:'av-'+Date.now(), ...body }); await updateDoc(env,'fornecedores',seg[1],{ avaliacoes:cur.avaliacoes }); await audit(env,user.sub,'fornecedor_avaliar','fornecedores',seg[1],{}); return J({ ok:true }); }
 
-      // Sync generico (UPSERT por id — nao apaga itens que o cliente nao mandou)
+      // Sync generico (UPSERT por id/numero — nao apaga itens que o cliente nao mandou)
       if (seg[1]==='sync' && method==='POST' && TABLES[seg[0]]){
         const table = TABLES[seg[0]];
         const arr = Array.isArray(body.data) ? body.data : [];
-        for (const item of arr){ if (item && item.id) await createDoc(env, table, item); }
+        for (let i = 0; i < arr.length; i++){
+          const item = arr[i];
+          if (!item) continue;
+          const id = item.id ?? item.numero ?? `i-${i}`;
+          await createDoc(env, table, { ...item, id });
+        }
         await audit(env, user.sub, 'sync', table, null, { count: arr.length });
         return J({ synced: arr.length });
+      }
+      // GET /api/<entidade>/sync — paridade com o Express: devolve o snapshot.
+      if (seg[1]==='sync' && method==='GET' && TABLES[seg[0]]){
+        return J(await listDocs(env, TABLES[seg[0]], { searchParams: new URLSearchParams() }));
       }
 
       // RC — aprovação multi-estágio
