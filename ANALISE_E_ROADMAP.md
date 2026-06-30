@@ -71,6 +71,12 @@ posicionamento a perseguir.
 
 ### P1 — Funcionalidade real por módulo (em andamento)
 - ✅ **Fornecedores**: cadastro + validação + financeiro + crédito.
+- ✅ **Almoxarifado conectado** (programa "fazer funcionar"): as telas de
+  materiais, movimentos de estoque, empréstimos e inventários **deixam de ser
+  endpoints fantasma** — `/api/materiais`, `/api/movimentos-estoque`,
+  `/api/emprestimos`, `/api/inventarios` passam a existir e **persistir** o
+  objeto enviado pelo front (CRUD completo). **Paridade Express + Worker**
+  (TABLES/CRUD genérico). Coberto por testes.
 - ✅ **Controle de Custos — rollup estimado × realizado** (`GET /api/wbs/rollup`):
   consolida as linhas WBS por contrato (estimado, realizado, desvio, % executado)
   e mostra a seção "Custos por contrato (servidor)" na tela de Controle de

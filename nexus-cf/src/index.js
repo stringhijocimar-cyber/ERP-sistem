@@ -372,6 +372,8 @@ const TABLES = {
   'contas-pagar':'contas_pagar',
   // Absorvidos do Express legado (consolidação onto D1):
   contratos:'contratos', crm:'crm', projetos:'projetos', ssma:'ssma', almoxarifado:'almoxarifado', recebimentos:'recebimentos',
+  // Recursos do front de almoxarifado (persistem o objeto do front):
+  materiais:'materiais', 'movimentos-estoque':'movimentos_estoque', emprestimos:'emprestimos', inventarios:'inventarios',
 };
 const sanitizeKey = (k) => String(k).replace(/[^a-zA-Z0-9_]/g,'');
 

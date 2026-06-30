@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS notificacoes ( id TEXT PRIMARY KEY, payload TEXT NOT 
 CREATE TABLE IF NOT EXISTS wbs_linhas ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 CREATE TABLE IF NOT EXISTS aceites_servico ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 CREATE TABLE IF NOT EXISTS propostas ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS materiais ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS movimentos_estoque ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS emprestimos ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS inventarios ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 
 CREATE TABLE IF NOT EXISTS permissoes ( user_id TEXT PRIMARY KEY, permissoes TEXT DEFAULT '[]' );
 CREATE TABLE IF NOT EXISTS config     ( chave TEXT PRIMARY KEY, valor TEXT );
