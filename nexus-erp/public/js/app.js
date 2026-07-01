@@ -653,7 +653,20 @@ function navigate(page) {
   };
 
   if (pages[page]) {
-    pages[page]();
+    // Rede de segurança global: nenhum render pode deixar a tela quebrada
+    // ou presa num spinner. Erros síncronos e assíncronos viram um card de
+    // erro com "Tentar novamente"; um watchdog encerra spinners eternos.
+    // (helpers em js/nav_safety.js)
+    const token = (window.__navToken = (window.__navToken || 0) + 1);
+    try {
+      const out = pages[page]();
+      if (out && typeof out.then === 'function') {
+        out.catch(e => { if (token === window.__navToken) window._renderPageError(main, meta, e, page); });
+      }
+      window._armSpinnerWatchdog(main, meta, page, token);
+    } catch (e) {
+      window._renderPageError(main, meta, e, page);
+    }
   } else {
     main.innerHTML = `
       <div class="empty-state" style="padding-top:80px">
