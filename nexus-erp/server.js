@@ -189,11 +189,10 @@ ensureColumns('usuarios', [
   ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
 ])
 // Tabelas relacionais recebem empresa_id (isolamento de dados por tenant).
-// Legado → empresa 1. Retrofit incremental: fornecedores primeiro (dados
-// mais sensíveis: bancários, CNPJ, crédito).
-ensureColumns('fornecedores', [
-  ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
-])
+// Legado → empresa 1. Retrofit incremental: fornecedores + caminho do dinheiro.
+for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativos', 'pedidos_compra', 'contas_pagar']) {
+  ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']])
+}
 
 // Recebimento por item (alimenta o 3-way automaticamente).
 db.exec(`CREATE TABLE IF NOT EXISTS recebimentos (
@@ -470,6 +469,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS sync_store (
 const _SYNC_OK = new Set(['rc', 'rfq', 'mapas', 'contratos', 'projetos', 'crm', 'os', 'pedidos', 'fornecedores', 'contas-pagar', 'medicoes', 'ssma', 'avaliacoes'])
 // Escopo de tenant: SEMPRE do usuário autenticado, nunca do corpo/query.
 const empresaDoReq = (req) => Number(req.user && req.user.empresa_id) || 1
+// Busca uma linha por id JÁ no escopo da empresa do usuário (→ 404 se for de
+// outro tenant). `table` é sempre um literal fixo no call site (sem injeção).
+const rowScoped = (table, req, id) => db.prepare(`SELECT * FROM ${table} WHERE id = ? AND empresa_id = ?`).get(id ?? req.params.id, empresaDoReq(req))
 
 app.post('/api/:entidade/sync', requireAuth, (req, res) => {
   const ent = req.params.entidade
@@ -1483,10 +1485,10 @@ function nextRC() {
 app.get('/api/rc', requireAuth, (req, res) => {
   const { status, q = '' } = req.query
   let sql = `SELECT rc.* FROM requisicoes_compra rc`
-  const where = []; const params = []
+  const where = ['rc.empresa_id = ?']; const params = [empresaDoReq(req)]
   if (status) { where.push('rc.status = ?'); params.push(status) }
   if (q) { where.push('(rc.numero LIKE ? OR rc.descricao LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
-  if (where.length) sql += ' WHERE ' + where.join(' AND ')
+  sql += ' WHERE ' + where.join(' AND ')
   sql += ' ORDER BY rc.created_at DESC'
   const rows = db.prepare(sql).all(...params)
   const result = rows.map(r => ({ ...r, itens: db.prepare(`SELECT * FROM rc_itens WHERE rc_id = ?`).all(r.id) }))
@@ -1494,7 +1496,7 @@ app.get('/api/rc', requireAuth, (req, res) => {
 })
 
 app.get('/api/rc/:id', requireAuth, (req, res) => {
-  const rc = db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)
+  const rc = rowScoped('requisicoes_compra', req)
   if (!rc) return res.status(404).json(err('RC não encontrada'))
   const itens = db.prepare(`SELECT * FROM rc_itens WHERE rc_id = ?`).all(req.params.id)
   res.json(ok({ ...rc, itens }))
@@ -1518,9 +1520,9 @@ app.post('/api/rc', requireAuth, (req, res) => {
   const numero = nextRC()
   const valorTotal = itens.reduce((s, i) => s + ((i.quantidade || 1) * (i.valor_unitario_estimado || 0)), 0)
   const r = db.prepare(
-    `INSERT INTO requisicoes_compra(numero, os_id, os_numero, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_total, observacoes, tipo, wbs)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, os_id || null, os_numero, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valorTotal, observacoes, tipoCanon, String(wbs).trim())
+    `INSERT INTO requisicoes_compra(numero, os_id, os_numero, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_total, observacoes, tipo, wbs, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, os_id || null, os_numero, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valorTotal, observacoes, tipoCanon, String(wbs).trim(), empresaDoReq(req))
   const rcId = r.lastInsertRowid
   for (const item of itens) {
     const vt = (item.quantidade || 1) * (item.valor_unitario_estimado || 0)
@@ -1533,7 +1535,7 @@ app.post('/api/rc', requireAuth, (req, res) => {
 })
 
 app.put('/api/rc/:id', requireAuth, (req, res) => {
-  const cur = db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)
+  const cur = rowScoped('requisicoes_compra', req)
   if (!cur) return res.status(404).json(err('RC não encontrada'))
   const { status, departamento, prioridade, observacoes } = req.body
   // tipo/WBS não podem ser removidos; se enviados, devem permanecer válidos.
@@ -1561,7 +1563,7 @@ function nextRFQ() {
 }
 
 app.get('/api/rfq', requireAuth, (req, res) => {
-  const rows = db.prepare(`SELECT rfq.*, u.nome as comprador FROM rfq LEFT JOIN usuarios u ON u.id = rfq.comprador_id ORDER BY rfq.created_at DESC`).all()
+  const rows = db.prepare(`SELECT rfq.*, u.nome as comprador FROM rfq LEFT JOIN usuarios u ON u.id = rfq.comprador_id WHERE rfq.empresa_id = ? ORDER BY rfq.created_at DESC`).all(empresaDoReq(req))
   const result = rows.map(r => ({
     ...r,
     fornecedores: db.prepare(`SELECT rf.*, f.nome FROM rfq_fornecedores rf JOIN fornecedores f ON f.id = rf.fornecedor_id WHERE rf.rfq_id = ?`).all(r.id),
@@ -1571,7 +1573,7 @@ app.get('/api/rfq', requireAuth, (req, res) => {
 })
 
 app.get('/api/rfq/:id', requireAuth, (req, res) => {
-  const rfq = db.prepare(`SELECT * FROM rfq WHERE id = ?`).get(req.params.id)
+  const rfq = rowScoped('rfq', req)
   if (!rfq) return res.status(404).json(err('RFQ não encontrada'))
   const fornecedores = db.prepare(`SELECT rf.*, f.nome as fornecedor_nome FROM rfq_fornecedores rf JOIN fornecedores f ON f.id = rf.fornecedor_id WHERE rf.rfq_id = ?`).all(req.params.id)
   const cotacoes = db.prepare(`SELECT c.*, f.nome as fornecedor FROM cotacoes c JOIN fornecedores f ON f.id = c.fornecedor_id WHERE c.rfq_id = ? ORDER BY c.valor_total`).all(req.params.id)
@@ -1583,9 +1585,9 @@ app.post('/api/rfq', requireAuth, (req, res) => {
   if (!titulo) return res.status(400).json(err('Título obrigatório'))
   const numero = nextRFQ()
   const r = db.prepare(
-    `INSERT INTO rfq(numero, rc_id, rc_numero, titulo, descricao, status, prazo_resposta, comprador_id, comprador_nome, valor_estimado)
-     VALUES(?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, rc_id || null, rc_numero, titulo, descricao, 'Aberta', prazo_resposta, req.user.usuario_id, req.user.nome, valor_estimado || 0)
+    `INSERT INTO rfq(numero, rc_id, rc_numero, titulo, descricao, status, prazo_resposta, comprador_id, comprador_nome, valor_estimado, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, rc_id || null, rc_numero, titulo, descricao, 'Aberta', prazo_resposta, req.user.usuario_id, req.user.nome, valor_estimado || 0, empresaDoReq(req))
   const rfqId = r.lastInsertRowid
   for (const fid of fornecedor_ids) {
     const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fid)
@@ -1598,6 +1600,7 @@ app.post('/api/rfq', requireAuth, (req, res) => {
 })
 
 app.post('/api/rfq/:id/cotacoes', requireAuth, (req, res) => {
+  if (!rowScoped('rfq', req)) return res.status(404).json(err('RFQ não encontrada'))
   const { fornecedor_id, valor_total, prazo_entrega, condicao_pagamento, observacoes, itens = [] } = req.body
   const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fornecedor_id)
   const r = db.prepare(
@@ -1628,8 +1631,9 @@ app.get('/api/mapas', requireAuth, (req, res) => {
      FROM mapas_comparativos mc
      LEFT JOIN rfq ON rfq.id = mc.rfq_id
      LEFT JOIN fornecedores f ON f.id = mc.fornecedor_vencedor_id
+     WHERE mc.empresa_id = ?
      ORDER BY mc.created_at DESC`
-  ).all()
+  ).all(empresaDoReq(req))
   res.json(ok(rows))
 })
 
@@ -1655,13 +1659,15 @@ app.post('/api/mapas', requireAuth, (req, res) => {
     log(req.user.usuario_id, req.user.nome, 'concorrencia_bloqueada', 'mapas', conc.motivo)
     return res.status(409).json(err(conc.motivo, 409))
   }
+  // O RFQ de origem precisa pertencer ao mesmo tenant.
+  if (!rowScoped('rfq', req, rfq_id)) return res.status(404).json(err('RFQ não encontrada'))
   const rfq = db.prepare(`SELECT numero FROM rfq WHERE id = ?`).get(rfq_id)
   const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fornecedor_vencedor_id)
   const numero = nextMapa()
   const r = db.prepare(
-    `INSERT INTO mapas_comparativos(numero, rfq_id, rfq_numero, cotacao_vencedora_id, fornecedor_vencedor_id, fornecedor_vencedor_nome, status, valor_aprovado, economia_gerada, justificativa)
-     VALUES(?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, rfq_id, rfq?.numero, cotacao_vencedora_id, fornecedor_vencedor_id, f?.nome, 'Em análise', valor_aprovado || 0, economia_gerada || 0, justificativa)
+    `INSERT INTO mapas_comparativos(numero, rfq_id, rfq_numero, cotacao_vencedora_id, fornecedor_vencedor_id, fornecedor_vencedor_nome, status, valor_aprovado, economia_gerada, justificativa, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, rfq_id, rfq?.numero, cotacao_vencedora_id, fornecedor_vencedor_id, f?.nome, 'Em análise', valor_aprovado || 0, economia_gerada || 0, justificativa, empresaDoReq(req))
   db.prepare(`UPDATE cotacoes SET vencedor = 1 WHERE id = ?`).run(cotacao_vencedora_id)
   if (conc.excecao) log(req.user.usuario_id, req.user.nome, 'concorrencia_excecao', 'mapas', `Exceção de concorrência (${numCotacoes} cotação(ões)) aprovada por Diretor: ${justificativa}`)
   const mapa = db.prepare(`SELECT * FROM mapas_comparativos WHERE id = ?`).get(r.lastInsertRowid)
@@ -1670,6 +1676,7 @@ app.post('/api/mapas', requireAuth, (req, res) => {
 })
 
 app.post('/api/mapas/:id/aprovar', requireAuth, requireRole('admin', 'diretor', 'financeiro', 'compras'), (req, res) => {
+  if (!rowScoped('mapas_comparativos', req)) return res.status(404).json(err('Mapa não encontrado'))
   const { comentario = '' } = req.body
   db.prepare(`UPDATE mapas_comparativos SET status='Aprovado', aprovado_em=datetime('now'), aprovado_por=? WHERE id=?`)
     .run(req.user.nome, req.params.id)
@@ -1679,6 +1686,7 @@ app.post('/api/mapas/:id/aprovar', requireAuth, requireRole('admin', 'diretor', 
 })
 
 app.post('/api/mapas/:id/reprovar', requireAuth, requireRole('admin', 'diretor', 'financeiro', 'compras'), (req, res) => {
+  if (!rowScoped('mapas_comparativos', req)) return res.status(404).json(err('Mapa não encontrado'))
   db.prepare(`UPDATE mapas_comparativos SET status='Reprovado' WHERE id=?`).run(req.params.id)
   const mapa = db.prepare(`SELECT * FROM mapas_comparativos WHERE id = ?`).get(req.params.id)
   res.json(ok(mapa))
@@ -1696,11 +1704,11 @@ function nextPC() {
 app.get('/api/pedidos', requireAuth, (req, res) => {
   const { status, fornecedor_id, q = '' } = req.query
   let sql = `SELECT pc.*, f.nome as fornecedor FROM pedidos_compra pc LEFT JOIN fornecedores f ON f.id = pc.fornecedor_id`
-  const where = []; const params = []
+  const where = ['pc.empresa_id = ?']; const params = [empresaDoReq(req)]
   if (status) { where.push('pc.status = ?'); params.push(status) }
   if (fornecedor_id) { where.push('pc.fornecedor_id = ?'); params.push(fornecedor_id) }
   if (q) { where.push('(pc.numero LIKE ? OR f.nome LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
-  if (where.length) sql += ' WHERE ' + where.join(' AND ')
+  sql += ' WHERE ' + where.join(' AND ')
   sql += ' ORDER BY pc.created_at DESC'
   const rows = db.prepare(sql).all(...params)
   const result = rows.map(r => ({
@@ -1712,7 +1720,7 @@ app.get('/api/pedidos', requireAuth, (req, res) => {
 })
 
 app.get('/api/pedidos/:id', requireAuth, (req, res) => {
-  const pc = db.prepare(`SELECT pc.*, f.nome as fornecedor FROM pedidos_compra pc LEFT JOIN fornecedores f ON f.id = pc.fornecedor_id WHERE pc.id = ?`).get(req.params.id)
+  const pc = db.prepare(`SELECT pc.*, f.nome as fornecedor FROM pedidos_compra pc LEFT JOIN fornecedores f ON f.id = pc.fornecedor_id WHERE pc.id = ? AND pc.empresa_id = ?`).get(req.params.id, empresaDoReq(req))
   if (!pc) return res.status(404).json(err('PC não encontrado'))
   const itens = db.prepare(`SELECT * FROM pc_itens WHERE pc_id = ?`).all(req.params.id)
   const historico = db.prepare(`SELECT * FROM pc_historico WHERE pc_id = ? ORDER BY created_at DESC`).all(req.params.id)
@@ -1740,11 +1748,12 @@ app.post('/api/pedidos', requireAuth, async (req, res) => {
       }
     } catch (e) { /* CNPJ inválido/sem provedor não bloqueia a emissão aqui */ }
   }
+  const emp = empresaDoReq(req)
   const numero = nextPC()
   const r = db.prepare(
-    `INSERT INTO pedidos_compra(numero, mapa_id, mapa_numero, rc_id, fornecedor_id, fornecedor_nome, status, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, comprador_id, comprador_nome)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, mapa_id || null, mapa_numero, rc_id || null, fornecedor_id, f?.nome, 'Emitido', valor_total || 0, prazo_entrega, condicao_pagamento || '30 dias', local_entrega, observacoes, req.user.usuario_id, req.user.nome)
+    `INSERT INTO pedidos_compra(numero, mapa_id, mapa_numero, rc_id, fornecedor_id, fornecedor_nome, status, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, comprador_id, comprador_nome, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, mapa_id || null, mapa_numero, rc_id || null, fornecedor_id, f?.nome, 'Emitido', valor_total || 0, prazo_entrega, condicao_pagamento || '30 dias', local_entrega, observacoes, req.user.usuario_id, req.user.nome, emp)
   const pcId = r.lastInsertRowid
   for (const item of itens) {
     const vt = (item.quantidade || 1) * (item.valor_unitario || 0)
@@ -1756,9 +1765,9 @@ app.post('/api/pedidos', requireAuth, async (req, res) => {
     .run(pcId, req.user.nome, 'Emissão', `Pedido emitido`, 'Emitido')
   // Gera conta a pagar automaticamente
   const cpNum = `CP-${new Date().getFullYear()}-${String(db.prepare(`SELECT COUNT(*) as n FROM contas_pagar`).get().n + 1).padStart(3, '0')}`
-  db.prepare(`INSERT INTO contas_pagar(numero, pc_id, pc_numero, fornecedor_id, fornecedor_nome, descricao, valor, data_vencimento, status)
-    VALUES(?,?,?,?,?,?,?,?,?)`)
-    .run(cpNum, pcId, numero, fornecedor_id, f?.nome, `${numero} – ${f?.nome}`, valor_total || 0, prazo_entrega, 'Pendente')
+  db.prepare(`INSERT INTO contas_pagar(numero, pc_id, pc_numero, fornecedor_id, fornecedor_nome, descricao, valor, data_vencimento, status, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(cpNum, pcId, numero, fornecedor_id, f?.nome, `${numero} – ${f?.nome}`, valor_total || 0, prazo_entrega, 'Pendente', emp)
 
   log(req.user.usuario_id, req.user.nome, 'Criar', 'pedidos', `PC emitido: ${numero}`)
   const pc = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(pcId)
@@ -1767,7 +1776,8 @@ app.post('/api/pedidos', requireAuth, async (req, res) => {
 
 app.put('/api/pedidos/:id', requireAuth, (req, res) => {
   const { status, valor_total, prazo_entrega, condicao_pagamento, observacoes } = req.body
-  const old = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(req.params.id)
+  const old = rowScoped('pedidos_compra', req)
+  if (!old) return res.status(404).json(err('PC não encontrado'))
   db.prepare(`UPDATE pedidos_compra SET status=?,valor_total=?,prazo_entrega=?,condicao_pagamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
     .run(status || old.status, valor_total ?? old.valor_total, prazo_entrega || old.prazo_entrega, condicao_pagamento || old.condicao_pagamento, observacoes || old.observacoes, req.params.id)
   if (status && status !== old.status) {
@@ -1779,6 +1789,7 @@ app.put('/api/pedidos/:id', requireAuth, (req, res) => {
 })
 
 app.post('/api/pedidos/:id/envio', requireAuth, (req, res) => {
+  if (!rowScoped('pedidos_compra', req)) return res.status(404).json(err('PC não encontrado'))
   const { metodo = 'email', observacao = '' } = req.body
   db.prepare(`UPDATE pedidos_compra SET status='Enviado', enviado_em=datetime('now'), enviado_por=? WHERE id=?`)
     .run(req.user.nome, req.params.id)
@@ -1790,6 +1801,7 @@ app.post('/api/pedidos/:id/envio', requireAuth, (req, res) => {
 })
 
 app.post('/api/pedidos/:id/entrega', requireAuth, (req, res) => {
+  if (!rowScoped('pedidos_compra', req)) return res.status(404).json(err('PC não encontrado'))
   const { recebedor, observacao = '' } = req.body
   db.prepare(`UPDATE pedidos_compra SET status='Entregue', entregue_em=datetime('now'), recebedor=? WHERE id=?`)
     .run(recebedor || req.user.nome, req.params.id)
@@ -1802,6 +1814,7 @@ app.post('/api/pedidos/:id/entrega', requireAuth, (req, res) => {
 })
 
 app.post('/api/pedidos/:id/cancelar', requireAuth, (req, res) => {
+  if (!rowScoped('pedidos_compra', req)) return res.status(404).json(err('PC não encontrado'))
   const { motivo = 'Cancelado pelo usuário' } = req.body
   db.prepare(`UPDATE pedidos_compra SET status='Cancelado', cancelado_em=datetime('now'), motivo_cancelamento=? WHERE id=?`)
     .run(motivo, req.params.id)
@@ -1819,16 +1832,17 @@ app.post('/api/pedidos/:id/cancelar', requireAuth, (req, res) => {
 app.get('/api/contas-pagar', requireAuth, (req, res) => {
   const { status, q = '', pc_id } = req.query
   let sql = `SELECT cp.*, f.nome as fornecedor FROM contas_pagar cp LEFT JOIN fornecedores f ON f.id = cp.fornecedor_id`
-  const where = []; const params = []
+  const where = ['cp.empresa_id = ?']; const params = [empresaDoReq(req)]
   if (status) { where.push('cp.status = ?'); params.push(status) }
   if (pc_id) { where.push('cp.pc_id = ?'); params.push(pc_id) }
   if (q) { where.push('(cp.numero LIKE ? OR cp.descricao LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
-  if (where.length) sql += ' WHERE ' + where.join(' AND ')
+  sql += ' WHERE ' + where.join(' AND ')
   sql += ' ORDER BY cp.data_vencimento ASC'
   res.json(ok(db.prepare(sql).all(...params)))
 })
 
 app.put('/api/contas-pagar/:id', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
+  if (!rowScoped('contas_pagar', req)) return res.status(404).json(err('Conta a pagar não encontrada'))
   const { status, data_pagamento, forma_pagamento, observacoes } = req.body
   db.prepare(`UPDATE contas_pagar SET status=?,data_pagamento=?,forma_pagamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
     .run(status, data_pagamento, forma_pagamento, observacoes, req.params.id)
@@ -1887,7 +1901,7 @@ function alcadaPendente({ valor = 0, aprovadaPor = null, limite = ALCADA_PAGAMEN
 
 // Aprovação de alçada por Diretor — distinta do pagamento (segregação de funções).
 app.post('/api/contas-pagar/:id/aprovar-alcada', requireAuth, requireRole('admin', 'diretor'), (req, res) => {
-  const conta = db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)
+  const conta = rowScoped('contas_pagar', req)
   if (!conta) return res.status(404).json(err('Conta não encontrada'))
   db.prepare(`UPDATE contas_pagar SET alcada_aprovada_por=?, alcada_aprovada_em=datetime('now') WHERE id=?`)
     .run(req.user.nome, req.params.id)
@@ -1896,7 +1910,7 @@ app.post('/api/contas-pagar/:id/aprovar-alcada', requireAuth, requireRole('admin
 })
 
 app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
-  const conta = db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)
+  const conta = rowScoped('contas_pagar', req)
   if (!conta) return res.status(404).json(err('Conta não encontrada'))
 
   const motivos = []
