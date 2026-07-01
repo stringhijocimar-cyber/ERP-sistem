@@ -38,7 +38,8 @@ realmente funcional (começando por Fornecedores), interligar os dados e embutir
 | **Multi-tenant (fundação SaaS)** — tabela `empresas`, `usuarios.empresa_id`, escopo de tenant vindo SEMPRE de `req.user.empresa_id` (não spoofável). `sync_store` isolado por empresa (contratos/projetos/crm/rc/rfq/mapas…). Endpoints `/api/empresas` (mestre provisiona; demais só a própria). Usuários herdam a empresa do criador | ✅ Express + testes de isolamento |
 | **Isolamento de fornecedores por tenant** (dados bancários, CNPJ, crédito) — listagem, leitura, IDF, edição, homologação, alteração bancária e relatório de duplicatas todos escopados por empresa; CNPJ duplicado avaliado só dentro do tenant | ✅ Express + testes de vazamento cruzado |
 | **Isolamento do caminho do dinheiro por tenant** — RC, RFQ, mapas, pedidos e contas a pagar escopados por empresa: listas, GET/:id, edição, aprovação de mapa, cotações, envio/entrega/cancelamento de PC, aprovação de alçada e pagamento. `rowScoped()` reutilizável (404 se de outro tenant) | ✅ Express + testes de vazamento cruzado |
-| Testes | ✅ 399/399 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant, isolamento fornecedores, **isolamento caminho do dinheiro**, paridade Express⇄Worker) |
+| **Isolamento de OS e dos agregados por tenant** — ordens de serviço (lista/GET/PUT/iniciar/concluir) escopadas; dashboard, BI e fluxo de caixa consolidam apenas os dados da própria empresa (OS/RC/PC/financeiro/fornecedores). Contratos e trilha de logs ficam para o próximo slice | ✅ Express + testes |
+| Testes | ✅ 406/406 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant, isolamento fornecedores/dinheiro/**OS+dashboard**, paridade Express⇄Worker) |
 
 O **motor de crédito** é a primeira peça de "inteligência adaptativa": explica
 cada fator que compôs a nota (não é caixa-preta), e o resultado é reusável em
