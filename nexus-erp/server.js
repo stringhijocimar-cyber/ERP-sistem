@@ -161,6 +161,34 @@ ensureColumns('contas_pagar', [
   ['alcada_aprovada_em', 'alcada_aprovada_em TEXT'],
 ])
 
+// ════════════════════════════════════════════════════════════
+// MULTI-TENANT (multi-empresa): fundação de isolamento por empresa.
+// Cada usuário pertence a uma empresa; o escopo vem SEMPRE de
+// req.user.empresa_id (nunca de valor enviado pelo cliente) — é o que
+// torna o sistema vendável como SaaS sem vazamento entre clientes.
+// ════════════════════════════════════════════════════════════
+db.exec(`CREATE TABLE IF NOT EXISTS empresas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  razao_social TEXT NOT NULL,
+  nome_fantasia TEXT,
+  cnpj TEXT,
+  plano TEXT DEFAULT 'padrao',
+  ativo INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+// Garante a empresa padrão (id=1) para o tenant legado / instalações existentes.
+try {
+  const temEmpresa = db.prepare(`SELECT COUNT(*) as n FROM empresas`).get().n
+  if (!temEmpresa) {
+    db.prepare(`INSERT INTO empresas(id, razao_social, nome_fantasia, plano) VALUES(1, ?, ?, 'padrao')`)
+      .run(process.env.EMPRESA_PADRAO_RAZAO || 'Empresa Padrão', process.env.EMPRESA_PADRAO_NOME || 'Horus ERP')
+  }
+} catch (e) { if (!IS_TEST) console.warn(`seed empresa padrão: ${e.message}`) }
+// Todo usuário pertence a uma empresa (legado → empresa 1).
+ensureColumns('usuarios', [
+  ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
+])
+
 // Recebimento por item (alimenta o 3-way automaticamente).
 db.exec(`CREATE TABLE IF NOT EXISTS recebimentos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -336,7 +364,7 @@ function getUser(req) {
   if (!token) return null
   try {
     const row = db.prepare(
-      `SELECT s.usuario_id, u.nome, u.email, u.perfil, u.ativo, u.fornecedor_id
+      `SELECT s.usuario_id, u.nome, u.email, u.perfil, u.ativo, u.fornecedor_id, u.empresa_id
        FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id
        WHERE s.token = ? AND u.ativo = 1`
     ).get(token)
@@ -420,21 +448,32 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
 // contratos/projetos nunca persistiam (falha silenciosa no front).
 // Registrado ANTES das rotas /api/<ent>/:id para não ser interceptado.
 // ════════════════════════════════════════════════════════════
+// sync_store agora é escopado por empresa. Migração idempotente: se a tabela
+// antiga (sem empresa_id) existir, recria (é apenas espelho do localStorage do
+// cliente, que reenvia no próximo boot via reconcile) com PK tenant-aware.
+try {
+  const cols = db.prepare(`PRAGMA table_info(sync_store)`).all().map(c => c.name)
+  if (cols.length && !cols.includes('empresa_id')) db.exec(`DROP TABLE sync_store`)
+} catch (e) { if (!IS_TEST) console.warn(`migração sync_store: ${e.message}`) }
 db.exec(`CREATE TABLE IF NOT EXISTS sync_store (
+  empresa_id INTEGER NOT NULL DEFAULT 1,
   entidade TEXT NOT NULL, item_id TEXT NOT NULL, payload TEXT,
   updated_at TEXT DEFAULT (datetime('now')),
-  PRIMARY KEY (entidade, item_id)
+  PRIMARY KEY (empresa_id, entidade, item_id)
 )`)
 const _SYNC_OK = new Set(['rc', 'rfq', 'mapas', 'contratos', 'projetos', 'crm', 'os', 'pedidos', 'fornecedores', 'contas-pagar', 'medicoes', 'ssma', 'avaliacoes'])
+// Escopo de tenant: SEMPRE do usuário autenticado, nunca do corpo/query.
+const empresaDoReq = (req) => Number(req.user && req.user.empresa_id) || 1
 
 app.post('/api/:entidade/sync', requireAuth, (req, res) => {
   const ent = req.params.entidade
   if (!_SYNC_OK.has(ent)) return res.status(404).json(err('Entidade não sincronizável'))
+  const emp = empresaDoReq(req)
   const data = Array.isArray(req.body && req.body.data) ? req.body.data : []
-  const up = db.prepare(`INSERT INTO sync_store(entidade, item_id, payload, updated_at) VALUES(?,?,?,datetime('now'))
-     ON CONFLICT(entidade, item_id) DO UPDATE SET payload=excluded.payload, updated_at=datetime('now')`)
+  const up = db.prepare(`INSERT INTO sync_store(empresa_id, entidade, item_id, payload, updated_at) VALUES(?,?,?,?,datetime('now'))
+     ON CONFLICT(empresa_id, entidade, item_id) DO UPDATE SET payload=excluded.payload, updated_at=datetime('now')`)
   const tx = db.transaction((rows) => {
-    rows.forEach((it, i) => up.run(ent, String((it && (it.id ?? it.numero)) ?? `i-${i}`), JSON.stringify(it || {})))
+    rows.forEach((it, i) => up.run(emp, ent, String((it && (it.id ?? it.numero)) ?? `i-${i}`), JSON.stringify(it || {})))
   })
   tx(data)
   res.json(ok({ synced: data.length }))
@@ -443,7 +482,37 @@ app.post('/api/:entidade/sync', requireAuth, (req, res) => {
 app.get('/api/:entidade/sync', requireAuth, (req, res) => {
   const ent = req.params.entidade
   if (!_SYNC_OK.has(ent)) return res.status(404).json(err('Entidade não sincronizável'))
-  res.json(ok(db.prepare(`SELECT payload FROM sync_store WHERE entidade = ? ORDER BY updated_at DESC`).all(ent).map(r => JSON.parse(r.payload || '{}'))))
+  const emp = empresaDoReq(req)
+  res.json(ok(db.prepare(`SELECT payload FROM sync_store WHERE empresa_id = ? AND entidade = ? ORDER BY updated_at DESC`).all(emp, ent).map(r => JSON.parse(r.payload || '{}'))))
+})
+
+// ════════════════════════════════════════════════════════════
+// EMPRESAS (tenants). O tenant mestre (empresa 1) gerencia todas;
+// os demais enxergam apenas a própria — isolamento por padrão.
+// ════════════════════════════════════════════════════════════
+app.get('/api/empresas/atual', requireAuth, (req, res) => {
+  const emp = db.prepare(`SELECT id, razao_social, nome_fantasia, cnpj, plano, ativo FROM empresas WHERE id = ?`).get(empresaDoReq(req))
+  res.json(ok(emp || { id: empresaDoReq(req), razao_social: 'Empresa Padrão' }))
+})
+
+app.get('/api/empresas', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const rows = emp === 1
+    ? db.prepare(`SELECT id, razao_social, nome_fantasia, cnpj, plano, ativo, created_at FROM empresas ORDER BY id`).all()
+    : db.prepare(`SELECT id, razao_social, nome_fantasia, cnpj, plano, ativo, created_at FROM empresas WHERE id = ?`).all(emp)
+  res.json(ok(rows))
+})
+
+app.post('/api/empresas', requireAuth, requireRole('admin'), (req, res) => {
+  // Provisionar novos tenants é privilégio do tenant mestre (empresa 1).
+  if (empresaDoReq(req) !== 1) return res.status(403).json(err('Apenas o tenant mestre pode criar empresas', 403))
+  const { razao_social, nome_fantasia, cnpj, plano } = req.body
+  if (!razao_social || !String(razao_social).trim()) return res.status(400).json(err('Razão social obrigatória'))
+  const r = db.prepare(`INSERT INTO empresas(razao_social, nome_fantasia, cnpj, plano) VALUES(?,?,?,?)`)
+    .run(String(razao_social).trim(), nome_fantasia || null, cnpj || null, plano || 'padrao')
+  const nova = db.prepare(`SELECT id, razao_social, nome_fantasia, cnpj, plano, ativo FROM empresas WHERE id = ?`).get(r.lastInsertRowid)
+  log(req.user.usuario_id, req.user.nome, 'Criar', 'empresas', `Empresa criada: ${razao_social}`)
+  res.status(201).json(ok(nova))
 })
 
 // ════════════════════════════════════════════════════════════
@@ -2157,9 +2226,13 @@ app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
   if (perfil === 'fornecedor' && !fornecedor_id) return res.status(400).json(err('Usuário fornecedor exige fornecedor_id'))
   // Senha sempre armazenada com hash bcrypt; se omitida, usa SEED_PASSWORD.
   const senhaHash = bcrypt.hashSync(String(senha || SEED_PASSWORD), BCRYPT_ROUNDS)
+  // Multi-tenant: novo usuário herda a empresa de quem o cria (isolamento).
+  // Só o tenant mestre (empresa 1) pode provisionar usuários em outra empresa.
+  const criador = Number(req.user.empresa_id) || 1
+  const empresaId = (criador === 1 && req.body.empresa_id) ? Number(req.body.empresa_id) : criador
   try {
-    const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, fornecedor_id) VALUES(?,?,?,?,?)`)
-      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao', fornecedor_id || null)
+    const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, fornecedor_id, empresa_id) VALUES(?,?,?,?,?,?)`)
+      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao', fornecedor_id || null, empresaId)
     const u = db.prepare(`SELECT id, nome, email, perfil, ativo FROM usuarios WHERE id = ?`).get(r.lastInsertRowid)
     log(req.user.usuario_id, req.user.nome, 'Criar', 'usuarios', `Usuário criado: ${nome}`)
     res.status(201).json(ok(u))
