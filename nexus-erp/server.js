@@ -281,7 +281,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS sequences (
 // propostas/wbs_linhas), senão a coluna não é adicionada e o INSERT falha.
 // Legado → empresa 1. Retrofit incremental.
 for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativos', 'pedidos_compra', 'contas_pagar', 'ordens_servico',
-                 'contratos', 'crm_oportunidades', 'propostas', 'projetos', 'wbs_linhas']) {
+                 'contratos', 'crm_oportunidades', 'propostas', 'projetos', 'wbs_linhas', 'almoxarifado_itens', 'logs_sistema']) {
   ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']])
 }
 const TIPOS_SEQ = new Set(['PC', 'RC', 'RFQ', 'MAPA', 'CP'])
@@ -408,10 +408,14 @@ function log(userId, userName, acao, modulo, descricao) {
     const hash_anterior = (ult && ult.hash) ? ult.hash : Auditoria.GENESIS
     const reg = { usuario_id: userId, acao, modulo, descricao, created_at }
     const hash = Auditoria.hashRegistro(reg, hash_anterior)
+    // Multi-tenant: atribui o log à empresa do autor (derivada do usuário),
+    // sem alterar as centenas de call sites de log().
+    let empresa = 1
+    try { empresa = db.prepare(`SELECT empresa_id FROM usuarios WHERE id = ?`).get(userId)?.empresa_id || 1 } catch {}
     db.prepare(
-      `INSERT INTO logs_sistema(usuario_id, usuario_nome, acao, modulo, descricao, created_at, hash, hash_anterior)
-       VALUES(?,?,?,?,?,?,?,?)`
-    ).run(userId, userName, acao, modulo, descricao, created_at, hash, hash_anterior)
+      `INSERT INTO logs_sistema(usuario_id, usuario_nome, acao, modulo, descricao, created_at, hash, hash_anterior, empresa_id)
+       VALUES(?,?,?,?,?,?,?,?,?)`
+    ).run(userId, userName, acao, modulo, descricao, created_at, hash, hash_anterior, empresa)
   } catch {}
 }
 
@@ -561,8 +565,8 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
       total: db.prepare(`SELECT COUNT(*) as n FROM fornecedores WHERE empresa_id = ? AND ativo = 1`).get(e).n,
     },
     almoxarifado: {
-      total_itens: db.prepare(`SELECT COUNT(*) as n FROM almoxarifado_itens WHERE ativo = 1`).get().n,
-      estoque_baixo: db.prepare(`SELECT COUNT(*) as n FROM almoxarifado_itens WHERE quantidade_atual < quantidade_minima AND ativo = 1`).get().n,
+      total_itens: db.prepare(`SELECT COUNT(*) as n FROM almoxarifado_itens WHERE ativo = 1 AND empresa_id = ?`).get(e).n,
+      estoque_baixo: db.prepare(`SELECT COUNT(*) as n FROM almoxarifado_itens WHERE quantidade_atual < quantidade_minima AND ativo = 1 AND empresa_id = ?`).get(e).n,
     },
     recentes: {
       pedidos: db.prepare(`SELECT pc.*, f.nome as fornecedor FROM pedidos_compra pc LEFT JOIN fornecedores f ON f.id = pc.fornecedor_id WHERE pc.empresa_id = ? ORDER BY pc.created_at DESC LIMIT 5`).all(e),
@@ -1973,8 +1977,8 @@ app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'finan
 // ════════════════════════════════════════════════════════════
 app.get('/api/almoxarifado', requireAuth, (req, res) => {
   const { q = '', categoria } = req.query
-  let sql = `SELECT * FROM almoxarifado_itens WHERE ativo = 1`
-  const params = []
+  let sql = `SELECT * FROM almoxarifado_itens WHERE ativo = 1 AND empresa_id = ?`
+  const params = [empresaDoReq(req)]
   if (q) { sql += ` AND (descricao LIKE ? OR codigo LIKE ?)`; params.push(`%${q}%`, `%${q}%`) }
   if (categoria) { sql += ` AND categoria = ?`; params.push(categoria) }
   sql += ' ORDER BY descricao'
@@ -1986,13 +1990,14 @@ app.post('/api/almoxarifado', requireAuth, (req, res) => {
   const { codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio } = req.body
   if (!descricao) return res.status(400).json(err('Descrição obrigatória'))
   const r = db.prepare(
-    `INSERT INTO almoxarifado_itens(codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio)
-     VALUES(?,?,?,?,?,?,?,?)`
-  ).run(codigo, descricao, categoria || 'Geral', unidade || 'UN', quantidade_atual || 0, quantidade_minima || 0, localizacao, valor_medio || 0)
+    `INSERT INTO almoxarifado_itens(codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?)`
+  ).run(codigo, descricao, categoria || 'Geral', unidade || 'UN', quantidade_atual || 0, quantidade_minima || 0, localizacao, valor_medio || 0, empresaDoReq(req))
   res.status(201).json(ok(db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
 app.put('/api/almoxarifado/:id', requireAuth, (req, res) => {
+  if (!rowScoped('almoxarifado_itens', req)) return res.status(404).json(err('Item não encontrado'))
   const { codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio, ativo } = req.body
   db.prepare(`UPDATE almoxarifado_itens SET codigo=?,descricao=?,categoria=?,unidade=?,quantidade_atual=?,quantidade_minima=?,localizacao=?,valor_medio=?,ativo=?,updated_at=datetime('now') WHERE id=?`)
     .run(codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio, ativo ?? 1, req.params.id)
@@ -2001,7 +2006,7 @@ app.put('/api/almoxarifado/:id', requireAuth, (req, res) => {
 
 app.post('/api/almoxarifado/:id/movimentar', requireAuth, (req, res) => {
   const { tipo, quantidade, valor_unitario, documento, observacao } = req.body
-  const item = db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ?`).get(req.params.id)
+  const item = rowScoped('almoxarifado_itens', req)
   if (!item) return res.status(404).json(err('Item não encontrado'))
   let novaQtd = item.quantidade_atual
   if (tipo === 'Entrada') novaQtd += parseFloat(quantidade)
@@ -2019,30 +2024,34 @@ app.post('/api/almoxarifado/:id/movimentar', requireAuth, (req, res) => {
 const _DOC_RES = { 'materiais': 'materiais', 'movimentos-estoque': 'movimentos_estoque', 'emprestimos': 'emprestimos', 'inventarios': 'inventarios' }
 for (const t of Object.values(_DOC_RES)) {
   db.exec(`CREATE TABLE IF NOT EXISTS ${t} (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`)
+  ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']]) // isolamento por tenant
 }
 function _registrarDocResource(rota, tabela) {
   const parse = r => ({ id: r.id, ...JSON.parse(r.payload || '{}'), created_at: r.created_at })
+  // Busca escopada por empresa (→ 404 se de outro tenant).
+  const doc = (req) => db.prepare(`SELECT id, payload, created_at FROM ${tabela} WHERE id = ? AND empresa_id = ?`).get(req.params.id, empresaDoReq(req))
   app.get(`/api/${rota}`, requireAuth, (req, res) => {
     const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 1000, 2000))
-    res.json(ok(db.prepare(`SELECT id, payload, created_at FROM ${tabela} ORDER BY id DESC LIMIT ?`).all(limit).map(parse)))
+    res.json(ok(db.prepare(`SELECT id, payload, created_at FROM ${tabela} WHERE empresa_id = ? ORDER BY id DESC LIMIT ?`).all(empresaDoReq(req), limit).map(parse)))
   })
   app.get(`/api/${rota}/:id`, requireAuth, (req, res) => {
-    const r = db.prepare(`SELECT id, payload, created_at FROM ${tabela} WHERE id = ?`).get(req.params.id)
+    const r = doc(req)
     if (!r) return res.status(404).json(err('Registro não encontrado'))
     res.json(ok(parse(r)))
   })
   app.post(`/api/${rota}`, requireAuth, (req, res) => {
-    const r = db.prepare(`INSERT INTO ${tabela}(payload) VALUES(?)`).run(JSON.stringify(req.body || {}))
+    const r = db.prepare(`INSERT INTO ${tabela}(payload, empresa_id) VALUES(?,?)`).run(JSON.stringify(req.body || {}), empresaDoReq(req))
     res.status(201).json(ok({ id: r.lastInsertRowid, ...(req.body || {}) }))
   })
   app.put(`/api/${rota}/:id`, requireAuth, (req, res) => {
-    const cur = db.prepare(`SELECT payload FROM ${tabela} WHERE id = ?`).get(req.params.id)
+    const cur = doc(req)
     if (!cur) return res.status(404).json(err('Registro não encontrado'))
     const merged = { ...JSON.parse(cur.payload || '{}'), ...(req.body || {}) }
     db.prepare(`UPDATE ${tabela} SET payload = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(merged), req.params.id)
     res.json(ok({ id: Number(req.params.id), ...merged }))
   })
   app.delete(`/api/${rota}/:id`, requireAuth, (req, res) => {
+    if (!doc(req)) return res.status(404).json(err('Registro não encontrado'))
     db.prepare(`DELETE FROM ${tabela} WHERE id = ?`).run(req.params.id)
     res.json(ok({ ok: true }))
   })
@@ -2298,12 +2307,19 @@ app.put('/api/usuarios/:id', requireAuth, requireRole('admin'), (req, res) => {
 // LOGS
 // ════════════════════════════════════════════════════════════
 app.get('/api/logs', requireAuth, (req, res) => {
-  const rows = db.prepare(`SELECT * FROM logs_sistema ORDER BY created_at DESC LIMIT 200`).all()
+  // Multi-tenant: o tenant mestre (empresa 1) vê toda a trilha; os demais
+  // enxergam apenas os próprios registros.
+  const emp = empresaDoReq(req)
+  const rows = emp === 1
+    ? db.prepare(`SELECT * FROM logs_sistema ORDER BY created_at DESC LIMIT 200`).all()
+    : db.prepare(`SELECT * FROM logs_sistema WHERE empresa_id = ? ORDER BY created_at DESC LIMIT 200`).all(emp)
   res.json(ok(rows))
 })
 
-// Verifica a integridade da trilha (recomputa a cadeia de hash). Admin.
+// Verifica a integridade da trilha (recomputa a cadeia de hash — global e
+// encadeada, por isso restrita ao tenant mestre). Admin.
 app.get('/api/auditoria/verificar', requireAuth, requireRole('admin'), (req, res) => {
+  if (empresaDoReq(req) !== 1) return res.status(403).json(err('Verificação da trilha restrita ao tenant mestre', 403))
   const rows = db.prepare(`SELECT id, usuario_id, acao, modulo, descricao, created_at, hash, hash_anterior
                            FROM logs_sistema ORDER BY id ASC`).all()
   res.json(ok(Auditoria.verificarCadeia(rows)))
