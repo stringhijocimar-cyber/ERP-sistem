@@ -188,11 +188,6 @@ try {
 ensureColumns('usuarios', [
   ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
 ])
-// Tabelas relacionais recebem empresa_id (isolamento de dados por tenant).
-// Legado → empresa 1. Retrofit incremental: fornecedores + caminho do dinheiro.
-for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativos', 'pedidos_compra', 'contas_pagar', 'ordens_servico']) {
-  ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']])
-}
 
 // Recebimento por item (alimenta o 3-way automaticamente).
 db.exec(`CREATE TABLE IF NOT EXISTS recebimentos (
@@ -280,6 +275,15 @@ db.exec(`CREATE TABLE IF NOT EXISTS sequences (
   valor INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (tipo, ano)
 )`)
+
+// ── Multi-tenant: empresa_id nas tabelas relacionais (isolamento) ──
+// Roda DEPOIS de todos os CREATE TABLE (inclusive os db.exec acima como
+// propostas/wbs_linhas), senão a coluna não é adicionada e o INSERT falha.
+// Legado → empresa 1. Retrofit incremental.
+for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativos', 'pedidos_compra', 'contas_pagar', 'ordens_servico',
+                 'contratos', 'crm_oportunidades', 'propostas', 'projetos', 'wbs_linhas']) {
+  ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']])
+}
 const TIPOS_SEQ = new Set(['PC', 'RC', 'RFQ', 'MAPA', 'CP'])
 function proximaSequencia(tipoRaw, anoRaw) {
   const tipo = String(tipoRaw || '').toUpperCase().replace(/[^A-Z]/g, '')
@@ -690,9 +694,9 @@ function coletarAlertas({ dias = 7, isAdmin = false, empresa = 1 } = {}) {
   const lim90 = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10)
   for (const c of db.prepare(
     `SELECT id, numero, titulo, fornecedor_nome, data_fim FROM contratos
-      WHERE status = 'Ativo' AND data_fim IS NOT NULL AND date(data_fim) <= date(?)
+      WHERE empresa_id = ? AND status = 'Ativo' AND data_fim IS NOT NULL AND date(data_fim) <= date(?)
       ORDER BY data_fim ASC`
-  ).all(lim90)) {
+  ).all(empresa, lim90)) {
     const sev = classificarVencimentoContrato(c.data_fim, hoje)
     if (!sev) continue
     const venc = c.data_fim < hoje
@@ -876,20 +880,21 @@ function wbsPertenceAoContrato(linha, contratoId) {
 // Rollup de custos: estimado × realizado por contrato (Controle de Custos).
 app.get('/api/wbs/rollup', requireAuth, (req, res) => {
   const { contrato_id } = req.query
+  const emp = empresaDoReq(req)
   const linhas = contrato_id
-    ? db.prepare(`SELECT * FROM wbs_linhas WHERE ativo = 1 AND contrato_id = ?`).all(contrato_id)
-    : db.prepare(`SELECT * FROM wbs_linhas WHERE ativo = 1`).all()
+    ? db.prepare(`SELECT * FROM wbs_linhas WHERE empresa_id = ? AND ativo = 1 AND contrato_id = ?`).all(emp, contrato_id)
+    : db.prepare(`SELECT * FROM wbs_linhas WHERE empresa_id = ? AND ativo = 1`).all(emp)
   res.json(ok(montarRollupWBS(linhas)))
 })
 
 app.get('/api/wbs', requireAuth, (req, res) => {
   const { contrato_id, projeto_id, lead_id, ativo = '1' } = req.query
-  const where = []; const p = []
+  const where = ['empresa_id = ?']; const p = [empresaDoReq(req)]
   if (contrato_id) { where.push('contrato_id = ?'); p.push(contrato_id) }
   if (projeto_id) { where.push('projeto_id = ?'); p.push(projeto_id) }
   if (lead_id) { where.push('lead_id = ?'); p.push(lead_id) }
   if (ativo !== 'todos') { where.push('ativo = ?'); p.push(ativo === '0' ? 0 : 1) }
-  const sql = `SELECT * FROM wbs_linhas ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY codigo, id`
+  const sql = `SELECT * FROM wbs_linhas WHERE ${where.join(' AND ')} ORDER BY codigo, id`
   res.json(ok(db.prepare(sql).all(...p)))
 })
 
@@ -899,11 +904,11 @@ app.post('/api/wbs', requireAuth, (req, res) => {
   const qtd = Number(b.quantidade) || 0
   const vUnit = Number(b.valor_unit_est) || 0
   const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit
-  const r = db.prepare(`INSERT INTO wbs_linhas(codigo, descricao, natureza, tipo, contrato_id, projeto_id, centro_custo, lead_id, origem, unidade, quantidade, valor_unit_est, valor_total_est, nao_previsto)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  const r = db.prepare(`INSERT INTO wbs_linhas(codigo, descricao, natureza, tipo, contrato_id, projeto_id, centro_custo, lead_id, origem, unidade, quantidade, valor_unit_est, valor_total_est, nao_previsto, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(b.codigo ?? null, b.descricao ?? null, b.natureza ?? null, b.tipo || 'OPEX',
       b.contrato_id ?? null, b.projeto_id ?? null, b.centro_custo ?? null, b.lead_id ?? null, b.origem || 'contrato',
-      b.unidade ?? null, qtd, vUnit, vTotal, b.nao_previsto ? 1 : 0)
+      b.unidade ?? null, qtd, vUnit, vTotal, b.nao_previsto ? 1 : 0, empresaDoReq(req))
   // C1: WBS de orçamentação vinculada a um lead → marca a estimativa em andamento.
   if (b.lead_id) {
     db.prepare(`UPDATE crm_oportunidades SET orcamentacao_status='em_andamento' WHERE id = ? AND orcamentacao_status IN ('pendente','nao_iniciada')`).run(b.lead_id)
@@ -912,7 +917,7 @@ app.post('/api/wbs', requireAuth, (req, res) => {
 })
 
 app.put('/api/wbs/:id', requireAuth, (req, res) => {
-  const cur = db.prepare(`SELECT * FROM wbs_linhas WHERE id = ?`).get(req.params.id)
+  const cur = rowScoped('wbs_linhas', req)
   if (!cur) return res.status(404).json(err('Linha WBS não encontrada'))
   const b = req.body || {}
   const v = (campo) => b[campo] !== undefined ? b[campo] : cur[campo]
@@ -925,7 +930,7 @@ app.put('/api/wbs/:id', requireAuth, (req, res) => {
 })
 
 app.delete('/api/wbs/:id', requireAuth, (req, res) => {
-  const cur = db.prepare(`SELECT * FROM wbs_linhas WHERE id = ?`).get(req.params.id)
+  const cur = rowScoped('wbs_linhas', req)
   if (!cur) return res.status(404).json(err('Linha WBS não encontrada'))
   db.prepare(`UPDATE wbs_linhas SET ativo=0, updated_at=datetime('now') WHERE id=?`).run(req.params.id)
   res.json(ok({ ok: true }))
@@ -2048,7 +2053,7 @@ for (const [rota, tabela] of Object.entries(_DOC_RES)) _registrarDocResource(rot
 // CONTRATOS
 // ════════════════════════════════════════════════════════════
 app.get('/api/contratos', requireAuth, (req, res) => {
-  const rows = db.prepare(`SELECT c.*, f.nome as fornecedor FROM contratos c LEFT JOIN fornecedores f ON f.id = c.fornecedor_id ORDER BY c.created_at DESC`).all()
+  const rows = db.prepare(`SELECT c.*, f.nome as fornecedor FROM contratos c LEFT JOIN fornecedores f ON f.id = c.fornecedor_id WHERE c.empresa_id = ? ORDER BY c.created_at DESC`).all(empresaDoReq(req))
   res.json(ok(rows))
 })
 
@@ -2060,13 +2065,14 @@ app.post('/api/contratos', requireAuth, (req, res) => {
   const numero = `CT-${year}-${String(count + 1).padStart(3, '0')}`
   const f = fornecedor_id ? db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fornecedor_id) : null
   const r = db.prepare(
-    `INSERT INTO contratos(numero, titulo, fornecedor_id, fornecedor_nome, tipo, status, valor_total, data_inicio, data_fim, objeto, responsavel_id, responsavel_nome)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, titulo, fornecedor_id || null, f?.nome, tipo || 'Serviço', 'Ativo', valor_total || 0, data_inicio, data_fim, objeto, req.user.usuario_id, req.user.nome)
+    `INSERT INTO contratos(numero, titulo, fornecedor_id, fornecedor_nome, tipo, status, valor_total, data_inicio, data_fim, objeto, responsavel_id, responsavel_nome, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, titulo, fornecedor_id || null, f?.nome, tipo || 'Serviço', 'Ativo', valor_total || 0, data_inicio, data_fim, objeto, req.user.usuario_id, req.user.nome, empresaDoReq(req))
   res.status(201).json(ok(db.prepare(`SELECT * FROM contratos WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
 app.put('/api/contratos/:id', requireAuth, (req, res) => {
+  if (!rowScoped('contratos', req)) return res.status(404).json(err('Contrato não encontrado'))
   const { titulo, tipo, status, valor_total, data_inicio, data_fim, objeto } = req.body
   db.prepare(`UPDATE contratos SET titulo=?,tipo=?,status=?,valor_total=?,data_inicio=?,data_fim=?,objeto=?,updated_at=datetime('now') WHERE id=?`)
     .run(titulo, tipo, status, valor_total, data_inicio, data_fim, objeto, req.params.id)
@@ -2085,7 +2091,7 @@ function precisaOrcamentacao(estagio) {
 }
 
 app.get('/api/crm', requireAuth, (req, res) => {
-  const rows = db.prepare(`SELECT * FROM crm_oportunidades ORDER BY created_at DESC`).all()
+  const rows = db.prepare(`SELECT * FROM crm_oportunidades WHERE empresa_id = ? ORDER BY created_at DESC`).all(empresaDoReq(req))
   res.json(ok(rows))
 })
 
@@ -2093,14 +2099,14 @@ app.post('/api/crm', requireAuth, (req, res) => {
   const { titulo, cliente, valor, estagio, probabilidade, data_fechamento, observacoes } = req.body
   if (!titulo || !cliente) return res.status(400).json(err('Título e cliente obrigatórios'))
   const r = db.prepare(
-    `INSERT INTO crm_oportunidades(titulo, cliente, valor, estagio, probabilidade, responsavel_id, responsavel_nome, data_fechamento, observacoes)
-     VALUES(?,?,?,?,?,?,?,?,?)`
-  ).run(titulo, cliente, valor || 0, estagio || 'Prospecção', probabilidade || 10, req.user.usuario_id, req.user.nome, data_fechamento, observacoes)
+    `INSERT INTO crm_oportunidades(titulo, cliente, valor, estagio, probabilidade, responsavel_id, responsavel_nome, data_fechamento, observacoes, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`
+  ).run(titulo, cliente, valor || 0, estagio || 'Prospecção', probabilidade || 10, req.user.usuario_id, req.user.nome, data_fechamento, observacoes, empresaDoReq(req))
   res.status(201).json(ok(db.prepare(`SELECT * FROM crm_oportunidades WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
 app.put('/api/crm/:id', requireAuth, (req, res) => {
-  const cur = db.prepare(`SELECT * FROM crm_oportunidades WHERE id = ?`).get(req.params.id)
+  const cur = rowScoped('crm_oportunidades', req)
   if (!cur) return res.status(404).json(err('Oportunidade não encontrada'))
   const { titulo, cliente, valor, estagio, probabilidade, data_fechamento, observacoes } = req.body
   db.prepare(`UPDATE crm_oportunidades SET titulo=?,cliente=?,valor=?,estagio=?,probabilidade=?,data_fechamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
@@ -2117,10 +2123,11 @@ app.put('/api/crm/:id', requireAuth, (req, res) => {
 // Leads aguardando precificação (visão do orçamentista / Controle de Custos).
 app.get('/api/crm/orcamentacao', requireAuth, (req, res) => {
   const status = req.query.status || 'pendente'
-  res.json(ok(db.prepare(`SELECT * FROM crm_oportunidades WHERE orcamentacao_status = ? ORDER BY orcamentacao_em DESC, created_at DESC`).all(status)))
+  res.json(ok(db.prepare(`SELECT * FROM crm_oportunidades WHERE empresa_id = ? AND orcamentacao_status = ? ORDER BY orcamentacao_em DESC, created_at DESC`).all(empresaDoReq(req), status)))
 })
 
 app.delete('/api/crm/:id', requireAuth, (req, res) => {
+  if (!rowScoped('crm_oportunidades', req)) return res.status(404).json(err('Oportunidade não encontrada'))
   db.prepare(`DELETE FROM crm_oportunidades WHERE id = ?`).run(req.params.id)
   res.json(ok(null))
 })
@@ -2142,23 +2149,26 @@ function nextProposta() {
 
 app.get('/api/propostas', requireAuth, (req, res) => {
   const { lead_id } = req.query
-  const sql = `SELECT * FROM propostas ${lead_id ? 'WHERE lead_id = ?' : ''} ORDER BY created_at DESC`
-  res.json(ok(lead_id ? db.prepare(sql).all(lead_id) : db.prepare(sql).all()))
+  const emp = empresaDoReq(req)
+  const sql = `SELECT * FROM propostas WHERE empresa_id = ? ${lead_id ? 'AND lead_id = ?' : ''} ORDER BY created_at DESC`
+  res.json(ok(lead_id ? db.prepare(sql).all(emp, lead_id) : db.prepare(sql).all(emp)))
 })
 
 app.post('/api/propostas', requireAuth, (req, res) => {
   const b = req.body || {}
-  const lead = b.lead_id ? db.prepare(`SELECT * FROM crm_oportunidades WHERE id = ?`).get(b.lead_id) : null
+  const emp = empresaDoReq(req)
+  // Lead e estimativa devem pertencer ao mesmo tenant.
+  const lead = b.lead_id ? db.prepare(`SELECT * FROM crm_oportunidades WHERE id = ? AND empresa_id = ?`).get(b.lead_id, emp) : null
   // Soma da estimativa (WBS de orçamentação vinculada ao lead).
-  const est = b.lead_id ? db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(valor_total_est),0) custo FROM wbs_linhas WHERE lead_id = ? AND ativo = 1`).get(b.lead_id) : { n: 0, custo: 0 }
+  const est = (b.lead_id && lead) ? db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(valor_total_est),0) custo FROM wbs_linhas WHERE lead_id = ? AND empresa_id = ? AND ativo = 1`).get(b.lead_id, emp) : { n: 0, custo: 0 }
   const gate = podeGerarProposta(lead, est.n > 0)
   if (!gate.ok) return res.status(409).json(err('Proposta bloqueada: ' + gate.motivo))
   const margem = Number(b.margem) || 0
   const valor_total = b.valor_total != null ? Number(b.valor_total) : est.custo * (1 + margem / 100)
   const numero = nextProposta()
-  const r = db.prepare(`INSERT INTO propostas(numero, lead_id, cliente, objeto, custo_estimado, margem, valor_total, status)
-     VALUES(?,?,?,?,?,?,?,?)`)
-    .run(numero, b.lead_id, b.cliente ?? lead.cliente, b.objeto ?? lead.titulo, est.custo, margem, valor_total, 'Em Elaboração')
+  const r = db.prepare(`INSERT INTO propostas(numero, lead_id, cliente, objeto, custo_estimado, margem, valor_total, status, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(numero, b.lead_id, b.cliente ?? lead.cliente, b.objeto ?? lead.titulo, est.custo, margem, valor_total, 'Em Elaboração', emp)
   // Estimativa concluída: o ciclo CRM→Custos→Proposta fechou.
   db.prepare(`UPDATE crm_oportunidades SET orcamentacao_status='concluida' WHERE id=?`).run(b.lead_id)
   log(req.user.usuario_id, req.user.nome, 'proposta_criada', 'propostas', `Proposta ${numero} para ${b.cliente ?? lead.cliente} (R$ ${valor_total.toFixed(2)})`)
@@ -2169,20 +2179,21 @@ app.post('/api/propostas', requireAuth, (req, res) => {
 // PROJETOS
 // ════════════════════════════════════════════════════════════
 app.get('/api/projetos', requireAuth, (req, res) => {
-  res.json(ok(db.prepare(`SELECT * FROM projetos ORDER BY created_at DESC`).all()))
+  res.json(ok(db.prepare(`SELECT * FROM projetos WHERE empresa_id = ? ORDER BY created_at DESC`).all(empresaDoReq(req))))
 })
 
 app.post('/api/projetos', requireAuth, (req, res) => {
   const { nome, descricao, status, data_inicio, data_fim, progresso, valor_orcado } = req.body
   if (!nome) return res.status(400).json(err('Nome obrigatório'))
   const r = db.prepare(
-    `INSERT INTO projetos(nome, descricao, status, data_inicio, data_fim, responsavel_id, responsavel_nome, progresso, valor_orcado)
-     VALUES(?,?,?,?,?,?,?,?,?)`
-  ).run(nome, descricao, status || 'Em andamento', data_inicio, data_fim, req.user.usuario_id, req.user.nome, progresso || 0, valor_orcado || 0)
+    `INSERT INTO projetos(nome, descricao, status, data_inicio, data_fim, responsavel_id, responsavel_nome, progresso, valor_orcado, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`
+  ).run(nome, descricao, status || 'Em andamento', data_inicio, data_fim, req.user.usuario_id, req.user.nome, progresso || 0, valor_orcado || 0, empresaDoReq(req))
   res.status(201).json(ok(db.prepare(`SELECT * FROM projetos WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
 app.put('/api/projetos/:id', requireAuth, (req, res) => {
+  if (!rowScoped('projetos', req)) return res.status(404).json(err('Projeto não encontrado'))
   const { nome, descricao, status, progresso, valor_orcado, valor_realizado } = req.body
   db.prepare(`UPDATE projetos SET nome=?,descricao=?,status=?,progresso=?,valor_orcado=?,valor_realizado=?,updated_at=datetime('now') WHERE id=?`)
     .run(nome, descricao, status, progresso ?? 0, valor_orcado ?? 0, valor_realizado ?? 0, req.params.id)
