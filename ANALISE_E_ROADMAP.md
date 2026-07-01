@@ -40,7 +40,8 @@ realmente funcional (começando por Fornecedores), interligar os dados e embutir
 | **Isolamento do caminho do dinheiro por tenant** — RC, RFQ, mapas, pedidos e contas a pagar escopados por empresa: listas, GET/:id, edição, aprovação de mapa, cotações, envio/entrega/cancelamento de PC, aprovação de alçada e pagamento. `rowScoped()` reutilizável (404 se de outro tenant) | ✅ Express + testes de vazamento cruzado |
 | **Isolamento de OS e dos agregados por tenant** — ordens de serviço (lista/GET/PUT/iniciar/concluir) escopadas; dashboard, BI e fluxo de caixa consolidam apenas os dados da própria empresa (OS/RC/PC/financeiro/fornecedores). Contratos e trilha de logs ficam para o próximo slice | ✅ Express + testes |
 | **Isolamento de Contratos, CRM, Projetos, WBS e Propostas por tenant** — listas/CRUD escopados; rollup de WBS e alerta de vencimento de contrato por empresa; proposta só de lead do próprio tenant (com estimativa WBS) | ✅ Express + testes |
-| Testes | ✅ 419/419 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant, isolamento fornecedores/dinheiro/OS+dashboard/**operacional**, paridade Express⇄Worker) |
+| **Isolamento de Almoxarifado e da trilha de logs por tenant** — itens (lista/CRUD/movimentação) e recursos doc-model (materiais/movimentos/empréstimos/inventários) escopados; `log()` atribui a empresa do autor; `/api/logs` mostra só a própria trilha (mestre vê tudo); verificação da cadeia restrita ao mestre | ✅ Express + testes — **isolamento operacional do Express completo** |
+| Testes | ✅ 428/428 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant, isolamento fornecedores/dinheiro/OS+dashboard/operacional/**almoxarifado+logs**, paridade Express⇄Worker) |
 
 O **motor de crédito** é a primeira peça de "inteligência adaptativa": explica
 cada fator que compôs a nota (não é caixa-preta), e o resultado é reusável em
