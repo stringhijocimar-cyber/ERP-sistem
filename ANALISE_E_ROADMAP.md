@@ -34,7 +34,8 @@ realmente funcional (começando por Fornecedores), interligar os dados e embutir
 | **`/sync` genérico no Express** (RC/RFQ/mapas/contratos/projetos/crm já enviavam snapshot → caíam em 404 silencioso e nunca persistiam) | ✅ corrigido + paridade no Worker + reconcile de boot no front |
 | **`NexusAPI` (cliente das 11 páginas "enterprise")** — o objeto era referenciado mas **nunca definido**, então notifications/crm_pipeline/commercial/lowcode/customer_*/production/security/workflow/data_platform/consolidation **quebravam no mount** | ✅ cliente resiliente (get/post tolerantes a 404, desembrulho de envelope, escape) — páginas degradam para estado vazio honesto em vez de tela quebrada |
 | **Caminho do dinheiro provado E2E** (RC → RFQ → Cotações → Mapa → Aprovação → PC → Conta a Pagar) | ✅ teste de integração ponta a ponta dirige a cadeia via API e verifica persistência + gates (WBS na RC, concorrência mínima, homologação na PC, conta a pagar automática) |
-| Testes | ✅ 366/366 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, **compras E2E**, paridade Express⇄Worker) |
+| **Rede de segurança de navegação (anti-crash / anti-spinner)** — `navigate()` envolve todo render em try/catch + `.catch` assíncrono + watchdog de spinner; qualquer módulo que quebre ou trave vira card de erro com "Tentar novamente" (a causa-raiz do bug histórico de Fornecedores, agora coberta globalmente para as 60 páginas) | ✅ `js/nav_safety.js` + testes |
+| Testes | ✅ 375/375 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, **nav_safety**, paridade Express⇄Worker) |
 
 O **motor de crédito** é a primeira peça de "inteligência adaptativa": explica
 cada fator que compôs a nota (não é caixa-preta), e o resultado é reusável em
