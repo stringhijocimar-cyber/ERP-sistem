@@ -36,7 +36,8 @@ realmente funcional (começando por Fornecedores), interligar os dados e embutir
 | **Caminho do dinheiro provado E2E** (RC → RFQ → Cotações → Mapa → Aprovação → PC → Conta a Pagar) | ✅ teste de integração ponta a ponta dirige a cadeia via API e verifica persistência + gates (WBS na RC, concorrência mínima, homologação na PC, conta a pagar automática) |
 | **Rede de segurança de navegação (anti-crash / anti-spinner)** — `navigate()` envolve todo render em try/catch + `.catch` assíncrono + watchdog de spinner; qualquer módulo que quebre ou trave vira card de erro com "Tentar novamente" (a causa-raiz do bug histórico de Fornecedores, agora coberta globalmente para as 60 páginas) | ✅ `js/nav_safety.js` + testes |
 | **Multi-tenant (fundação SaaS)** — tabela `empresas`, `usuarios.empresa_id`, escopo de tenant vindo SEMPRE de `req.user.empresa_id` (não spoofável). `sync_store` isolado por empresa (contratos/projetos/crm/rc/rfq/mapas…). Endpoints `/api/empresas` (mestre provisiona; demais só a própria). Usuários herdam a empresa do criador | ✅ Express + testes de isolamento |
-| Testes | ✅ 384/384 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, **multi-tenant**, paridade Express⇄Worker) |
+| **Isolamento de fornecedores por tenant** (dados bancários, CNPJ, crédito) — listagem, leitura, IDF, edição, homologação, alteração bancária e relatório de duplicatas todos escopados por empresa; CNPJ duplicado avaliado só dentro do tenant | ✅ Express + testes de vazamento cruzado |
+| Testes | ✅ 392/392 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant, **isolamento fornecedores**, paridade Express⇄Worker) |
 
 O **motor de crédito** é a primeira peça de "inteligência adaptativa": explica
 cada fator que compôs a nota (não é caixa-preta), e o resultado é reusável em

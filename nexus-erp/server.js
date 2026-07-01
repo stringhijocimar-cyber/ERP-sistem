@@ -188,6 +188,12 @@ try {
 ensureColumns('usuarios', [
   ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
 ])
+// Tabelas relacionais recebem empresa_id (isolamento de dados por tenant).
+// Legado → empresa 1. Retrofit incremental: fornecedores primeiro (dados
+// mais sensíveis: bancários, CNPJ, crédito).
+ensureColumns('fornecedores', [
+  ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
+])
 
 // Recebimento por item (alimenta o 3-way automaticamente).
 db.exec(`CREATE TABLE IF NOT EXISTS recebimentos (
@@ -1105,10 +1111,11 @@ const CNPJ_NORM = `REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(cnpj,''),'.',''),'/'
 
 // Relatório de duplicatas: fornecedores por CNPJ e NFs repetidas em contas a pagar.
 app.get('/api/duplicatas', requireAuth, (req, res) => {
-  const grpForn = db.prepare(`SELECT ${CNPJ_NORM} cnpj, COUNT(*) n FROM fornecedores WHERE ${CNPJ_NORM} <> '' GROUP BY ${CNPJ_NORM} HAVING n > 1`).all()
+  const emp = empresaDoReq(req)
+  const grpForn = db.prepare(`SELECT ${CNPJ_NORM} cnpj, COUNT(*) n FROM fornecedores WHERE ${CNPJ_NORM} <> '' AND empresa_id = ? GROUP BY ${CNPJ_NORM} HAVING n > 1`).all(emp)
   const fornecedores = grpForn.map(g => ({
     cnpj: g.cnpj, total: g.n,
-    ocorrencias: db.prepare(`SELECT id, nome, ativo FROM fornecedores WHERE ${CNPJ_NORM} = ?`).all(g.cnpj),
+    ocorrencias: db.prepare(`SELECT id, nome, ativo FROM fornecedores WHERE ${CNPJ_NORM} = ? AND empresa_id = ?`).all(g.cnpj, emp),
   }))
   const grpNF = db.prepare(`SELECT nota_fiscal, COUNT(*) n FROM contas_pagar
       WHERE nota_fiscal IS NOT NULL AND nota_fiscal <> '' AND nota_fiscal <> '—' GROUP BY nota_fiscal HAVING n > 1`).all()
@@ -1119,12 +1126,16 @@ app.get('/api/duplicatas', requireAuth, (req, res) => {
   res.json(ok({ resumo: { fornecedores_dup: fornecedores.length, nf_dup: notas_fiscais.length }, fornecedores, notas_fiscais }))
 })
 
+// Multi-tenant: fornecedor sempre buscado no escopo da empresa do usuário.
+// Retorna null se não existir OU pertencer a outro tenant (→ 404).
+const fornecedorScoped = (req) => db.prepare(`SELECT * FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(req.params.id, empresaDoReq(req))
+
 app.get('/api/fornecedores', requireAuth, (req, res) => {
   const { q = '', ativo = '1', limit = 100, offset = 0 } = req.query
   let sql = `SELECT f.*, COALESCE(ROUND(AVG(a.nota_media), 1), 0) as score_calculado, COUNT(a.id) as total_avaliacoes
     FROM fornecedores f LEFT JOIN avaliacoes_fornecedor a ON a.fornecedor_id = f.id`
-  const where = []
-  const params = []
+  const where = ['f.empresa_id = ?']
+  const params = [empresaDoReq(req)]
   if (ativo !== 'todos') { where.push('f.ativo = ?'); params.push(parseInt(ativo)) }
   if (q) { where.push('(f.nome LIKE ? OR f.cnpj LIKE ? OR f.email LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`) }
   if (where.length) sql += ' WHERE ' + where.join(' AND ')
@@ -1135,7 +1146,7 @@ app.get('/api/fornecedores', requireAuth, (req, res) => {
 })
 
 app.get('/api/fornecedores/:id', requireAuth, (req, res) => {
-  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  const f = fornecedorScoped(req)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   const avaliacoes = db.prepare(`SELECT * FROM avaliacoes_fornecedor WHERE fornecedor_id = ? ORDER BY created_at DESC LIMIT 10`).all(req.params.id)
   res.json(ok({ ...f, avaliacoes, idf: _idfDoFornecedor(req.params.id) }))
@@ -1148,7 +1159,7 @@ function _idfDoFornecedor(id) {
   return calcularIDF({ pedidos, avaliacoes })
 }
 app.get('/api/fornecedores/:id/idf', requireAuth, (req, res) => {
-  const f = db.prepare(`SELECT id, nome FROM fornecedores WHERE id = ?`).get(req.params.id)
+  const f = fornecedorScoped(req)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   res.json(ok({ fornecedor_id: f.id, nome: f.nome, ..._idfDoFornecedor(req.params.id) }))
 })
@@ -1158,9 +1169,11 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   const nome = b.nome
   if (!nome) return res.status(400).json(err('Nome obrigatório'))
   // Qualidade de dados: bloqueia CNPJ duplicado (compara só dígitos).
+  const emp = empresaDoReq(req)
   const cnpjDig = String(b.cnpj || '').replace(/\D/g, '')
   if (cnpjDig) {
-    const dup = db.prepare(`SELECT id, nome FROM fornecedores WHERE ${CNPJ_NORM} = ?`).get(cnpjDig)
+    // Duplicidade avaliada apenas dentro da própria empresa (tenant).
+    const dup = db.prepare(`SELECT id, nome FROM fornecedores WHERE ${CNPJ_NORM} = ? AND empresa_id = ?`).get(cnpjDig, emp)
     if (dup) return res.status(409).json(err(`CNPJ já cadastrado no fornecedor "${dup.nome}" (#${dup.id}) — duplicata`))
   }
   // Aceita aliases vindos do frontend (contato_nome, prazo_pagamento).
@@ -1169,14 +1182,14 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   const r = db.prepare(
     `INSERT INTO fornecedores(nome,razao_social,nome_fantasia,cnpj,email,telefone,contato,cidade,estado,categoria,
        banco,agencia,conta,prazo_entrega,condicao_pagamento,observacoes,faturamento_anual,limite_credito,
-       score_credito,classificacao_credito,analise_credito,status,ativo)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       score_credito,classificacao_credito,analise_credito,status,ativo,empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     nome, b.razao_social ?? null, b.nome_fantasia ?? null, b.cnpj ?? null, b.email ?? null, b.telefone ?? null,
     contato, b.cidade ?? null, b.estado ?? null, b.categoria || 'Geral',
     b.banco ?? null, b.agencia ?? null, b.conta ?? null, prazo, b.condicao_pagamento || '30 dias', b.observacoes ?? null,
     b.faturamento_anual ?? 0, b.limite_credito ?? 0, b.score_credito ?? 0, b.classificacao_credito ?? null,
-    b.analise_credito ?? null, b.status || 'Em Homologação', b.ativo ?? 1
+    b.analise_credito ?? null, b.status || 'Em Homologação', b.ativo ?? 1, emp
   )
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'fornecedores', `Fornecedor criado: ${nome}`)
@@ -1195,7 +1208,7 @@ function fornecedorHomologado(f) {
 
 // Aplica uma etapa de homologação e promove a 'Homologado' quando ambas existem.
 function _registrarHomologacao(req, res, etapa) {
-  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  const f = fornecedorScoped(req)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   if (f.status === 'Homologado') return res.status(409).json(err('Fornecedor já homologado'))
   const col = etapa === 'financeiro'
@@ -1218,7 +1231,7 @@ app.post('/api/fornecedores/:id/homologar/financeiro', requireAuth, requireRole(
 app.post('/api/fornecedores/:id/homologar/compliance', requireAuth, requireRole('admin', 'diretor', 'compliance'), (req, res) => _registrarHomologacao(req, res, 'compliance'))
 // Reprovação da homologação (volta o cadastro ao estado bloqueado).
 app.post('/api/fornecedores/:id/reprovar-homologacao', requireAuth, requireRole('admin', 'diretor', 'compliance', 'financeiro'), (req, res) => {
-  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  const f = fornecedorScoped(req)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   db.prepare(`UPDATE fornecedores SET status='Reprovado', aprovado_financeiro_por=NULL, aprovado_financeiro_em=NULL, aprovado_compliance_por=NULL, aprovado_compliance_em=NULL, updated_at=datetime('now') WHERE id=?`).run(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'homologacao_reprovada', 'fornecedores', `Homologação reprovada: ${f.nome} (${req.body?.motivo || 'sem motivo'})`)
@@ -1236,7 +1249,7 @@ function alteracaoBancariaSolicitada(atual, b) {
 
 // Aprovação da alteração bancária — exige 2ª pessoa (segregação anti-desvio).
 app.post('/api/fornecedores/:id/aprovar-banco', requireAuth, requireRole('admin', 'diretor', 'financeiro'), (req, res) => {
-  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  const f = fornecedorScoped(req)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   if (!f.banco_solicitado_por) return res.status(400).json(err('Não há alteração bancária pendente'))
   if (f.banco_solicitado_por === req.user.nome) {
@@ -1250,7 +1263,7 @@ app.post('/api/fornecedores/:id/aprovar-banco', requireAuth, requireRole('admin'
 
 // Rejeição descarta a alteração pendente.
 app.post('/api/fornecedores/:id/rejeitar-banco', requireAuth, requireRole('admin', 'diretor', 'financeiro'), (req, res) => {
-  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  const f = fornecedorScoped(req)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   if (!f.banco_solicitado_por) return res.status(400).json(err('Não há alteração bancária pendente'))
   db.prepare(`UPDATE fornecedores SET banco_pendente=NULL, agencia_pendente=NULL, conta_pendente=NULL, banco_solicitado_por=NULL, banco_solicitado_em=NULL WHERE id=?`).run(req.params.id)
@@ -1260,7 +1273,7 @@ app.post('/api/fornecedores/:id/rejeitar-banco', requireAuth, requireRole('admin
 
 app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
   const b = req.body || {}
-  const atual = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  const atual = fornecedorScoped(req)
   if (!atual) return res.status(404).json(err('Fornecedor não encontrado'))
   // Merge parcial: só sobrescreve o que veio no corpo (aceita aliases).
   const v = (campo, ...alias) => { for (const k of [campo, ...alias]) if (b[k] !== undefined) return b[k]; return atual[campo] }
@@ -1290,6 +1303,7 @@ app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
 })
 
 app.post('/api/fornecedores/:id/avaliacoes', requireAuth, (req, res) => {
+  if (!fornecedorScoped(req)) return res.status(404).json(err('Fornecedor não encontrado'))
   const { nota_qualidade = 0, nota_prazo = 0, nota_preco = 0, nota_atendimento = 0, comentario, pedido_id } = req.body
   const media = (nota_qualidade + nota_prazo + nota_preco + nota_atendimento) / 4
   db.prepare(
