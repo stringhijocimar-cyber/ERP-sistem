@@ -190,7 +190,7 @@ ensureColumns('usuarios', [
 ])
 // Tabelas relacionais recebem empresa_id (isolamento de dados por tenant).
 // Legado → empresa 1. Retrofit incremental: fornecedores + caminho do dinheiro.
-for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativos', 'pedidos_compra', 'contas_pagar']) {
+for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativos', 'pedidos_compra', 'contas_pagar', 'ordens_servico']) {
   ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']])
 }
 
@@ -527,41 +527,42 @@ app.post('/api/empresas', requireAuth, requireRole('admin'), (req, res) => {
 // DASHBOARD
 // ════════════════════════════════════════════════════════════
 app.get('/api/dashboard', requireAuth, (req, res) => {
+  const e = empresaDoReq(req)
   const stats = {
     os: {
-      total: db.prepare(`SELECT COUNT(*) as n FROM ordens_servico`).get().n,
-      abertas: db.prepare(`SELECT COUNT(*) as n FROM ordens_servico WHERE status != 'Aprovada' AND status != 'Cancelada'`).get().n,
-      aprovadas: db.prepare(`SELECT COUNT(*) as n FROM ordens_servico WHERE status = 'Aprovada'`).get().n,
+      total: db.prepare(`SELECT COUNT(*) as n FROM ordens_servico WHERE empresa_id = ?`).get(e).n,
+      abertas: db.prepare(`SELECT COUNT(*) as n FROM ordens_servico WHERE empresa_id = ? AND status != 'Aprovada' AND status != 'Cancelada'`).get(e).n,
+      aprovadas: db.prepare(`SELECT COUNT(*) as n FROM ordens_servico WHERE empresa_id = ? AND status = 'Aprovada'`).get(e).n,
     },
     rc: {
-      total: db.prepare(`SELECT COUNT(*) as n FROM requisicoes_compra`).get().n,
-      pendentes: db.prepare(`SELECT COUNT(*) as n FROM requisicoes_compra WHERE status = 'Pendente' OR status = 'Rascunho'`).get().n,
-      aprovadas: db.prepare(`SELECT COUNT(*) as n FROM requisicoes_compra WHERE status = 'Aprovada'`).get().n,
+      total: db.prepare(`SELECT COUNT(*) as n FROM requisicoes_compra WHERE empresa_id = ?`).get(e).n,
+      pendentes: db.prepare(`SELECT COUNT(*) as n FROM requisicoes_compra WHERE empresa_id = ? AND (status = 'Pendente' OR status = 'Rascunho')`).get(e).n,
+      aprovadas: db.prepare(`SELECT COUNT(*) as n FROM requisicoes_compra WHERE empresa_id = ? AND status = 'Aprovada'`).get(e).n,
     },
     pc: {
-      total: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra`).get().n,
-      emitidos: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE status = 'Emitido'`).get().n,
-      aguardando_envio: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE status = 'Aguardando Envio'`).get().n,
-      enviados: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE status = 'Enviado'`).get().n,
-      entregues: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE status = 'Entregue'`).get().n,
-      cancelados: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE status = 'Cancelado'`).get().n,
-      valor_total: db.prepare(`SELECT COALESCE(SUM(valor_total),0) as v FROM pedidos_compra WHERE status != 'Cancelado'`).get().v,
+      total: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE empresa_id = ?`).get(e).n,
+      emitidos: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE empresa_id = ? AND status = 'Emitido'`).get(e).n,
+      aguardando_envio: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE empresa_id = ? AND status = 'Aguardando Envio'`).get(e).n,
+      enviados: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE empresa_id = ? AND status = 'Enviado'`).get(e).n,
+      entregues: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE empresa_id = ? AND status = 'Entregue'`).get(e).n,
+      cancelados: db.prepare(`SELECT COUNT(*) as n FROM pedidos_compra WHERE empresa_id = ? AND status = 'Cancelado'`).get(e).n,
+      valor_total: db.prepare(`SELECT COALESCE(SUM(valor_total),0) as v FROM pedidos_compra WHERE empresa_id = ? AND status != 'Cancelado'`).get(e).v,
     },
     financeiro: {
-      a_pagar_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE status = 'Pendente'`).get().v,
-      pago_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE status = 'Pago'`).get().v,
-      vencido_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE status = 'Vencido'`).get().v,
+      a_pagar_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE empresa_id = ? AND status = 'Pendente'`).get(e).v,
+      pago_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE empresa_id = ? AND status = 'Pago'`).get(e).v,
+      vencido_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE empresa_id = ? AND status = 'Vencido'`).get(e).v,
     },
     fornecedores: {
-      total: db.prepare(`SELECT COUNT(*) as n FROM fornecedores WHERE ativo = 1`).get().n,
+      total: db.prepare(`SELECT COUNT(*) as n FROM fornecedores WHERE empresa_id = ? AND ativo = 1`).get(e).n,
     },
     almoxarifado: {
       total_itens: db.prepare(`SELECT COUNT(*) as n FROM almoxarifado_itens WHERE ativo = 1`).get().n,
       estoque_baixo: db.prepare(`SELECT COUNT(*) as n FROM almoxarifado_itens WHERE quantidade_atual < quantidade_minima AND ativo = 1`).get().n,
     },
     recentes: {
-      pedidos: db.prepare(`SELECT pc.*, f.nome as fornecedor FROM pedidos_compra pc LEFT JOIN fornecedores f ON f.id = pc.fornecedor_id ORDER BY pc.created_at DESC LIMIT 5`).all(),
-      os: db.prepare(`SELECT * FROM ordens_servico ORDER BY created_at DESC LIMIT 5`).all(),
+      pedidos: db.prepare(`SELECT pc.*, f.nome as fornecedor FROM pedidos_compra pc LEFT JOIN fornecedores f ON f.id = pc.fornecedor_id WHERE pc.empresa_id = ? ORDER BY pc.created_at DESC LIMIT 5`).all(e),
+      os: db.prepare(`SELECT * FROM ordens_servico WHERE empresa_id = ? ORDER BY created_at DESC LIMIT 5`).all(e),
     }
   }
   res.json(ok(stats))
@@ -632,7 +633,7 @@ function classificarVencimentoContrato(dataFim, hoje = new Date().toISOString().
   return null
 }
 
-function coletarAlertas({ dias = 7, isAdmin = false } = {}) {
+function coletarAlertas({ dias = 7, isAdmin = false, empresa = 1 } = {}) {
   const hoje = new Date().toISOString().slice(0, 10)
   const limite = new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10)
   const alertas = []
@@ -640,10 +641,10 @@ function coletarAlertas({ dias = 7, isAdmin = false } = {}) {
   // 1) Contas a pagar VENCIDAS (dinheiro em atraso) → severidade alta.
   for (const c of db.prepare(
     `SELECT id, numero, descricao, valor, data_vencimento FROM contas_pagar
-      WHERE status IN ('Pendente','Aprovado','Vencido')
+      WHERE empresa_id = ? AND status IN ('Pendente','Aprovado','Vencido')
         AND data_vencimento IS NOT NULL AND date(data_vencimento) < date(?)
       ORDER BY data_vencimento ASC`
-  ).all(hoje)) {
+  ).all(empresa, hoje)) {
     alertas.push({ tipo: 'conta_vencida', severidade: 'alta', modulo: 'Financeiro',
       titulo: `Conta vencida: ${c.numero}`, descricao: `${c.descricao || ''} — venc. ${c.data_vencimento}`,
       valor: c.valor, data: c.data_vencimento, ref: c.id })
@@ -652,10 +653,10 @@ function coletarAlertas({ dias = 7, isAdmin = false } = {}) {
   // 2) Contas a VENCER na janela (próximos N dias) → severidade média.
   for (const c of db.prepare(
     `SELECT id, numero, descricao, valor, data_vencimento FROM contas_pagar
-      WHERE status IN ('Pendente','Aprovado') AND data_vencimento IS NOT NULL
+      WHERE empresa_id = ? AND status IN ('Pendente','Aprovado') AND data_vencimento IS NOT NULL
         AND date(data_vencimento) >= date(?) AND date(data_vencimento) <= date(?)
       ORDER BY data_vencimento ASC`
-  ).all(hoje, limite)) {
+  ).all(empresa, hoje, limite)) {
     alertas.push({ tipo: 'conta_a_vencer', severidade: 'media', modulo: 'Financeiro',
       titulo: `Conta a vencer: ${c.numero}`, descricao: `${c.descricao || ''} — venc. ${c.data_vencimento}`,
       valor: c.valor, data: c.data_vencimento, ref: c.id })
@@ -664,11 +665,11 @@ function coletarAlertas({ dias = 7, isAdmin = false } = {}) {
   // 3) Entregas ATRASADAS (pedido enviado, prazo estourado, não recebido) → alta.
   for (const p of db.prepare(
     `SELECT id, numero, fornecedor_nome, enviado_em, prazo_entrega FROM pedidos_compra
-      WHERE enviado_em IS NOT NULL
+      WHERE empresa_id = ? AND enviado_em IS NOT NULL
         AND status NOT IN ('Entregue','Recebido','Cancelado','Concluído')
         AND date(enviado_em, '+' || COALESCE(prazo_entrega,7) || ' days') < date(?)
       ORDER BY enviado_em ASC`
-  ).all(hoje)) {
+  ).all(empresa, hoje)) {
     alertas.push({ tipo: 'entrega_atrasada', severidade: 'alta', modulo: 'Compras',
       titulo: `Entrega atrasada: ${p.numero}`, descricao: `${p.fornecedor_nome || ''} — enviado ${p.enviado_em}, prazo ${p.prazo_entrega || 7}d`,
       data: p.enviado_em, ref: p.id })
@@ -709,7 +710,7 @@ app.get('/api/alertas', requireAuth, (req, res) => {
   // Feed interno: fornecedor (portal) não acessa a central de alertas.
   if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso à central de alertas', 403))
   const dias = Math.max(1, Math.min(parseInt(req.query.dias) || 7, 90))
-  const alertas = coletarAlertas({ dias, isAdmin: req.user.perfil === 'admin' })
+  const alertas = coletarAlertas({ dias, isAdmin: req.user.perfil === 'admin', empresa: empresaDoReq(req) })
   const resumo = { total: alertas.length, alta: 0, media: 0, baixa: 0 }
   for (const a of alertas) resumo[a.severidade] = (resumo[a.severidade] || 0) + 1
   res.json(ok({ resumo, dias, alertas }))
@@ -719,19 +720,19 @@ app.get('/api/alertas', requireAuth, (req, res) => {
 // DASHBOARD BI — KPIs gerenciais consolidados (exposição financeira,
 // governança do gate, homologação de fornecedores, alertas). Server-side.
 // ════════════════════════════════════════════════════════════
-function coletarKPIs({ dias = 30, isAdmin = false } = {}) {
+function coletarKPIs({ dias = 30, isAdmin = false, empresa = 1 } = {}) {
   const hoje = new Date().toISOString().slice(0, 10)
   const limite = new Date(Date.now() + dias * 864e5).toISOString().slice(0, 10)
   const one = (sql, ...p) => db.prepare(sql).get(...p)
 
   // Exposição financeira (Pendente/Aprovado = compromissado, ainda não pago).
-  const aPagar = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar WHERE status IN ('Pendente','Aprovado')`)
+  const aPagar = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar WHERE empresa_id = ? AND status IN ('Pendente','Aprovado')`, empresa)
   const vencido = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar
-      WHERE status IN ('Pendente','Aprovado','Vencido') AND data_vencimento IS NOT NULL AND date(data_vencimento) < date(?)`, hoje)
+      WHERE empresa_id = ? AND status IN ('Pendente','Aprovado','Vencido') AND data_vencimento IS NOT NULL AND date(data_vencimento) < date(?)`, empresa, hoje)
   const aVencer = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_pagar
-      WHERE status IN ('Pendente','Aprovado') AND data_vencimento IS NOT NULL
-        AND date(data_vencimento) >= date(?) AND date(data_vencimento) <= date(?)`, hoje, limite)
-  const pago = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar WHERE status = 'Pago'`)
+      WHERE empresa_id = ? AND status IN ('Pendente','Aprovado') AND data_vencimento IS NOT NULL
+        AND date(data_vencimento) >= date(?) AND date(data_vencimento) <= date(?)`, empresa, hoje, limite)
+  const pago = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar WHERE empresa_id = ? AND status = 'Pago'`, empresa)
 
   // Governança do gate: bloqueios vs. pagamentos liberados (trilha de logs).
   const bloqueios = one(`SELECT COUNT(*) n FROM logs_sistema WHERE acao = 'payment_blocked'`).n
@@ -739,17 +740,17 @@ function coletarKPIs({ dias = 30, isAdmin = false } = {}) {
   const totGate = bloqueios + liberados
 
   // Homologação e qualidade de fornecedores.
-  const fornAtivos = one(`SELECT COUNT(*) n, COALESCE(AVG(score_medio),0) score FROM fornecedores WHERE ativo = 1`)
-  const porStatus = db.prepare(`SELECT COALESCE(status,'—') status, COUNT(*) n FROM fornecedores WHERE ativo = 1 GROUP BY status`).all()
+  const fornAtivos = one(`SELECT COUNT(*) n, COALESCE(AVG(score_medio),0) score FROM fornecedores WHERE empresa_id = ? AND ativo = 1`, empresa)
+  const porStatus = db.prepare(`SELECT COALESCE(status,'—') status, COUNT(*) n FROM fornecedores WHERE empresa_id = ? AND ativo = 1 GROUP BY status`).all(empresa)
 
   // Compras: valor comprometido em pedidos ativos e taxa de entrega.
   const pc = one(`SELECT COUNT(*) tot,
       COALESCE(SUM(CASE WHEN status != 'Cancelado' THEN valor_total ELSE 0 END),0) val,
       SUM(CASE WHEN status IN ('Entregue','Recebido','Concluído') THEN 1 ELSE 0 END) entregues
-      FROM pedidos_compra`)
+      FROM pedidos_compra WHERE empresa_id = ?`, empresa)
 
   // Alertas por severidade (reusa o motor da central).
-  const alertas = coletarAlertas({ dias, isAdmin })
+  const alertas = coletarAlertas({ dias, isAdmin, empresa })
   const sevs = { total: alertas.length, alta: 0, media: 0 }
   for (const a of alertas) if (sevs[a.severidade] != null) sevs[a.severidade]++
 
@@ -781,14 +782,14 @@ function coletarKPIs({ dias = 30, isAdmin = false } = {}) {
 app.get('/api/bi', requireAuth, (req, res) => {
   if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao painel gerencial', 403))
   const dias = Math.max(1, Math.min(parseInt(req.query.dias) || 30, 365))
-  res.json(ok(coletarKPIs({ dias, isAdmin: req.user.perfil === 'admin' })))
+  res.json(ok(coletarKPIs({ dias, isAdmin: req.user.perfil === 'admin', empresa: empresaDoReq(req) })))
 })
 
 // Fluxo de caixa (saídas): comparativo semanal planejado × realizado por contrato.
 app.get('/api/fluxo-caixa', requireAuth, (req, res) => {
   if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao fluxo de caixa', 403))
   const semanas = Math.max(1, Math.min(parseInt(req.query.semanas) || 8, 52))
-  const contas = db.prepare(`SELECT valor, data_vencimento, data_pagamento, status, contrato_id, pc_numero FROM contas_pagar`).all()
+  const contas = db.prepare(`SELECT valor, data_vencimento, data_pagamento, status, contrato_id, pc_numero FROM contas_pagar WHERE empresa_id = ?`).all(empresaDoReq(req))
   res.json(ok(montarFluxoCaixa(contas, { semanas })))
 })
 
@@ -1329,17 +1330,17 @@ function nextOS() {
 app.get('/api/os', requireAuth, (req, res) => {
   const { status, q = '' } = req.query
   let sql = `SELECT os.*, u.nome as solicitante FROM ordens_servico os LEFT JOIN usuarios u ON u.id = os.solicitante_id`
-  const where = []
-  const params = []
+  const where = ['os.empresa_id = ?']
+  const params = [empresaDoReq(req)]
   if (status) { where.push('os.status = ?'); params.push(status) }
   if (q) { where.push('(os.numero LIKE ? OR os.titulo LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
-  if (where.length) sql += ' WHERE ' + where.join(' AND ')
+  sql += ' WHERE ' + where.join(' AND ')
   sql += ' ORDER BY os.created_at DESC'
   res.json(ok(db.prepare(sql).all(...params)))
 })
 
 app.get('/api/os/:id', requireAuth, (req, res) => {
-  const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
+  const os = rowScoped('ordens_servico', req)
   if (!os) return res.status(404).json(err('OS não encontrada'))
   const fluxo = db.prepare(`SELECT * FROM fluxo_aprovacao WHERE os_id = ? ORDER BY estagio`).all(req.params.id)
   res.json(ok({ ...os, fluxo }))
@@ -1380,17 +1381,17 @@ app.post('/api/os', requireAuth, (req, res) => {
   if (vin.erro) return res.status(vin.code || 400).json(err(vin.erro, vin.code || 400))
   const numero = nextOS()
   const r = db.prepare(
-    `INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs, contrato_id, centro_custo_overhead, tipo_recurso, wbs_linha_id)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade, wbs, contrato_id, centro_custo_overhead, tipo_recurso, wbs_linha_id, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(numero, titulo, descricao, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valor_estimado || 0, centro_custo, projeto, data_necessidade, String(wbs).trim(),
-    b.contrato_id || null, b.centro_custo_overhead || null, vin.tipo || 'material', b.wbs_linha_id || null)
+    b.contrato_id || null, b.centro_custo_overhead || null, vin.tipo || 'material', b.wbs_linha_id || null, empresaDoReq(req))
   const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'os', `OS criada: ${numero}`)
   res.status(201).json(ok(os))
 })
 
 app.put('/api/os/:id', requireAuth, (req, res) => {
-  const cur = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
+  const cur = rowScoped('ordens_servico', req)
   if (!cur) return res.status(404).json(err('OS não encontrada'))
   const { titulo, descricao, departamento, prioridade, status, valor_estimado, centro_custo, projeto, data_necessidade } = req.body
   // WBS não pode ser removida; se enviada, deve permanecer preenchida.
@@ -1416,6 +1417,7 @@ app.put('/api/os/:id', requireAuth, (req, res) => {
 })
 
 app.post('/api/os/:id/iniciar-fluxo', requireAuth, (req, res) => {
+  if (!rowScoped('ordens_servico', req)) return res.status(404).json(err('OS não encontrada'))
   db.prepare(`UPDATE ordens_servico SET status = 'Em Análise', updated_at = datetime('now') WHERE id = ?`).run(req.params.id)
   const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
   db.prepare(`INSERT INTO fluxo_aprovacao(os_id, estagio, tipo, status) VALUES(?,1,'OS','Pendente')`).run(req.params.id)
@@ -1425,7 +1427,7 @@ app.post('/api/os/:id/iniciar-fluxo', requireAuth, (req, res) => {
 
 // Conclui a OS e LANÇA o custo realizado na linha WBS (custo_real acumulado).
 app.post('/api/os/:id/concluir', requireAuth, (req, res) => {
-  const os = db.prepare(`SELECT * FROM ordens_servico WHERE id = ?`).get(req.params.id)
+  const os = rowScoped('ordens_servico', req)
   if (!os) return res.status(404).json(err('OS não encontrada'))
   if (os.status === 'Concluída') return res.status(409).json(err('OS já concluída'))
   const custo = Number(req.body?.custo_realizado) || 0
