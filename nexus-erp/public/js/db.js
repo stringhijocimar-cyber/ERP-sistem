@@ -691,6 +691,20 @@ window.DB._init = async function() {
     }
   } catch {}
 
+  // Pré-carrega os caches que o Dashboard/KPIs leem — a verdade do SERVIDOR
+  // (tenant-isolada) substitui o cache local, mas SÓ quando o servidor tem
+  // dados (lista vazia não apaga o que o usuário tem localmente).
+  for (const [path, key] of [
+    ['/api/contas-pagar', 'fa_contas_pagar'],
+    ['/api/os', 'fa_ordens_servico'],
+    ['/api/contratos', 'fa_contratos'],
+  ]) {
+    try {
+      const data = await _apiFetch(path)
+      if (Array.isArray(data) && data.length) _lsSet(key, data)
+    } catch { /* offline → dashboard segue com o cache local */ }
+  }
+
   // Verifica sessão de usuário
   try {
     const me = await _apiFetch('/api/auth/me');
