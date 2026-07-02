@@ -53,4 +53,10 @@ describe('_dashContratos — dados reais têm precedência sobre o demo', () => 
     const r = window._dashContratos()
     expect(r[0].id).toBe('DEMO-1')
   })
+
+  it('normaliza valor_total do servidor para valor (KPI não zera)', () => {
+    localStorage.setItem('fa_contratos', JSON.stringify([{ id: 'CT-V', titulo: 'Real', status: 'Ativo', valor_total: 500000 }]))
+    const r = window._dashContratos()
+    expect(r[0].valor).toBe(500000)
+  })
 })

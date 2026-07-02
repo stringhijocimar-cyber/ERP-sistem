@@ -15,7 +15,9 @@ function _dbGetColabs() {
 // db.js) têm precedência; o seed demo ERP_DATA só aparece quando não há dado real.
 function _dashContratos() {
   const reais = _dbGet('fa_contratos');
-  if (reais.length) return reais;
+  // Normaliza o shape do servidor (valor_total) para o que os KPIs/tabela/
+  // gráfico esperam (valor) — sem isso, o Valor Total zerava com dados reais.
+  if (reais.length) return reais.map(c => ({ ...c, valor: c.valor ?? c.valor_total ?? 0 }));
   return (window.ERP_DATA && ERP_DATA.contratos) || [];
 }
 window._dashContratos = _dashContratos;
