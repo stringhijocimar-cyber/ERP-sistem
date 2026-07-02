@@ -622,7 +622,9 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
 // LGPD — anonimiza os dados pessoais de um fornecedor (direito de eliminação).
 // Admin apenas. Irreversível: contato/email/telefone viram máscaras.
 app.post('/api/lgpd/anonimizar/fornecedores/:id', requireAuth, requireRole('admin'), (req, res) => {
-  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
+  // Multi-tenant: admin só anonimiza fornecedores da PRÓPRIA empresa
+  // (anonimização é irreversível — cross-tenant seria destrutivo).
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(req.params.id, empresaDoReq(req))
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   const novo = LGPD.anonimizarRegistro(
     { contato: f.contato, email: f.email, telefone: f.telefone },
@@ -636,23 +638,24 @@ app.post('/api/lgpd/anonimizar/fornecedores/:id', requireAuth, requireRole('admi
 
 // LGPD — retenção: política de guarda dos dados pessoais de fornecedor.
 const RETENCAO_FORNECEDOR_MESES = parseInt(process.env.RETENCAO_FORNECEDOR_MESES) || 60
-function _fornecedoresVencidos() {
-  // Conservador: inativos, além da retenção e ainda não anonimizados.
+function _fornecedoresVencidos(empresa = 1) {
+  // Conservador: inativos, além da retenção e ainda não anonimizados —
+  // sempre dentro da empresa do solicitante (multi-tenant).
   const cands = db.prepare(
-    `SELECT * FROM fornecedores WHERE ativo = 0 AND COALESCE(anonimizado,0) = 0`
-  ).all()
+    `SELECT * FROM fornecedores WHERE ativo = 0 AND COALESCE(anonimizado,0) = 0 AND empresa_id = ?`
+  ).all(Number(empresa) || 1)
   return LGPD.vencidosPorRetencao(cands, { campoData: 'created_at', retencaoMeses: RETENCAO_FORNECEDOR_MESES })
 }
 
 // Preview (dry-run): quem SERIA anonimizado pela política, sem alterar nada.
 app.get('/api/lgpd/retencao/fornecedores', requireAuth, requireRole('admin'), (req, res) => {
-  const vencidos = _fornecedoresVencidos().map(f => ({ id: f.id, nome: f.nome, created_at: f.created_at, ativo: f.ativo }))
+  const vencidos = _fornecedoresVencidos(empresaDoReq(req)).map(f => ({ id: f.id, nome: f.nome, created_at: f.created_at, ativo: f.ativo }))
   res.json(ok({ politica_meses: RETENCAO_FORNECEDOR_MESES, total: vencidos.length, fornecedores: vencidos }))
 })
 
 // Execução: anonimiza todos os vencidos pela política (admin).
 app.post('/api/lgpd/retencao/fornecedores/executar', requireAuth, requireRole('admin'), (req, res) => {
-  const vencidos = _fornecedoresVencidos()
+  const vencidos = _fornecedoresVencidos(empresaDoReq(req))
   const upd = db.prepare(`UPDATE fornecedores SET contato=?, email=?, telefone=?, anonimizado=1, updated_at=datetime('now') WHERE id=?`)
   let n = 0
   for (const f of vencidos) {
@@ -725,7 +728,7 @@ function coletarAlertas({ dias = 7, isAdmin = false, empresa = 1 } = {}) {
 
   // 4) Retenção LGPD pendente — dado sensível, só para admin → média.
   if (isAdmin) {
-    const venc = _fornecedoresVencidos()
+    const venc = _fornecedoresVencidos(empresa)
     if (venc.length) {
       alertas.push({ tipo: 'lgpd_retencao', severidade: 'media', modulo: 'LGPD',
         titulo: `Retenção LGPD: ${venc.length} fornecedor(es) a anonimizar`,
@@ -1029,16 +1032,23 @@ app.delete('/api/wbs/:id', requireAuth, (req, res) => {
 // NOTIFICAÇÕES (in-app + e-mail) — alvo por usuário ou por perfil
 // ════════════════════════════════════════════════════════════
 // Cria uma notificação e, opcionalmente, dispara e-mail (adaptador, mock).
-function notificar({ usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null, email = false, empresa = 1 } = {}) {
+function notificar({ usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null, email = false, empresa = null } = {}) {
   if (!titulo) return
+  // Empresa não informada: deriva do destinatário (como log() faz) — evita
+  // que um call site esquecido entregue a notificação ao tenant mestre.
+  let emp = Number(empresa) || 0
+  if (!emp && usuario_id) {
+    try { emp = Number(db.prepare(`SELECT empresa_id FROM usuarios WHERE id = ?`).get(usuario_id)?.empresa_id) || 0 } catch {}
+  }
+  if (!emp) emp = 1
   db.prepare(`INSERT INTO notificacoes(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, empresa_id) VALUES(?,?,?,?,?,?,?,?)`)
-    .run(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, Number(empresa) || 1)
+    .run(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, emp)
   if (email) {
     try {
       // E-mail por perfil respeita o tenant: só usuários da MESMA empresa.
       const dests = usuario_id
         ? db.prepare(`SELECT email FROM usuarios WHERE id = ? AND email IS NOT NULL`).all(usuario_id)
-        : (perfil ? db.prepare(`SELECT email FROM usuarios WHERE perfil = ? AND ativo = 1 AND email IS NOT NULL AND empresa_id = ?`).all(perfil, Number(empresa) || 1) : [])
+        : (perfil ? db.prepare(`SELECT email FROM usuarios WHERE perfil = ? AND ativo = 1 AND email IS NOT NULL AND empresa_id = ?`).all(perfil, emp) : [])
       for (const d of dests) enviarEmail({ to: d.email, assunto: titulo, corpo: mensagem }, { provider: process.env.EMAIL_PROVIDER }).catch(() => {})
     } catch { /* e-mail nunca quebra a operação */ }
   }
@@ -1830,7 +1840,10 @@ app.get('/api/pedidos/:id', requireAuth, (req, res) => {
 app.post('/api/pedidos', requireAuth, async (req, res) => {
   const { mapa_id, mapa_numero, rc_id, fornecedor_id, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, itens = [] } = req.body
   if (!fornecedor_id) return res.status(400).json(err('Fornecedor obrigatório'))
-  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(fornecedor_id)
+  // Multi-tenant: o fornecedor precisa existir NO TENANT do usuário — sem
+  // isso, um tenant emitia PC referenciando fornecedor (e homologação) de outro.
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(fornecedor_id, empresaDoReq(req))
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
   // Compliance: fornecedor precisa estar HOMOLOGADO (Financeiro + Compliance).
   if (f && (process.env.ENFORCE_HOMOLOGACAO_PO ?? '1') !== '0' && !fornecedorHomologado(f)) {
     log(req.user.usuario_id, req.user.nome, 'po_bloqueada_homologacao', 'pedidos_compra', `Fornecedor ${f.nome} não homologado`)

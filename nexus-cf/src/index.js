@@ -396,6 +396,13 @@ function docPertenceEmpresa(doc, empresaId){
   if (!doc) return false;
   return (Number(doc.empresa_id) || 1) === (Number(empresaId) || 1);
 }
+// Busca um doc JA verificando o dono (tenant): null p/ doc de outra empresa —
+// usado pelas rotas ESPECIALIZADAS (aprovacoes, gate, emissao), que antes
+// operavam em qualquer doc por id, furando o isolamento do CRUD generico.
+async function getDocDoTenant(env, table, id, user){
+  const d = await getDoc(env, table, id);
+  return (d && docPertenceEmpresa(d, empresaDoUsuario(user))) ? d : null;
+}
 
 async function listDocs(env, table, url){
   let sql = `SELECT payload FROM ${table}`;
@@ -498,7 +505,7 @@ async function itensRecebidosAcumulados(env, pedidoId){
 }
 async function pagarConta(env, id, user){
   requireRole(user, ['financeiro','admin']);            // segregacao de funcoes
-  const conta = await getDoc(env, 'contas_pagar', id);
+  const conta = await getDocDoTenant(env, 'contas_pagar', id, user);
   if (!conta) return E('conta nao encontrada', 404);
 
   const g = gateContaPagar(conta, env);
@@ -585,7 +592,7 @@ const sodOn = (env) => (env.ENFORCE_SOD ?? '1') !== '0';
 // --- RC: aprovar estágio atual ---
 async function aprovarEstagioRC(env, id, user){
   const cfg = await getAprovConfig(env);
-  const rc = await getDoc(env, 'rc', id);
+  const rc = await getDocDoTenant(env, 'rc', id, user);
   if (!rc) return E('RC não encontrada', 404);
   if (rc.status === ST_RC_REJEITADA) return E('RC já rejeitada', 409);
   if (rc.status === ST_RC_COMPRADOR || rc.status === ST_RC_ACEITA) return E('RC já aprovada em todos os estágios', 409);
@@ -606,7 +613,7 @@ async function aprovarEstagioRC(env, id, user){
 }
 async function reprovarRCserver(env, id, user, motivo){
   const cfg = await getAprovConfig(env);
-  const rc = await getDoc(env, 'rc', id);
+  const rc = await getDocDoTenant(env, 'rc', id, user);
   if (!rc) return E('RC não encontrada', 404);
   const atual = rc.estagio_atual || 1;
   if (!papelPodeNoEstagio(cfg['estagio'+atual], user)) return E('Seu perfil não pode reprovar este estágio', 403);
@@ -616,7 +623,7 @@ async function reprovarRCserver(env, id, user, motivo){
 }
 async function aceitarCompradorRC(env, id, user){
   const cfg = await getAprovConfig(env);
-  const rc = await getDoc(env, 'rc', id);
+  const rc = await getDocDoTenant(env, 'rc', id, user);
   if (!rc) return E('RC não encontrada', 404);
   if (rc.status !== ST_RC_COMPRADOR) return E('RC não está aguardando o comprador', 409);
   if (!papelPodeNoEstagio(cfg.comprador, user)) return E('Seu perfil não é Comprador', 403);
@@ -628,7 +635,7 @@ async function aceitarCompradorRC(env, id, user){
 // --- MAPA: aprovar estágio atual (2 estágios) ---
 async function aprovarEstagioMapa(env, id, user){
   const cfg = await getAprovConfig(env);
-  const m = await getDoc(env, 'mapas', id);
+  const m = await getDocDoTenant(env, 'mapas', id, user);
   if (!m) return E('Mapa não encontrado', 404);
   if (m.status === ST_MAPA_REPROV) return E('Mapa já reprovado', 409);
   if (m.status === ST_MAPA_APROVADO || m.status === ST_MAPA_PC) return E('Mapa já aprovado', 409);
@@ -649,7 +656,7 @@ async function aprovarEstagioMapa(env, id, user){
 }
 async function reprovarMapaServer(env, id, user, motivo){
   const cfg = await getAprovConfig(env);
-  const m = await getDoc(env, 'mapas', id);
+  const m = await getDocDoTenant(env, 'mapas', id, user);
   if (!m) return E('Mapa não encontrado', 404);
   const atual = m.estagio_atual || 1;
   if (!papelPodeNoEstagio(cfg['mapa_estagio'+atual], user)) return E('Seu perfil não pode reprovar este mapa', 403);
@@ -668,7 +675,7 @@ function _anonimizarCampo(valor, tipo){
 }
 async function anonimizarFornecedor(env, id, user){
   requireRole(user, ['admin']);
-  const f = await getDoc(env, 'fornecedores', id);
+  const f = await getDocDoTenant(env, 'fornecedores', id, user);
   if (!f) return E('Fornecedor não encontrado', 404);
   const patch = {
     contato_nome: _anonimizarCampo(f.contato_nome || f.contato, 'nome'),
@@ -682,7 +689,7 @@ async function anonimizarFornecedor(env, id, user){
 }
 
 // LGPD retenção: fornecedores inativos, além da retenção e não anonimizados.
-async function _fornecedoresVencidosRetencao(env){
+async function _fornecedoresVencidosRetencao(env, empresa = 1){
   const meses = parseInt(env.RETENCAO_FORNECEDOR_MESES) || 60;
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - meses);
   const cut = cutoff.toISOString().slice(0, 19).replace('T', ' ');
@@ -690,18 +697,19 @@ async function _fornecedoresVencidosRetencao(env){
   const out = [];
   for (const row of (rs.results || [])){
     let p; try { p = JSON.parse(row.payload); } catch(e){ continue; }
+    if (!docPertenceEmpresa(p, empresa)) continue; // retencao POR TENANT
     if ((p.ativo === 0 || p.ativo === '0') && !p.anonimizado) out.push({ id: row.id, nome: p.nome, created_at: row.created_at });
   }
   return { meses, vencidos: out };
 }
 async function retencaoPreviewFornecedores(env, user){
   requireRole(user, ['admin']);
-  const r = await _fornecedoresVencidosRetencao(env);
+  const r = await _fornecedoresVencidosRetencao(env, empresaDoUsuario(user));
   return J({ politica_meses: r.meses, total: r.vencidos.length, fornecedores: r.vencidos });
 }
 async function retencaoExecutarFornecedores(env, user){
   requireRole(user, ['admin']);
-  const r = await _fornecedoresVencidosRetencao(env);
+  const r = await _fornecedoresVencidosRetencao(env, empresaDoUsuario(user));
   let n = 0;
   for (const v of r.vencidos){
     const f = await getDoc(env, 'fornecedores', v.id);
@@ -831,9 +839,9 @@ function notificacaoNoEscopo(n, user){
   if ((n.usuario_id == null || n.usuario_id === '') && !n.perfil) return true;
   return false;
 }
-async function notificarWorker(env, { usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null } = {}){
+async function notificarWorker(env, { usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null, empresa = 1 } = {}){
   if (!titulo) return;
-  await createDoc(env, 'notificacoes', { usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, lida: 0, created_at: new Date().toISOString() });
+  await createDoc(env, 'notificacoes', { usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, lida: 0, empresa_id: Number(empresa) || 1, created_at: new Date().toISOString() });
 }
 
 // ── Emissão fiscal NF-e/NFS-e/CT-e (mock determinístico, espelha lib/nfe.js) ──
@@ -888,12 +896,13 @@ async function proximaSequencia(env, tipoRaw, anoRaw){
 
 async function emitirPCdoMapa(env, id, user){
   const cfg = await getAprovConfig(env);
-  const m = await getDoc(env, 'mapas', id);
+  const m = await getDocDoTenant(env, 'mapas', id, user);
   if (!m) return E('Mapa não encontrado', 404);
   if (m.status !== ST_MAPA_APROVADO) return E('Mapa não está aprovado para emissão de PC', 409);
   if (!papelPodeNoEstagio(cfg.emissor_pc, user)) return E('Seu perfil não pode emitir PC', 403);
   const pc = await createDoc(env, 'pedidos', {
     id: 'PED-' + new Date().getFullYear() + '-' + Date.now().toString().slice(-6),
+    empresa_id: empresaDoUsuario(user),
     origem_mapa: id, rc_id: m.rc_id || null,
     fornecedor: m.fornecedor_vencedor || m.fornecedor || null,   // ⚠️ confirmar campo
     valor: m.valor_vencedor || m.valor || null,                  // ⚠️ confirmar campo
@@ -914,6 +923,9 @@ let _userColsReady = false;
 async function ensureUserCols(env){
   if (_userColsReady) return;
   try { await env.DB.prepare('ALTER TABLE users ADD COLUMN fornecedor_id TEXT').run(); } catch(_){ /* já existe */ }
+  // Multi-tenant: sem esta coluna, TODO login caia no tenant 1 em bancos já
+  // implantados (o ALTER só rodava no provisionamento de usuários).
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN empresa_id TEXT DEFAULT '1'").run(); } catch(_){ /* já existe */ }
   _userColsReady = true;
 }
 async function ensureSeed(env){
@@ -1005,7 +1017,7 @@ export default {
         if (!nome || !email) return E('Nome e email obrigatorios', 400);
         if (perfil === 'fornecedor' && !fornecedor_id) return E('Usuario fornecedor exige fornecedor_id', 400);
         // Política de senha forte quando informada (omitida → SEED_PASSWORD).
-        if (senha !== undefined && senha !== null && senha !== ''){
+        if (senha !== undefined){
           const pol = validarSenhaForte(senha);
           if (!pol.ok) return E(pol.motivo, 400);
         }
@@ -1100,11 +1112,13 @@ export default {
         const dias = Math.max(1, Math.min(parseInt(url.searchParams.get('dias')) || 7, 90));
         const isAdmin = user.role === 'admin';
         const all = { searchParams: new URLSearchParams() };
-        const contas = await listDocs(env, 'contas_pagar', all);
-        const pedidos = await listDocs(env, 'pedidos', all);
-        const contratos = await listDocs(env, 'contratos', all);
+        const empA = empresaDoUsuario(user);
+        const soTenant = (arr) => arr.filter(d => docPertenceEmpresa(d, empA));
+        const contas = soTenant(await listDocs(env, 'contas_pagar', all));
+        const pedidos = soTenant(await listDocs(env, 'pedidos', all));
+        const contratos = soTenant(await listDocs(env, 'contratos', all));
         let vencidosLGPD = [], meses = 60;
-        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env); vencidosLGPD = r.vencidos; meses = r.meses; }
+        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env, empA); vencidosLGPD = r.vencidos; meses = r.meses; }
         const alertas = montarAlertasWorker({ contas, pedidos, contratos, vencidosLGPD, dias, isAdmin, meses });
         const resumo = { total: alertas.length, alta: 0, media: 0, baixa: 0 };
         for (const a of alertas) resumo[a.severidade] = (resumo[a.severidade] || 0) + 1;
@@ -1117,15 +1131,17 @@ export default {
         const dias = Math.max(1, Math.min(parseInt(url.searchParams.get('dias')) || 30, 365));
         const isAdmin = user.role === 'admin';
         const all = { searchParams: new URLSearchParams() };
-        const contas = await listDocs(env, 'contas_pagar', all);
-        const pedidos = await listDocs(env, 'pedidos', all);
-        const fornecedores = await listDocs(env, 'fornecedores', all);
-        const contratos = await listDocs(env, 'contratos', all);
+        const empB = empresaDoUsuario(user);
+        const soTenantBI = (arr) => arr.filter(d => docPertenceEmpresa(d, empB));
+        const contas = soTenantBI(await listDocs(env, 'contas_pagar', all));
+        const pedidos = soTenantBI(await listDocs(env, 'pedidos', all));
+        const fornecedores = soTenantBI(await listDocs(env, 'fornecedores', all));
+        const contratos = soTenantBI(await listDocs(env, 'contratos', all));
         const cnt = async (acao) => { const r = await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action=?").bind(acao).first(); return r ? r.n : 0; };
         const bloqueios = await cnt('payment_blocked');
         const liberados = await cnt('payment_release');
         let vencidosLGPD = [], meses = 60;
-        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env); vencidosLGPD = r.vencidos; meses = r.meses; }
+        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env, empresaDoUsuario(user)); vencidosLGPD = r.vencidos; meses = r.meses; }
         return J(montarKPIsWorker({ contas, pedidos, fornecedores, contratos, bloqueios, liberados, vencidosLGPD, dias, isAdmin, meses }));
       }
 
@@ -1217,10 +1233,10 @@ export default {
       if (seg[0]==='fluxo' && seg[2]==='reprovar' && method==='POST'){ requireRole(user,['admin','diretor','financeiro','supervisor']); const r=await updateDoc(env,'fluxo',seg[1],{ status:'Reprovado', motivo:body.motivo }); await audit(env,user.sub,'fluxo_reprovar','fluxo',seg[1],{}); return r?J({reprovado:true,_rec:r}):E('nao encontrado',404); }
       if (seg[0]==='rfq' && seg[2]==='cotacoes' && method==='POST'){ const cur=await getDoc(env,'rfq',seg[1]); if(!cur) return E('nao encontrado',404); cur.cotacoes=cur.cotacoes||[]; const cot={ id:'cot-'+Date.now(), ...body }; cur.cotacoes.push(cot); await updateDoc(env,'rfq',seg[1],{ cotacoes:cur.cotacoes }); await audit(env,user.sub,'rfq_cotacao','rfq',seg[1],{}); return J(cot); }
       // (handlers mapa estágio único removidos — substituídos pelas rotas multi-estágio abaixo)
-      if (seg[0]==='pedidos' && seg[2]==='envio' && method==='POST'){ const r=await updateDoc(env,'pedidos',seg[1],{ status: body.agendado?'Aguardando Envio':'Enviado ao Fornecedor', envio_canal:body.canal, envio_email:body.email }); await audit(env,user.sub,'pedido_envio','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
-      if (seg[0]==='pedidos' && seg[2]==='entrega' && method==='POST'){ const r=await updateDoc(env,'pedidos',seg[1],{ status: body.status||'Entregue', data_entrega:body.data_entrega }); await audit(env,user.sub,'pedido_entrega','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
-      if (seg[0]==='pedidos' && seg[2]==='cancelar' && method==='POST'){ const r=await updateDoc(env,'pedidos',seg[1],{ status:'Cancelado', motivo_cancelamento:body.motivo }); await audit(env,user.sub,'pedido_cancelar','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
-      if (seg[0]==='fornecedores' && seg[2]==='avaliacoes' && method==='POST'){ const cur=await getDoc(env,'fornecedores',seg[1]); if(!cur) return E('nao encontrado',404); cur.avaliacoes=cur.avaliacoes||[]; cur.avaliacoes.push({ id:'av-'+Date.now(), ...body }); await updateDoc(env,'fornecedores',seg[1],{ avaliacoes:cur.avaliacoes }); await audit(env,user.sub,'fornecedor_avaliar','fornecedores',seg[1],{}); return J({ ok:true }); }
+      if (seg[0]==='pedidos' && seg[2]==='envio' && method==='POST'){ if (!(await getDocDoTenant(env,'pedidos',seg[1],user))) return E('nao encontrado',404); const r=await updateDoc(env,'pedidos',seg[1],{ status: body.agendado?'Aguardando Envio':'Enviado ao Fornecedor', envio_canal:body.canal, envio_email:body.email }); await audit(env,user.sub,'pedido_envio','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
+      if (seg[0]==='pedidos' && seg[2]==='entrega' && method==='POST'){ if (!(await getDocDoTenant(env,'pedidos',seg[1],user))) return E('nao encontrado',404); const r=await updateDoc(env,'pedidos',seg[1],{ status: body.status||'Entregue', data_entrega:body.data_entrega }); await audit(env,user.sub,'pedido_entrega','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
+      if (seg[0]==='pedidos' && seg[2]==='cancelar' && method==='POST'){ if (!(await getDocDoTenant(env,'pedidos',seg[1],user))) return E('nao encontrado',404); const r=await updateDoc(env,'pedidos',seg[1],{ status:'Cancelado', motivo_cancelamento:body.motivo }); await audit(env,user.sub,'pedido_cancelar','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
+      if (seg[0]==='fornecedores' && seg[2]==='avaliacoes' && method==='POST'){ const cur=await getDocDoTenant(env,'fornecedores',seg[1],user); if(!cur) return E('nao encontrado',404); cur.avaliacoes=cur.avaliacoes||[]; cur.avaliacoes.push({ id:'av-'+Date.now(), ...body }); await updateDoc(env,'fornecedores',seg[1],{ avaliacoes:cur.avaliacoes }); await audit(env,user.sub,'fornecedor_avaliar','fornecedores',seg[1],{}); return J({ ok:true }); }
 
       // Sync generico (UPSERT por id/numero — nao apaga itens que o cliente nao
       // mandou). Escopado por tenant: carimba a empresa do usuário em cada item.
@@ -1268,7 +1284,7 @@ export default {
 
       // Recebimento — liga à conta a pagar do pedido e anexa a NF (B1, espelha o Express)
       if (seg[0]==='recebimentos' && !seg[1] && method==='POST'){
-        const r = await createDoc(env, 'recebimentos', body);
+        const r = await createDoc(env, 'recebimentos', { ...body, empresa_id: empresaDoUsuario(user) });
         let contas = [];
         const pc = body.pc_id || body.pedido_id;
         if (pc){
@@ -1295,14 +1311,14 @@ export default {
         return J(rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))));
       }
       if (seg[0]==='pedidos' && seg[2]==='aceite-servico' && method==='POST'){
-        const ped = await getDoc(env, 'pedidos', seg[1]);
+        const ped = await getDocDoTenant(env, 'pedidos', seg[1], user);
         if (!ped) return E('Pedido nao encontrado', 404);
         const checklist = Array.isArray(body.checklist) ? body.checklist : [];
         if (!checklist.length) return E('Informe o checklist de recebimento do servico (especificacao tecnica)', 400);
         const todosConformes = checklist.every(c => c && (c.conforme === true || c.conforme === 1));
         if (body.aceitar !== false && !todosConformes) return E('Aceite bloqueado: ha itens nao conformes no checklist', 409);
         const aceito = body.aceitar === false ? 0 : (todosConformes ? 1 : 0);
-        const r = await createDoc(env, 'aceites_servico', { pedido_id: seg[1], os_id: body.os_id ?? null, checklist, aceito, aceito_por: user.name, aceito_em: new Date().toISOString(), especificacao: body.especificacao ?? null, observacoes: body.observacoes ?? null });
+        const r = await createDoc(env, 'aceites_servico', { empresa_id: empresaDoUsuario(user), pedido_id: seg[1], os_id: body.os_id ?? null, checklist, aceito, aceito_por: user.name, aceito_em: new Date().toISOString(), especificacao: body.especificacao ?? null, observacoes: body.observacoes ?? null });
         await updateDoc(env, 'pedidos', seg[1], { tipo_compra: 'servico' });
         await audit(env, user.sub, aceito ? 'aceite_servico' : 'aceite_servico_recusado', 'pedidos', seg[1], {});
         return J(r, 201);
@@ -1320,7 +1336,7 @@ export default {
         await updateDoc(env, 'crm', seg[1], { ...body });
         if (precisaOrcamentacao(body.estagio) && (cur.orcamentacao_status || 'nao_iniciada') === 'nao_iniciada'){
           await updateDoc(env, 'crm', seg[1], { orcamentacao_status: 'pendente', orcamentacao_em: new Date().toISOString() });
-          await notificarWorker(env, { perfil: 'orcamentista', titulo: 'Lead para precificar', mensagem: `Crie a estimativa de custos (WBS) do lead "${body.titulo || cur.titulo}".`, tipo: 'orcamentacao', ref_tipo: 'crm', ref_id: String(seg[1]) });
+          await notificarWorker(env, { perfil: 'orcamentista', titulo: 'Lead para precificar', mensagem: `Crie a estimativa de custos (WBS) do lead "${body.titulo || cur.titulo}".`, tipo: 'orcamentacao', ref_tipo: 'crm', ref_id: String(seg[1]), empresa: empresaDoUsuario(user) });
         }
         await audit(env, user.sub, 'update', 'crm', seg[1], {});
         const fin = await getDoc(env, 'crm', seg[1]);
@@ -1336,9 +1352,9 @@ export default {
         }
         if (method==='POST' && !seg[1]){
           const b = body || {};
-          const lead = b.lead_id ? await getDoc(env, 'crm', b.lead_id) : null;
+          const lead = b.lead_id ? await getDocDoTenant(env, 'crm', b.lead_id, user) : null;
           const wbs = await listDocs(env, 'wbs_linhas', { searchParams: new URLSearchParams() });
-          const linhas = wbs.filter(w => String(w.lead_id ?? '') === String(b.lead_id) && (w.ativo ?? 1) !== 0);
+          const linhas = wbs.filter(w => docPertenceEmpresa(w, empresaDoUsuario(user)) && String(w.lead_id ?? '') === String(b.lead_id) && (w.ativo ?? 1) !== 0);
           const custo = linhas.reduce((s, w) => s + (Number(w.valor_total_est) || 0), 0);
           const gate = podeGerarProposta(lead, linhas.length > 0);
           if (!gate.ok) return E('Proposta bloqueada: ' + gate.motivo, 409);
@@ -1346,7 +1362,7 @@ export default {
           const valor_total = b.valor_total != null ? Number(b.valor_total) : custo * (1 + margem / 100);
           const all = await listDocs(env, 'propostas', { searchParams: new URLSearchParams() });
           const numero = `PROP-${new Date().getFullYear()}-${String(all.length + 1).padStart(3, '0')}`;
-          const r = await createDoc(env, 'propostas', { numero, lead_id: b.lead_id, cliente: b.cliente ?? (lead && lead.cliente), objeto: b.objeto ?? (lead && lead.titulo), custo_estimado: custo, margem, valor_total, status: 'Em Elaboração' });
+          const r = await createDoc(env, 'propostas', { empresa_id: empresaDoUsuario(user), numero, lead_id: b.lead_id, cliente: b.cliente ?? (lead && lead.cliente), objeto: b.objeto ?? (lead && lead.titulo), custo_estimado: custo, margem, valor_total, status: 'Em Elaboração' });
           await updateDoc(env, 'crm', b.lead_id, { orcamentacao_status: 'concluida' });
           await audit(env, user.sub, 'proposta_criada', 'propostas', r.id, {});
           return J(r, 201);
@@ -1376,7 +1392,7 @@ export default {
           if (!b.descricao && !b.codigo) return E('Informe ao menos codigo ou descricao', 400);
           const qtd = Number(b.quantidade) || 0, vUnit = Number(b.valor_unit_est) || 0;
           const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit;
-          const r = await createDoc(env, 'wbs_linhas', { codigo: b.codigo ?? null, descricao: b.descricao ?? null, natureza: b.natureza ?? null, tipo: b.tipo || 'OPEX', contrato_id: b.contrato_id ?? null, projeto_id: b.projeto_id ?? null, centro_custo: b.centro_custo ?? null, lead_id: b.lead_id ?? null, origem: b.origem || 'contrato', unidade: b.unidade ?? null, quantidade: qtd, valor_unit_est: vUnit, valor_total_est: vTotal, custo_real: 0, nao_previsto: b.nao_previsto ? 1 : 0, ativo: 1 });
+          const r = await createDoc(env, 'wbs_linhas', { empresa_id: empresaDoUsuario(user), codigo: b.codigo ?? null, descricao: b.descricao ?? null, natureza: b.natureza ?? null, tipo: b.tipo || 'OPEX', contrato_id: b.contrato_id ?? null, projeto_id: b.projeto_id ?? null, centro_custo: b.centro_custo ?? null, lead_id: b.lead_id ?? null, origem: b.origem || 'contrato', unidade: b.unidade ?? null, quantidade: qtd, valor_unit_est: vUnit, valor_total_est: vTotal, custo_real: 0, nao_previsto: b.nao_previsto ? 1 : 0, ativo: 1 });
           // C1: WBS de orçamentação vinculada a um lead → estimativa em andamento.
           if (b.lead_id){
             const lead = await getDoc(env, 'crm', b.lead_id);
@@ -1425,7 +1441,7 @@ export default {
         if (method==='POST' && !seg[1]){
           requireRole(user, ['admin','diretor','financeiro','compliance']);
           if (!body.titulo) return E('Titulo obrigatorio', 400);
-          await notificarWorker(env, { usuario_id: body.usuario_id || null, perfil: body.perfil || null, titulo: body.titulo, mensagem: body.mensagem || '', tipo: body.tipo || 'info' });
+          await notificarWorker(env, { usuario_id: body.usuario_id || null, perfil: body.perfil || null, titulo: body.titulo, mensagem: body.mensagem || '', tipo: body.tipo || 'info', empresa: empresaDoUsuario(user) });
           return J({ ok: true }, 201);
         }
         if (method==='GET' && !seg[1]){
@@ -1446,7 +1462,7 @@ export default {
           let r; try { r = await emitirNotaFiscal({ ...body, numero, serie }, { provider: env.NFE_PROVIDER }); } catch(e){ return E(e.message, 400); }
           if (r.status !== 'autorizada') return E('Emissao rejeitada: ' + (r.motivo || 'dados invalidos'), 422);
           const destinatario = body.cnpj_destinatario || body.cpf_destinatario || body.destinatario || '';
-          const doc = await createDoc(env, 'notas_fiscais', { ...r, cnpj_emitente: body.cnpj_emitente || '', destinatario, descricao: body.descricao || '', pedido_id: body.pedido_id || null, emitido_por: user.name });
+          const doc = await createDoc(env, 'notas_fiscais', { ...r, empresa_id: empresaDoUsuario(user), cnpj_emitente: body.cnpj_emitente || '', destinatario, descricao: body.descricao || '', pedido_id: body.pedido_id || null, emitido_por: user.name });
           await audit(env, user.sub, 'nfe_emitir', 'notas_fiscais', doc.id, { chave: r.chave });
           return J(doc, 201);
         }
@@ -1503,7 +1519,7 @@ export default {
         const tipo = normalizarTipoRC(body.tipo);
         if (!tipo) return E('Tipo da RC obrigatorio: Material, Servico ou Equipamento', 400);
         if (!body.wbs || !String(body.wbs).trim()) return E('Vinculo WBS obrigatorio na RC (rastreabilidade de custo)', 400);
-        const r = await createDoc(env, 'rc', { ...body, tipo, wbs: String(body.wbs).trim() });
+        const r = await createDoc(env, 'rc', { ...body, tipo, wbs: String(body.wbs).trim(), empresa_id: empresaDoUsuario(user) });
         await audit(env, user.sub, 'create', 'rc', r.id, {});
         return J(r);
       }
@@ -1537,7 +1553,7 @@ export default {
           if (!linha) return E('Linha WBS informada nao existe', 400);
           if (body.contrato_id && !wbsPertenceAoContrato(linha, body.contrato_id)) return E('A linha WBS nao pertence ao contrato da OS', 409);
         }
-        const r = await createDoc(env, 'os', { ...body, wbs: String(body.wbs).trim(), tipo_recurso: tipo });
+        const r = await createDoc(env, 'os', { ...body, wbs: String(body.wbs).trim(), tipo_recurso: tipo, empresa_id: empresaDoUsuario(user) });
         await audit(env, user.sub, 'create', 'os', r.id, {});
         return J(r);
       }
@@ -1594,7 +1610,7 @@ export default {
           valorMin: parseFloat(env.CONCORRENCIA_VALOR_MIN) || 10000, minCotacoes: parseInt(env.CONCORRENCIA_MIN_COTACOES) || 3,
         });
         if (!conc.ok){ await audit(env, user.sub, 'concorrencia_bloqueada', 'mapas', null, { motivo: conc.motivo }); return E(conc.motivo, 409); }
-        const r = await createDoc(env, 'mapas', { ...body, status: 'Em análise' });
+        const r = await createDoc(env, 'mapas', { ...body, status: 'Em análise', empresa_id: empresaDoUsuario(user) });
         if (conc.excecao) await audit(env, user.sub, 'concorrencia_excecao', 'mapas', r.id, { numCotacoes, justificativa: body.justificativa });
         await audit(env, user.sub, 'create', 'mapas', r.id, {});
         return J(r);
@@ -1609,12 +1625,12 @@ export default {
           const dup = existentes.find(f => normalizarCNPJ(f.cnpj) === dig);
           if (dup) return E(`CNPJ ja cadastrado no fornecedor "${dup.nome}" (#${dup.id}) - duplicata`, 409);
         }
-        const r = await createDoc(env, 'fornecedores', body);
+        const r = await createDoc(env, 'fornecedores', { ...body, empresa_id: empresaDoUsuario(user) });
         await audit(env, user.sub, 'create', 'fornecedores', r.id, {});
         // Notifica Financeiro e Compliance: novo fornecedor a homologar.
         const msg = `${body.nome || ''} aguarda aprovacao Financeiro + Compliance.`;
-        await notificarWorker(env, { perfil: 'financeiro', titulo: 'Novo fornecedor a homologar', mensagem: msg, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(r.id) });
-        await notificarWorker(env, { perfil: 'compliance', titulo: 'Novo fornecedor a homologar', mensagem: msg, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(r.id) });
+        await notificarWorker(env, { perfil: 'financeiro', titulo: 'Novo fornecedor a homologar', mensagem: msg, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(r.id), empresa: empresaDoUsuario(user) });
+        await notificarWorker(env, { perfil: 'compliance', titulo: 'Novo fornecedor a homologar', mensagem: msg, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(r.id), empresa: empresaDoUsuario(user) });
         return J(r);
       }
       // Fornecedor — IDF (índice de desempenho): GET /api/fornecedores/:id/idf
@@ -1630,7 +1646,7 @@ export default {
       if (seg[0]==='fornecedores' && seg[2]==='homologar' && (seg[3]==='financeiro' || seg[3]==='compliance') && method==='POST'){
         const etapa = seg[3];
         requireRole(user, etapa === 'financeiro' ? ['admin','financeiro'] : ['admin','diretor','compliance']);
-        const f = await getDoc(env, 'fornecedores', seg[1]);
+        const f = await getDocDoTenant(env, 'fornecedores', seg[1], user);
         if (!f) return E('Fornecedor nao encontrado', 404);
         if (f.status === 'Homologado') return E('Fornecedor ja homologado', 409);
         const patch = etapa === 'financeiro'
@@ -1643,7 +1659,7 @@ export default {
       }
       if (seg[0]==='fornecedores' && seg[2]==='reprovar-homologacao' && method==='POST'){
         requireRole(user, ['admin','diretor','compliance','financeiro']);
-        const f = await getDoc(env, 'fornecedores', seg[1]);
+        const f = await getDocDoTenant(env, 'fornecedores', seg[1], user);
         if (!f) return E('Fornecedor nao encontrado', 404);
         const r = await updateDoc(env, 'fornecedores', seg[1], { status: 'Reprovado', aprovado_financeiro_por: null, aprovado_financeiro_em: null, aprovado_compliance_por: null, aprovado_compliance_em: null });
         await audit(env, user.sub, 'homologacao_reprovada', 'fornecedores', seg[1], {});
@@ -1652,7 +1668,7 @@ export default {
       // Fornecedor — aprovação/rejeição de alteração bancária (dupla aprovação)
       if (seg[0]==='fornecedores' && seg[2]==='aprovar-banco' && method==='POST'){
         requireRole(user, ['admin','diretor','financeiro']);
-        const f = await getDoc(env, 'fornecedores', seg[1]);
+        const f = await getDocDoTenant(env, 'fornecedores', seg[1], user);
         if (!f) return E('Fornecedor nao encontrado', 404);
         if (!f.banco_solicitado_por) return E('Nao ha alteracao bancaria pendente', 400);
         if (f.banco_solicitado_por === user.name) return E('A aprovacao deve ser feita por outro usuario (segregacao)', 403);
@@ -1662,7 +1678,7 @@ export default {
       }
       if (seg[0]==='fornecedores' && seg[2]==='rejeitar-banco' && method==='POST'){
         requireRole(user, ['admin','diretor','financeiro']);
-        const f = await getDoc(env, 'fornecedores', seg[1]);
+        const f = await getDocDoTenant(env, 'fornecedores', seg[1], user);
         if (!f) return E('Fornecedor nao encontrado', 404);
         if (!f.banco_solicitado_por) return E('Nao ha alteracao bancaria pendente', 400);
         const r = await updateDoc(env, 'fornecedores', seg[1], { banco_pendente: null, agencia_pendente: null, conta_pendente: null, banco_solicitado_por: null, banco_solicitado_em: null });
@@ -1671,7 +1687,7 @@ export default {
       }
       // Fornecedor — PUT: dados bancários ficam pendentes de 2ª aprovação
       if (seg[0]==='fornecedores' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
-        const atual = await getDoc(env, 'fornecedores', seg[1]);
+        const atual = await getDocDoTenant(env, 'fornecedores', seg[1], user);
         if (!atual) return E('nao encontrado', 404);
         const bankChange = alteracaoBancariaSolicitada(atual, body);
         const patch = { ...body };
@@ -1705,7 +1721,7 @@ export default {
             }
           }
         }
-        const r = await createDoc(env, 'pedidos', body);
+        const r = await createDoc(env, 'pedidos', { ...body, empresa_id: empresaDoUsuario(user) });
         await audit(env, user.sub, 'create', 'pedidos', r.id, {});
         return J(r);
       }
