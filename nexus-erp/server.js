@@ -829,6 +829,23 @@ function coletarKPIs({ dias = 30, isAdmin = false, empresa = 1 } = {}) {
   const sevs = { total: alertas.length, alta: 0, media: 0 }
   for (const a of alertas) if (sevs[a.severidade] != null) sevs[a.severidade]++
 
+  // Riscos de compra (motor de anomalias): visão executiva — contagem por
+  // tipo e as principais ocorrências, prontas para o painel gerencial.
+  const anomalias = alertas.filter(a => String(a.tipo).startsWith('anomalia_'))
+  const riscosPorTipo = {}
+  for (const a of anomalias) {
+    const t = String(a.tipo).replace('anomalia_', '')
+    riscosPorTipo[t] = (riscosPorTipo[t] || 0) + 1
+  }
+  const riscos = {
+    total: anomalias.length,
+    alta: anomalias.filter(a => a.severidade === 'alta').length,
+    por_tipo: riscosPorTipo,
+    principais: anomalias.slice(0, 5).map(a => ({
+      titulo: a.titulo, severidade: a.severidade, valor: a.valor || 0, ref: a.ref,
+    })),
+  }
+
   return {
     gerado_em: new Date().toISOString(),
     dias,
@@ -851,6 +868,7 @@ function coletarKPIs({ dias = 30, isAdmin = false, empresa = 1 } = {}) {
       pc_entregues_pct: pc.tot ? +(((pc.entregues || 0) / pc.tot) * 100).toFixed(1) : 0,
     },
     alertas: sevs,
+    riscos,
   }
 }
 
