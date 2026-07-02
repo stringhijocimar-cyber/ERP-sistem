@@ -14,7 +14,7 @@ function _ssGetIncidentes() {
   if (a && a.length) return a;
   return JSON.parse(JSON.stringify(ERP_DATA.incidentes || []));
 }
-function _ssSaveIncidentes(list) { _ssSave('fa_incidentes', list); _ssSave('fraser_incidentes', list); }
+function _ssSaveIncidentes(list) { _ssSave('fa_incidentes', list); _ssSave('fraser_incidentes', list); try { window._syncSnapshot && window._syncSnapshot('ssma', list); } catch(e){} }
 
 function _ssGetColabs() {
   const a = _ssGet('fa_colaboradores', null) || _ssGet('fraser_colaboradores', null);
