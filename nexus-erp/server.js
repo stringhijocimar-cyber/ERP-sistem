@@ -282,7 +282,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS sequences (
 // propostas/wbs_linhas), senão a coluna não é adicionada e o INSERT falha.
 // Legado → empresa 1. Retrofit incremental.
 for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativos', 'pedidos_compra', 'contas_pagar', 'ordens_servico',
-                 'contratos', 'crm_oportunidades', 'propostas', 'projetos', 'wbs_linhas', 'almoxarifado_itens', 'logs_sistema']) {
+                 'contratos', 'crm_oportunidades', 'propostas', 'projetos', 'wbs_linhas', 'almoxarifado_itens', 'logs_sistema', 'notificacoes']) {
   ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']])
 }
 const TIPOS_SEQ = new Set(['PC', 'RC', 'RFQ', 'MAPA', 'CP'])
@@ -1011,39 +1011,41 @@ app.delete('/api/wbs/:id', requireAuth, (req, res) => {
 // NOTIFICAÇÕES (in-app + e-mail) — alvo por usuário ou por perfil
 // ════════════════════════════════════════════════════════════
 // Cria uma notificação e, opcionalmente, dispara e-mail (adaptador, mock).
-function notificar({ usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null, email = false } = {}) {
+function notificar({ usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null, email = false, empresa = 1 } = {}) {
   if (!titulo) return
-  db.prepare(`INSERT INTO notificacoes(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id) VALUES(?,?,?,?,?,?,?)`)
-    .run(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id)
+  db.prepare(`INSERT INTO notificacoes(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, empresa_id) VALUES(?,?,?,?,?,?,?,?)`)
+    .run(usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, Number(empresa) || 1)
   if (email) {
     try {
+      // E-mail por perfil respeita o tenant: só usuários da MESMA empresa.
       const dests = usuario_id
         ? db.prepare(`SELECT email FROM usuarios WHERE id = ? AND email IS NOT NULL`).all(usuario_id)
-        : (perfil ? db.prepare(`SELECT email FROM usuarios WHERE perfil = ? AND ativo = 1 AND email IS NOT NULL`).all(perfil) : [])
+        : (perfil ? db.prepare(`SELECT email FROM usuarios WHERE perfil = ? AND ativo = 1 AND email IS NOT NULL AND empresa_id = ?`).all(perfil, Number(empresa) || 1) : [])
       for (const d of dests) enviarEmail({ to: d.email, assunto: titulo, corpo: mensagem }, { provider: process.env.EMAIL_PROVIDER }).catch(() => {})
     } catch { /* e-mail nunca quebra a operação */ }
   }
 }
-// Filtro de escopo do usuário logado (próprias + do seu perfil + globais).
-const _NOTIF_ESCOPO = `(usuario_id = ? OR perfil = ? OR (usuario_id IS NULL AND perfil IS NULL))`
+// Filtro de escopo do usuário logado (próprias + do seu perfil + globais),
+// SEMPRE dentro da própria empresa (multi-tenant).
+const _NOTIF_ESCOPO = `empresa_id = ? AND (usuario_id = ? OR perfil = ? OR (usuario_id IS NULL AND perfil IS NULL))`
 
 app.get('/api/notificacoes', requireAuth, (req, res) => {
-  const rows = db.prepare(`SELECT * FROM notificacoes WHERE ${_NOTIF_ESCOPO} ORDER BY created_at DESC LIMIT 100`).all(req.user.usuario_id, req.user.perfil)
+  const rows = db.prepare(`SELECT * FROM notificacoes WHERE ${_NOTIF_ESCOPO} ORDER BY created_at DESC LIMIT 100`).all(empresaDoReq(req), req.user.usuario_id, req.user.perfil)
   res.json(ok(rows))
 })
 
 app.get('/api/notificacoes/contagem', requireAuth, (req, res) => {
-  const n = db.prepare(`SELECT COUNT(*) n FROM notificacoes WHERE lida = 0 AND ${_NOTIF_ESCOPO}`).get(req.user.usuario_id, req.user.perfil).n
+  const n = db.prepare(`SELECT COUNT(*) n FROM notificacoes WHERE lida = 0 AND ${_NOTIF_ESCOPO}`).get(empresaDoReq(req), req.user.usuario_id, req.user.perfil).n
   res.json(ok({ nao_lidas: n }))
 })
 
 app.post('/api/notificacoes/ler-todas', requireAuth, (req, res) => {
-  db.prepare(`UPDATE notificacoes SET lida = 1 WHERE lida = 0 AND ${_NOTIF_ESCOPO}`).run(req.user.usuario_id, req.user.perfil)
+  db.prepare(`UPDATE notificacoes SET lida = 1 WHERE lida = 0 AND ${_NOTIF_ESCOPO}`).run(empresaDoReq(req), req.user.usuario_id, req.user.perfil)
   res.json(ok({ ok: true }))
 })
 
 app.post('/api/notificacoes/:id/lida', requireAuth, (req, res) => {
-  const n = db.prepare(`SELECT * FROM notificacoes WHERE id = ? AND ${_NOTIF_ESCOPO}`).get(req.params.id, req.user.usuario_id, req.user.perfil)
+  const n = db.prepare(`SELECT * FROM notificacoes WHERE id = ? AND ${_NOTIF_ESCOPO}`).get(req.params.id, empresaDoReq(req), req.user.usuario_id, req.user.perfil)
   if (!n) return res.status(404).json(err('Notificação não encontrada'))
   db.prepare(`UPDATE notificacoes SET lida = 1 WHERE id = ?`).run(req.params.id)
   res.json(ok({ ok: true }))
@@ -1053,7 +1055,7 @@ app.post('/api/notificacoes/:id/lida', requireAuth, (req, res) => {
 app.post('/api/notificacoes', requireAuth, requireRole('admin', 'diretor', 'financeiro', 'compliance'), (req, res) => {
   const b = req.body || {}
   if (!b.titulo) return res.status(400).json(err('Título obrigatório'))
-  notificar({ usuario_id: b.usuario_id || null, perfil: b.perfil || null, titulo: b.titulo, mensagem: b.mensagem || '', tipo: b.tipo || 'info', email: !!b.email })
+  notificar({ usuario_id: b.usuario_id || null, perfil: b.perfil || null, titulo: b.titulo, mensagem: b.mensagem || '', tipo: b.tipo || 'info', email: !!b.email, empresa: empresaDoReq(req) })
   res.status(201).json(ok({ ok: true }))
 })
 
@@ -1273,8 +1275,8 @@ app.post('/api/fornecedores', requireAuth, (req, res) => {
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(r.lastInsertRowid)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'fornecedores', `Fornecedor criado: ${nome}`)
   // Notifica Financeiro e Compliance: novo fornecedor aguardando homologação.
-  notificar({ perfil: 'financeiro', titulo: 'Novo fornecedor a homologar', mensagem: `${nome} aguarda aprovação Financeiro + Compliance.`, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(f.id), email: true })
-  notificar({ perfil: 'compliance', titulo: 'Novo fornecedor a homologar', mensagem: `${nome} aguarda aprovação Financeiro + Compliance.`, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(f.id) })
+  notificar({ perfil: 'financeiro', titulo: 'Novo fornecedor a homologar', mensagem: `${nome} aguarda aprovação Financeiro + Compliance.`, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(f.id), email: true, empresa: emp })
+  notificar({ perfil: 'compliance', titulo: 'Novo fornecedor a homologar', mensagem: `${nome} aguarda aprovação Financeiro + Compliance.`, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(f.id), empresa: emp })
   res.status(201).json(ok(f))
 })
 
@@ -1374,7 +1376,7 @@ app.put('/api/fornecedores/:id', requireAuth, (req, res) => {
     db.prepare(`UPDATE fornecedores SET banco_pendente=?, agencia_pendente=?, conta_pendente=?, banco_solicitado_por=?, banco_solicitado_em=datetime('now') WHERE id=?`)
       .run(bankChange.banco ?? atual.banco, bankChange.agencia ?? atual.agencia, bankChange.conta ?? atual.conta, req.user.nome, req.params.id)
     log(req.user.usuario_id, req.user.nome, 'banco_alteracao_solicitada', 'fornecedores', `Alteração bancária pendente de aprovação: ${atual.nome}`)
-    notificar({ perfil: 'financeiro', titulo: 'Alteração bancária a aprovar', mensagem: `Dados bancários de ${atual.nome} aguardam 2ª aprovação.`, tipo: 'banco', ref_tipo: 'fornecedor', ref_id: String(req.params.id), email: true })
+    notificar({ perfil: 'financeiro', titulo: 'Alteração bancária a aprovar', mensagem: `Dados bancários de ${atual.nome} aguardam 2ª aprovação.`, tipo: 'banco', ref_tipo: 'fornecedor', ref_id: String(req.params.id), email: true, empresa: empresaDoReq(req) })
   }
   const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ?`).get(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Editar', 'fornecedores', `Fornecedor atualizado: ${v('nome')}`)
@@ -1848,6 +1850,24 @@ app.post('/api/pedidos', requireAuth, async (req, res) => {
     .run(cpNum, pcId, numero, fornecedor_id, f?.nome, `${numero} – ${f?.nome}`, valor_total || 0, prazo_entrega, 'Pendente', emp)
 
   log(req.user.usuario_id, req.user.nome, 'Criar', 'pedidos', `PC emitido: ${numero}`)
+
+  // Inteligência proativa: roda o motor de anomalias no pedido recém-emitido.
+  // Severidade ALTA → notifica Financeiro (com e-mail) e Compliance do tenant.
+  try {
+    const histRows = db.prepare(
+      `SELECT id, fornecedor_id, valor_total, created_at FROM pedidos_compra
+        WHERE empresa_id = ? AND status != 'Cancelado' ORDER BY created_at DESC LIMIT 500`
+    ).all(emp)
+    const hist = histRows.map(h => ({ id: h.id, fornecedor_id: h.fornecedor_id, valor: h.valor_total, data: h.created_at }))
+    const rAn = detectarAnomalias({ id: pcId, fornecedor_id, valor: valor_total || 0, data: new Date().toISOString() }, hist, f || {})
+    for (const a of rAn.alertas.filter(x => x.severidade === 'alta')) {
+      const msg = `${numero} (${f?.nome || 'fornecedor ' + fornecedor_id}) — ${a.mensagem}. ${a.detalhe}`
+      notificar({ perfil: 'financeiro', titulo: `Risco em compras: ${a.mensagem}`, mensagem: msg, tipo: 'anomalia', ref_tipo: 'pedido', ref_id: String(pcId), email: true, empresa: emp })
+      notificar({ perfil: 'compliance', titulo: `Risco em compras: ${a.mensagem}`, mensagem: msg, tipo: 'anomalia', ref_tipo: 'pedido', ref_id: String(pcId), empresa: emp })
+      log(req.user.usuario_id, req.user.nome, 'anomalia_detectada', 'pedidos', msg)
+    }
+  } catch (e) { if (!IS_TEST) console.warn(`anomalia pós-emissão falhou: ${e.message}`) }
+
   const pc = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(pcId)
   res.status(201).json(ok({ ...pc, itens: db.prepare(`SELECT * FROM pc_itens WHERE pc_id = ?`).all(pcId) }))
 })
@@ -2190,7 +2210,7 @@ app.put('/api/crm/:id', requireAuth, (req, res) => {
   // C1: passou para Qualificação (ou além) e ainda não orçado → dispara orçamentação.
   if (precisaOrcamentacao(estagio) && cur.orcamentacao_status === 'nao_iniciada') {
     db.prepare(`UPDATE crm_oportunidades SET orcamentacao_status='pendente', orcamentacao_em=datetime('now') WHERE id=?`).run(req.params.id)
-    notificar({ perfil: 'orcamentista', titulo: 'Lead para precificar', mensagem: `Crie a estimativa de custos (WBS) do lead "${titulo || cur.titulo}" — ${cliente || cur.cliente}.`, tipo: 'orcamentacao', ref_tipo: 'crm', ref_id: String(req.params.id), email: true })
+    notificar({ perfil: 'orcamentista', titulo: 'Lead para precificar', mensagem: `Crie a estimativa de custos (WBS) do lead "${titulo || cur.titulo}" — ${cliente || cur.cliente}.`, tipo: 'orcamentacao', ref_tipo: 'crm', ref_id: String(req.params.id), email: true, empresa: empresaDoReq(req) })
     log(req.user.usuario_id, req.user.nome, 'orcamentacao_disparada', 'crm_oportunidades', `Orçamentação pendente para o lead ${titulo || cur.titulo}`)
   }
   res.json(ok(db.prepare(`SELECT * FROM crm_oportunidades WHERE id = ?`).get(req.params.id)))
