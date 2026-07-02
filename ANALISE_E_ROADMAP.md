@@ -45,7 +45,8 @@ realmente funcional (começando por Fornecedores), interligar os dados e embutir
 | **SSMA + Medições persistindo** — incidentes (`_ssSaveIncidentes`) e medições (`_saveMedicoes`) sincronizam via `/sync` a cada salvamento; reconcile de boot amplia para ssma/medições (empurra o snapshot local quando o servidor está vazio) | ✅ front + teste comportamental do reconcile |
 | **Hardening de segurança (nível SAP)** — headers de segurança em toda resposta (nosniff, X-Frame DENY, Referrer-Policy, Permissions-Policy, HSTS opt-in); política de senha forte na criação/troca de usuários (Express + Worker, paridade testada); **sessão expirada deixa de autenticar** (bug real: o token continuava válido após `expira_em`) + limpeza oportunista de sessões vencidas no login | ✅ Express + Worker + testes |
 | **Dashboard com dados reais do servidor** — o boot pré-carrega contas a pagar, OS e contratos (tenant-isolados) para os caches que o dashboard lê; contratos REAIS têm precedência sobre o seed demo `ERP_DATA` (que antes era a única fonte dos KPIs de contrato); lista vazia do servidor não apaga o cache local | ✅ front + testes |
-| Testes | ✅ 449/449 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant Express+Worker, hardening, **dashboard dados reais**, paridade Express⇄Worker) |
+| **Badge multi-empresa com o tenant REAL** — o boot cacheia `/api/empresas/atual`; `getEmpresaAtiva` usa a identidade do servidor (nome/CNPJ do tenant logado) em vez do seletor cosmético do localStorage; fallback preservado quando offline | ✅ front + testes |
+| Testes | ✅ 452/452 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant Express+Worker, hardening, dashboard dados reais, **badge tenant real**, paridade Express⇄Worker) |
 
 O **motor de crédito** é a primeira peça de "inteligência adaptativa": explica
 cada fator que compôs a nota (não é caixa-preta), e o resultado é reusável em
