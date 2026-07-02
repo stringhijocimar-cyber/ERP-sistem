@@ -377,6 +377,17 @@ const TABLES = {
 };
 const sanitizeKey = (k) => String(k).replace(/[^a-zA-Z0-9_]/g,'');
 
+// Política de senha forte (mín. 8, maiúscula, minúscula e dígito).
+// Pura (paridade com o Express).
+function validarSenhaForte(senha){
+  const s = String(senha || '');
+  if (s.length < 8) return { ok:false, motivo:'Senha deve ter no mínimo 8 caracteres' };
+  if (!/[A-Z]/.test(s)) return { ok:false, motivo:'Senha deve conter letra maiúscula' };
+  if (!/[a-z]/.test(s)) return { ok:false, motivo:'Senha deve conter letra minúscula' };
+  if (!/[0-9]/.test(s)) return { ok:false, motivo:'Senha deve conter número' };
+  return { ok:true };
+}
+
 // ===== Multi-tenant (paridade com o Express) =====
 // O escopo vem SEMPRE do JWT do usuário autenticado (nunca do corpo/query).
 // Docs legados sem empresa_id pertencem à empresa 1 (tenant mestre).
@@ -986,6 +997,11 @@ export default {
         const { nome, email, senha, perfil, fornecedor_id } = body;
         if (!nome || !email) return E('Nome e email obrigatorios', 400);
         if (perfil === 'fornecedor' && !fornecedor_id) return E('Usuario fornecedor exige fornecedor_id', 400);
+        // Política de senha forte quando informada (omitida → SEED_PASSWORD).
+        if (senha !== undefined && senha !== null && senha !== ''){
+          const pol = validarSenhaForte(senha);
+          if (!pol.ok) return E(pol.motivo, 400);
+        }
         // Multi-tenant: novo usuário herda a empresa do criador; só o tenant
         // mestre (empresa 1) pode provisionar em outra empresa.
         const criador = empresaDoUsuario(user);
@@ -1720,4 +1736,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao, podeGerarProposta, montarRollupWBS, empresaDoUsuario, docPertenceEmpresa };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao, podeGerarProposta, montarRollupWBS, empresaDoUsuario, docPertenceEmpresa, validarSenhaForte };

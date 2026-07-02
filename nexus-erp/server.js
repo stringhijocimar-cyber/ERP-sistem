@@ -347,6 +347,21 @@ app.use(cors({
   credentials: true,
 }))
 app.use(express.json())
+
+// ─── Headers de segurança (hardening de API/SPA) ─────────────
+// Sem dependência extra: o essencial do helmet aplicado à mão.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')       // sem MIME sniffing
+  res.setHeader('X-Frame-Options', 'DENY')                 // anti-clickjacking
+  res.setHeader('Referrer-Policy', 'no-referrer')          // não vaza URLs internas
+  res.setHeader('X-XSS-Protection', '0')                   // legado off (CSP é o caminho)
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+  if ((process.env.FORCE_HSTS ?? '0') === '1') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  }
+  next()
+})
+
 app.use(express.static(join(__dirname, 'public')))
 
 // ─── Rate limiting no login (anti força-bruta) ────────────────
@@ -366,6 +381,17 @@ function uid(prefix = 'id') {
 }
 function now() { return new Date().toISOString() }
 
+// Política de senha forte (mín. 8 caracteres, maiúscula, minúscula e dígito).
+// Pura (espelhada no Worker). Devolve { ok } ou { ok:false, motivo }.
+function validarSenhaForte(senha) {
+  const s = String(senha || '')
+  if (s.length < 8) return { ok: false, motivo: 'Senha deve ter no mínimo 8 caracteres' }
+  if (!/[A-Z]/.test(s)) return { ok: false, motivo: 'Senha deve conter letra maiúscula' }
+  if (!/[a-z]/.test(s)) return { ok: false, motivo: 'Senha deve conter letra minúscula' }
+  if (!/[0-9]/.test(s)) return { ok: false, motivo: 'Senha deve conter número' }
+  return { ok: true }
+}
+
 // Auth middleware
 function getUser(req) {
   const auth = req.headers['authorization'] || ''
@@ -373,11 +399,17 @@ function getUser(req) {
   if (!token) return null
   try {
     const row = db.prepare(
-      `SELECT s.usuario_id, u.nome, u.email, u.perfil, u.ativo, u.fornecedor_id, u.empresa_id
+      `SELECT s.usuario_id, s.expira_em, u.nome, u.email, u.perfil, u.ativo, u.fornecedor_id, u.empresa_id
        FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id
        WHERE s.token = ? AND u.ativo = 1`
     ).get(token)
-    return row || null
+    if (!row) return null
+    // Sessão expirada NÃO autentica (e é removida — higiene de sessão).
+    if (row.expira_em && new Date(row.expira_em) <= new Date()) {
+      try { db.prepare(`DELETE FROM sessoes WHERE token = ?`).run(token) } catch {}
+      return null
+    }
+    return row
   } catch { return null }
 }
 
@@ -434,6 +466,9 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
   // vazar timing). Sem comparação de texto plano nem senhas hardcoded.
   const senhaOk = user ? bcrypt.compareSync(String(senha), user.senha_hash) : false
   if (!user || !senhaOk) return res.status(401).json(err('Credenciais inválidas', 401))
+
+  // Higiene: remove sessões já expiradas (limpeza oportunista, barata).
+  try { db.prepare(`DELETE FROM sessoes WHERE expira_em <= ?`).run(new Date().toISOString()) } catch {}
 
   const token = uid('tok')
   const expira = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
@@ -2274,6 +2309,11 @@ app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
   if (!nome || !email) return res.status(400).json(err('Nome e email obrigatórios'))
   // Usuário de portal (perfil 'fornecedor') exige vínculo com um fornecedor.
   if (perfil === 'fornecedor' && !fornecedor_id) return res.status(400).json(err('Usuário fornecedor exige fornecedor_id'))
+  // Política de senha forte quando informada (omitida → SEED_PASSWORD do env).
+  if (senha !== undefined) {
+    const pol = validarSenhaForte(senha)
+    if (!pol.ok) return res.status(400).json(err(pol.motivo))
+  }
   // Senha sempre armazenada com hash bcrypt; se omitida, usa SEED_PASSWORD.
   const senhaHash = bcrypt.hashSync(String(senha || SEED_PASSWORD), BCRYPT_ROUNDS)
   // Multi-tenant: novo usuário herda a empresa de quem o cria (isolamento).
@@ -2293,6 +2333,11 @@ app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
 
 app.put('/api/usuarios/:id', requireAuth, requireRole('admin'), (req, res) => {
   const { nome, email, perfil, ativo, senha } = req.body
+  // Troca de senha respeita a política de senha forte.
+  if (senha) {
+    const pol = validarSenhaForte(senha)
+    if (!pol.ok) return res.status(400).json(err(pol.motivo))
+  }
   db.prepare(`UPDATE usuarios SET nome=?,email=?,perfil=?,ativo=?,updated_at=datetime('now') WHERE id=?`)
     .run(nome, email, perfil, ativo ?? 1, req.params.id)
   // Troca de senha opcional (sempre com hash bcrypt).
