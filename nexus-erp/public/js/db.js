@@ -94,7 +94,9 @@ let _apiOk = null; // null = não testado, true/false
 async function _checkApi() {
   if (_apiOk !== null) return _apiOk;
   try {
-    const r = await fetch('/api/dashboard', { signal: AbortSignal.timeout(3000) });
+    // /api/health é público e leve — detecta online/offline sem token e sem
+    // depender do /api/dashboard (que exige auth e é escopado por tenant).
+    const r = await fetch('/api/health', { signal: AbortSignal.timeout(3000) });
     _apiOk = r.ok;
   } catch { _apiOk = false; }
   return _apiOk;
