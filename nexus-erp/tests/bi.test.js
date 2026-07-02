@@ -87,8 +87,8 @@ describe('Dashboard BI', () => {
   it('fornecedor (portal) é barrado no painel gerencial (403)', async () => {
     const fid = db.prepare(`INSERT INTO fornecedores(nome) VALUES('FP')`).run().lastInsertRowid
     await request(app).post('/api/usuarios').set('Authorization', `Bearer ${adminToken}`)
-      .send({ nome: 'P', email: 'pbi@forn.com', senha: 'P@123456', perfil: 'fornecedor', fornecedor_id: fid })
-    const tok = (await request(app).post('/api/auth/login').send({ email: 'pbi@forn.com', senha: 'P@123456' })).body?.data?.token
+      .send({ nome: 'P', email: 'pbi@forn.com', senha: 'Portal@123', perfil: 'fornecedor', fornecedor_id: fid })
+    const tok = (await request(app).post('/api/auth/login').send({ email: 'pbi@forn.com', senha: 'Portal@123' })).body?.data?.token
     const r = await request(app).get('/api/bi').set('Authorization', `Bearer ${tok}`)
     expect(r.status).toBe(403)
   })
