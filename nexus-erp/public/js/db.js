@@ -567,9 +567,11 @@ window._syncSnapshot = function (entidade, data) {
 window._reconcileSnapshotsOnBoot = async function () {
   if (!_apiOk) return;
   const alvos = [
-    { ent: 'projetos', key: 'fa_projetos_gantt' },
+    { ent: 'projetos',  key: 'fa_projetos_gantt' },
     { ent: 'contratos', key: 'fa_contratos' },
     { ent: 'crm',       key: 'fa_crm_data' },
+    { ent: 'ssma',      key: 'fa_incidentes' },
+    { ent: 'medicoes',  key: 'fa_medicoes_v2' },
   ];
   for (const { ent, key } of alvos) {
     try {
