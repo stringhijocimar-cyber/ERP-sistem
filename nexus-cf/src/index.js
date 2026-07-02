@@ -977,13 +977,20 @@ export default {
         await audit(env, u.id, 'login_ok', 'users', u.id, {});
         return J({ token, user:{ id:u.id, name:u.name, email:u.email, role:u.role } });
       }
-      if (seg[0]==='dashboard' && method==='GET'){
-        const cnt = async (t)=>{ try { const r=await env.DB.prepare(`SELECT COUNT(*) n FROM ${t}`).first(); return r?r.n:0; } catch { return 0; } };
-        return J({ ok:true, pedidos: await cnt('pedidos'), rc: await cnt('rc'), contas_pagar: await cnt('contas_pagar') });
-      }
+      // Health-check público e leve: só diz que a API está de pé, sem dados.
+      // (usado pelo front para detectar online/offline sem precisar de token)
+      if (seg[0]==='health' && method==='GET') return J({ ok:true });
 
       // ---- Daqui em diante exige token valido ----
       const user = await requireAuth(request, env);
+
+      // Dashboard exige auth e conta SÓ o tenant do usuário (antes era
+      // público e vazava contadores globais — paridade com o Express).
+      if (seg[0]==='dashboard' && method==='GET'){
+        const emp = empresaDoUsuario(user);
+        const cnt = async (t)=>{ try { const r=await env.DB.prepare(`SELECT COUNT(*) n FROM ${t} WHERE COALESCE(json_extract(payload,'$.empresa_id'),1) = ?`).bind(emp).first(); return r?r.n:0; } catch { return 0; } };
+        return J({ ok:true, pedidos: await cnt('pedidos'), rc: await cnt('rc'), contas_pagar: await cnt('contas_pagar') });
+      }
 
       if (seg[0]==='auth' && seg[1]==='me'){
         const u = await env.DB.prepare('SELECT id,name,email,role FROM users WHERE id=?').bind(user.sub).first();

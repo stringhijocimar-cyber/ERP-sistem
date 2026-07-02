@@ -454,6 +454,10 @@ function log(userId, userName, acao, modulo, descricao) {
 // ════════════════════════════════════════════════════════════
 // AUTH
 // ════════════════════════════════════════════════════════════
+// Health-check público e leve: só diz que a API está de pé, sem dados.
+// (usado pelo front para detectar online/offline sem precisar de token)
+app.get('/api/health', (req, res) => res.json(ok({ ok: true })))
+
 app.post('/api/auth/login', loginLimiter, (req, res) => {
   const { email, senha } = req.body
   if (!email || !senha) return res.status(400).json(err('Email e senha obrigatórios'))
