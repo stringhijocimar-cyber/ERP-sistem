@@ -12,8 +12,15 @@ CREATE TABLE IF NOT EXISTS users (
   scopes        TEXT DEFAULT '[]',
   fornecedor_id TEXT,
   ativo         INTEGER DEFAULT 1,
+  -- Multi-tenant: empresa do usuário (legado → '1'). Em bancos já
+  -- implantados, o Worker adiciona a coluna de forma preguiçosa
+  -- (ALTER idempotente no provisionamento de usuários).
+  empresa_id    TEXT DEFAULT '1',
   created_at    TEXT DEFAULT (datetime('now'))
 );
+
+-- Empresas (tenants) — doc-model como as demais entidades.
+CREATE TABLE IF NOT EXISTS empresas ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 
 -- Entidades "documento" (id + payload JSON). Flexivel e fiel ao que o
 -- front-end ja envia/recebe como objetos.

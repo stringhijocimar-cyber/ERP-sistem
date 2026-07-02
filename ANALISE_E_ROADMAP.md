@@ -41,7 +41,8 @@ realmente funcional (começando por Fornecedores), interligar os dados e embutir
 | **Isolamento de OS e dos agregados por tenant** — ordens de serviço (lista/GET/PUT/iniciar/concluir) escopadas; dashboard, BI e fluxo de caixa consolidam apenas os dados da própria empresa (OS/RC/PC/financeiro/fornecedores). Contratos e trilha de logs ficam para o próximo slice | ✅ Express + testes |
 | **Isolamento de Contratos, CRM, Projetos, WBS e Propostas por tenant** — listas/CRUD escopados; rollup de WBS e alerta de vencimento de contrato por empresa; proposta só de lead do próprio tenant (com estimativa WBS) | ✅ Express + testes |
 | **Isolamento de Almoxarifado e da trilha de logs por tenant** — itens (lista/CRUD/movimentação) e recursos doc-model (materiais/movimentos/empréstimos/inventários) escopados; `log()` atribui a empresa do autor; `/api/logs` mostra só a própria trilha (mestre vê tudo); verificação da cadeia restrita ao mestre | ✅ Express + testes — **isolamento operacional do Express completo** |
-| Testes | ✅ 428/428 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant, isolamento fornecedores/dinheiro/OS+dashboard/operacional/**almoxarifado+logs**, paridade Express⇄Worker) |
+| **Paridade multi-tenant no Worker (D1)** — `empresa_id` no JWT; CRUD genérico e `/sync` carimbam a empresa no payload (spoof sobrescrito), listas filtram e operações por id devolvem 404 cross-tenant; `/api/empresas` (mestre provisiona); usuários herdam a empresa do criador; migração preguiçosa idempotente p/ bancos implantados | ✅ **isolamento ponta-a-ponta nos 2 backends** + testes |
+| Testes | ✅ 435/435 (segurança, gate, bridge, crédito, sync genérico, NexusAPI, compras E2E, nav_safety, multi-tenant Express+**Worker**, paridade Express⇄Worker) |
 
 O **motor de crédito** é a primeira peça de "inteligência adaptativa": explica
 cada fator que compôs a nota (não é caixa-preta), e o resultado é reusável em

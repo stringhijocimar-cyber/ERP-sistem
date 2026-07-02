@@ -377,6 +377,15 @@ const TABLES = {
 };
 const sanitizeKey = (k) => String(k).replace(/[^a-zA-Z0-9_]/g,'');
 
+// ===== Multi-tenant (paridade com o Express) =====
+// O escopo vem SEMPRE do JWT do usuário autenticado (nunca do corpo/query).
+// Docs legados sem empresa_id pertencem à empresa 1 (tenant mestre).
+function empresaDoUsuario(user){ return Number(user && user.empresa_id) || 1; }
+function docPertenceEmpresa(doc, empresaId){
+  if (!doc) return false;
+  return (Number(doc.empresa_id) || 1) === (Number(empresaId) || 1);
+}
+
 async function listDocs(env, table, url){
   let sql = `SELECT payload FROM ${table}`;
   const where = []; const binds = []; let limit = null;
@@ -953,7 +962,7 @@ export default {
           await audit(env, null, 'login_failed', 'users', email, {});
           return E('credenciais invalidas', 401);
         }
-        const token = await signJWT({ sub:u.id, role:u.role, name:u.name, email:u.email, fornecedor_id:u.fornecedor_id||null, scopes:JSON.parse(u.scopes||'[]'), exp: Math.floor(Date.now()/1000)+8*3600 }, getSecret(env));
+        const token = await signJWT({ sub:u.id, role:u.role, name:u.name, email:u.email, fornecedor_id:u.fornecedor_id||null, empresa_id: Number(u.empresa_id)||1, scopes:JSON.parse(u.scopes||'[]'), exp: Math.floor(Date.now()/1000)+8*3600 }, getSecret(env));
         await audit(env, u.id, 'login_ok', 'users', u.id, {});
         return J({ token, user:{ id:u.id, name:u.name, email:u.email, role:u.role } });
       }
@@ -977,14 +986,44 @@ export default {
         const { nome, email, senha, perfil, fornecedor_id } = body;
         if (!nome || !email) return E('Nome e email obrigatorios', 400);
         if (perfil === 'fornecedor' && !fornecedor_id) return E('Usuario fornecedor exige fornecedor_id', 400);
+        // Multi-tenant: novo usuário herda a empresa do criador; só o tenant
+        // mestre (empresa 1) pode provisionar em outra empresa.
+        const criador = empresaDoUsuario(user);
+        const empresaId = (criador === 1 && body.empresa_id) ? Number(body.empresa_id) : criador;
+        // Migração preguiçosa e idempotente para bancos já implantados.
+        try { await env.DB.exec("ALTER TABLE users ADD COLUMN empresa_id TEXT DEFAULT '1'"); } catch(e){ /* já existe */ }
         const { hash, salt } = await hashPassword(String(senha || env.SEED_PASSWORD || genRandomPassword()));
         const id = 'u-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
         try {
-          await env.DB.prepare('INSERT INTO users (id,email,username,name,role,password_hash,salt,scopes,fornecedor_id,ativo) VALUES (?,?,?,?,?,?,?,?,?,1)')
-            .bind(id, String(email).toLowerCase().trim(), String(email).split('@')[0], nome, perfil||'operacao', hash, salt, '[]', fornecedor_id||null).run();
+          await env.DB.prepare('INSERT INTO users (id,email,username,name,role,password_hash,salt,scopes,fornecedor_id,ativo,empresa_id) VALUES (?,?,?,?,?,?,?,?,?,1,?)')
+            .bind(id, String(email).toLowerCase().trim(), String(email).split('@')[0], nome, perfil||'operacao', hash, salt, '[]', fornecedor_id||null, String(empresaId)).run();
         } catch(e){ return E('Email ja cadastrado', 400); }
-        await audit(env, user.sub, 'usuario_criar', 'users', id, { perfil: perfil||'operacao' });
-        return J({ id, nome, email, perfil: perfil||'operacao', fornecedor_id: fornecedor_id||null }, 201);
+        await audit(env, user.sub, 'usuario_criar', 'users', id, { perfil: perfil||'operacao', empresa_id: empresaId });
+        return J({ id, nome, email, perfil: perfil||'operacao', fornecedor_id: fornecedor_id||null, empresa_id: empresaId }, 201);
+      }
+
+      // ---- Empresas (tenants): mestre gerencia todas; demais veem a própria ----
+      if (seg[0]==='empresas'){
+        try { await env.DB.exec("CREATE TABLE IF NOT EXISTS empresas ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) )"); } catch(e){ /* já existe */ }
+        const emp = empresaDoUsuario(user);
+        if (seg[1]==='atual' && method==='GET'){
+          const e0 = await getDoc(env, 'empresas', String(emp));
+          return J(e0 || { id: emp, razao_social: emp === 1 ? 'Empresa Padrão' : `Empresa ${emp}` });
+        }
+        if (!seg[1] && method==='GET'){
+          const todas = await listDocs(env, 'empresas', { searchParams: new URLSearchParams() });
+          return J(emp === 1 ? todas : todas.filter(e0 => (Number(e0.id)||0) === emp));
+        }
+        if (!seg[1] && method==='POST'){
+          requireRole(user, ['admin']);
+          if (emp !== 1) return E('Apenas o tenant mestre pode criar empresas', 403);
+          if (!body.razao_social || !String(body.razao_social).trim()) return E('Razão social obrigatória', 400);
+          const todas = await listDocs(env, 'empresas', { searchParams: new URLSearchParams() });
+          const novoId = String(Math.max(1, ...todas.map(e0 => Number(e0.id)||1)) + 1);
+          const nova = await createDoc(env, 'empresas', { id: novoId, razao_social: String(body.razao_social).trim(), nome_fantasia: body.nome_fantasia||null, cnpj: body.cnpj||null, plano: body.plano||'padrao', ativo: 1 });
+          await audit(env, user.sub, 'empresa_criar', 'empresas', novoId, {});
+          return J(nova, 201);
+        }
       }
 
       // ---- Portal do fornecedor (self-service, escopo isolado) ----
@@ -1160,22 +1199,25 @@ export default {
       if (seg[0]==='pedidos' && seg[2]==='cancelar' && method==='POST'){ const r=await updateDoc(env,'pedidos',seg[1],{ status:'Cancelado', motivo_cancelamento:body.motivo }); await audit(env,user.sub,'pedido_cancelar','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
       if (seg[0]==='fornecedores' && seg[2]==='avaliacoes' && method==='POST'){ const cur=await getDoc(env,'fornecedores',seg[1]); if(!cur) return E('nao encontrado',404); cur.avaliacoes=cur.avaliacoes||[]; cur.avaliacoes.push({ id:'av-'+Date.now(), ...body }); await updateDoc(env,'fornecedores',seg[1],{ avaliacoes:cur.avaliacoes }); await audit(env,user.sub,'fornecedor_avaliar','fornecedores',seg[1],{}); return J({ ok:true }); }
 
-      // Sync generico (UPSERT por id/numero — nao apaga itens que o cliente nao mandou)
+      // Sync generico (UPSERT por id/numero — nao apaga itens que o cliente nao
+      // mandou). Escopado por tenant: carimba a empresa do usuário em cada item.
       if (seg[1]==='sync' && method==='POST' && TABLES[seg[0]]){
         const table = TABLES[seg[0]];
+        const emp = empresaDoUsuario(user);
         const arr = Array.isArray(body.data) ? body.data : [];
         for (let i = 0; i < arr.length; i++){
           const item = arr[i];
           if (!item) continue;
           const id = item.id ?? item.numero ?? `i-${i}`;
-          await createDoc(env, table, { ...item, id });
+          await createDoc(env, table, { ...item, id, empresa_id: emp });
         }
         await audit(env, user.sub, 'sync', table, null, { count: arr.length });
         return J({ synced: arr.length });
       }
-      // GET /api/<entidade>/sync — paridade com o Express: devolve o snapshot.
+      // GET /api/<entidade>/sync — paridade com o Express: snapshot do tenant.
       if (seg[1]==='sync' && method==='GET' && TABLES[seg[0]]){
-        return J(await listDocs(env, TABLES[seg[0]], { searchParams: new URLSearchParams() }));
+        const emp = empresaDoUsuario(user);
+        return J((await listDocs(env, TABLES[seg[0]], { searchParams: new URLSearchParams() })).filter(d => docPertenceEmpresa(d, emp)));
       }
 
       // RC — aprovação multi-estágio
@@ -1645,14 +1687,28 @@ export default {
         return J(r);
       }
 
-      // CRUD generico
+      // CRUD generico — escopado por tenant: o create carimba a empresa do
+      // usuário (spoof no corpo é sobrescrito), listas filtram, e operações
+      // por id devolvem 404 quando o doc pertence a outra empresa.
       if (TABLES[seg[0]]){
         const table = TABLES[seg[0]];
-        if (method==='GET' && !seg[1]) return J(await listDocs(env, table, url));
-        if (method==='GET' && seg[1]){ const d=await getDoc(env,table,seg[1]); return d?J(d):E('nao encontrado',404); }
-        if (method==='POST'){ const r=await createDoc(env,table,body); await audit(env,user.sub,'create',table,r.id,{}); return J(r); }
-        if ((method==='PUT'||method==='PATCH') && seg[1]){ const r=await updateDoc(env,table,seg[1],body); await audit(env,user.sub,'update',table,seg[1],{}); return r?J(r):E('nao encontrado',404); }
-        if (method==='DELETE' && seg[1]){ await audit(env,user.sub,'delete',table,seg[1],{}); return J(await deleteDoc(env,table,seg[1])); }
+        const emp = empresaDoUsuario(user);
+        if (method==='GET' && !seg[1]) return J((await listDocs(env, table, url)).filter(d => docPertenceEmpresa(d, emp)));
+        if (method==='GET' && seg[1]){ const d=await getDoc(env,table,seg[1]); return (d && docPertenceEmpresa(d, emp))?J(d):E('nao encontrado',404); }
+        if (method==='POST'){ const r=await createDoc(env,table,{ ...body, empresa_id: emp }); await audit(env,user.sub,'create',table,r.id,{}); return J(r); }
+        if ((method==='PUT'||method==='PATCH') && seg[1]){
+          const cur=await getDoc(env,table,seg[1]);
+          if (!cur || !docPertenceEmpresa(cur, emp)) return E('nao encontrado',404);
+          const r=await updateDoc(env,table,seg[1],{ ...body, empresa_id: Number(cur.empresa_id)||1 });
+          await audit(env,user.sub,'update',table,seg[1],{});
+          return J(r);
+        }
+        if (method==='DELETE' && seg[1]){
+          const cur=await getDoc(env,table,seg[1]);
+          if (!cur || !docPertenceEmpresa(cur, emp)) return E('nao encontrado',404);
+          await audit(env,user.sub,'delete',table,seg[1],{});
+          return J(await deleteDoc(env,table,seg[1]));
+        }
       }
 
       return E('rota nao encontrada: ' + path, 404);
@@ -1664,4 +1720,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao, podeGerarProposta, montarRollupWBS };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao, podeGerarProposta, montarRollupWBS, empresaDoUsuario, docPertenceEmpresa };
