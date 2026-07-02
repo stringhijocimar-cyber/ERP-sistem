@@ -313,6 +313,69 @@ function _salvarEmpresa(id) {
 }
 
 // ── Tela gerenciar empresas ──────────────────────
+// ── Tenants REAIS do servidor (backend multi-tenant) ─────────────
+// O mestre (empresa 1) lista e provisiona todos; os demais enxergam só a
+// própria. Resiliente: sem servidor/token, a seção simplesmente não aparece.
+async function listarEmpresasServidor() {
+  if (!window.NexusAPI) return [];
+  const r = await NexusAPI.get('/api/empresas');
+  return Array.isArray(r) ? r : [];
+}
+async function criarEmpresaServidor(dados) {
+  if (!window.NexusAPI) return { ok: false, error: 'API indisponível' };
+  return await NexusAPI.post('/api/empresas', dados);
+}
+function _souTenantMestre() {
+  const srv = typeof _empresaServidor === 'function' ? _empresaServidor() : null;
+  return !!srv && srv.id === '1';
+}
+async function novaEmpresaServidor() {
+  const razao = prompt('Razão social do novo tenant (empresa cliente):');
+  if (!razao || !razao.trim()) return;
+  const fantasia = prompt('Nome fantasia (opcional):') || null;
+  const cnpj = prompt('CNPJ (opcional):') || null;
+  const r = await criarEmpresaServidor({ razao_social: razao.trim(), nome_fantasia: fantasia, cnpj });
+  if (r && r.id != null) {
+    if (typeof showToast === 'function') showToast(`Tenant "${razao.trim()}" criado (id ${r.id})`, 'success');
+    if (typeof closeModal === 'function') closeModal();
+    abrirGerenciarEmpresas();
+  } else if (typeof showToast === 'function') {
+    showToast(r && r.error ? r.error : 'Não foi possível criar (apenas o tenant mestre provisiona empresas)', 'error');
+  }
+}
+function _renderEmpresasServidor(list) {
+  const box = document.getElementById('empServerList');
+  if (!box) return;
+  const esc = v => (window.NexusAPI ? NexusAPI.escapeHtml(v) : String(v ?? ''));
+  const atual = typeof _empresaServidor === 'function' ? _empresaServidor() : null;
+  box.innerHTML = `
+    <div style="margin-top:18px;padding-top:14px;border-top:1px dashed var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-size:13px;font-weight:800;color:var(--text-primary)">
+          <i class="fas fa-server" style="color:var(--fa-teal)"></i> Tenants no servidor (isolamento real)
+        </div>
+        ${_souTenantMestre() ? `<button class="btn btn-primary btn-sm" onclick="novaEmpresaServidor()"><i class="fas fa-plus"></i> Novo tenant</button>` : ''}
+      </div>
+      ${list.length ? `<div style="display:grid;gap:8px">${list.map(e => `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px">
+          <span style="width:26px;height:26px;border-radius:6px;background:var(--fa-teal);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff">${esc(String(e.id))}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:700">${esc(e.nome_fantasia || e.razao_social)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${esc(e.razao_social)}${e.cnpj ? ' · CNPJ ' + esc(e.cnpj) : ''} · plano ${esc(e.plano || 'padrao')}</div>
+          </div>
+          ${atual && String(e.id) === atual.id ? '<span class="badge badge-success">Seu tenant</span>' : ''}
+        </div>`).join('')}</div>`
+      : '<div style="font-size:12px;color:var(--text-muted)">Nenhum tenant visível para o seu usuário.</div>'}
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px">
+        Os dados de cada tenant são isolados no servidor — o seu tenant vem do login, não deste seletor.
+      </div>
+    </div>`;
+}
+window.listarEmpresasServidor = listarEmpresasServidor;
+window.criarEmpresaServidor = criarEmpresaServidor;
+window.novaEmpresaServidor = novaEmpresaServidor;
+window._souTenantMestre = _souTenantMestre;
+
 function abrirGerenciarEmpresas() {
   const emps  = getEmpresas();
   const ativa = getEmpresaAtiva();
@@ -348,8 +411,11 @@ function abrirGerenciarEmpresas() {
             </div>
           </div>`;
       }).join('')}
-    </div>`,
+    </div>
+    <div id="empServerList"></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>`);
+  // Seção assíncrona: tenants reais do servidor (só aparece se houver resposta).
+  listarEmpresasServidor().then(list => { if (list.length || _souTenantMestre()) _renderEmpresasServidor(list) }).catch(() => {});
 }
 
 function _confirmarDeletarEmpresa(id) {
