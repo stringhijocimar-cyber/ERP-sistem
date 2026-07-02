@@ -16,6 +16,7 @@ import { dirname, join } from 'path'
 import './public/js/lib/auditoria.js' // define globalThis.Auditoria (hash encadeado)
 import './public/js/lib/three_way.js' // define globalThis.conciliarTresVias (3-way por item)
 import './public/js/lib/lgpd.js'      // define globalThis.LGPD (anonimização/retenção)
+import './public/js/lib/anomalias.js' // define globalThis.detectarAnomalias (risco em compras)
 import { consultarCredito } from './lib/credit_bureau.js'
 import { consultarReceita, consultarCadastroCNPJ } from './lib/receita.js'
 import { analisarFinanceiro } from './lib/analise_financeira.js'
@@ -748,6 +749,33 @@ function coletarAlertas({ dias = 7, isAdmin = false, empresa = 1 } = {}) {
       descricao: `${c.titulo || c.fornecedor_nome || ''} — fim ${c.data_fim}`,
       data: c.data_fim, ref: c.id })
   }
+
+  // 6) ANOMALIAS DE COMPRA — o motor puro (fracionamento, fora da curva,
+  //    fornecedor novo/crédito ruim com valor alto, duplicidade) roda sobre
+  //    os pedidos recentes do tenant, com o histórico completo do tenant.
+  try {
+    const histRows = db.prepare(
+      `SELECT pc.id, pc.numero, pc.fornecedor_id, pc.fornecedor_nome, pc.valor_total, pc.created_at
+         FROM pedidos_compra pc WHERE pc.empresa_id = ? AND pc.status != 'Cancelado'
+        ORDER BY pc.created_at DESC LIMIT 500`
+    ).all(empresa)
+    const hist = histRows.map(p => ({ id: p.id, fornecedor_id: p.fornecedor_id, valor: p.valor_total, data: p.created_at }))
+    const jaAvisado = new Set() // 1 alerta por (tipo, fornecedor) — evita ruído
+    for (const p of histRows.slice(0, 20)) { // analisa os 20 mais recentes
+      const f = p.fornecedor_id
+        ? db.prepare(`SELECT score_credito, classificacao_credito FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(p.fornecedor_id, empresa)
+        : null
+      const r = detectarAnomalias({ id: p.id, fornecedor_id: p.fornecedor_id, valor: p.valor_total, data: p.created_at }, hist, f || {})
+      for (const a of r.alertas) {
+        const chave = `${a.tipo}:${p.fornecedor_id}`
+        if (jaAvisado.has(chave)) continue
+        jaAvisado.add(chave)
+        alertas.push({ tipo: `anomalia_${a.tipo}`, severidade: a.severidade, modulo: 'Compras',
+          titulo: `${a.mensagem} — ${p.fornecedor_nome || 'fornecedor ' + p.fornecedor_id}`,
+          descricao: `${p.numero}: ${a.detalhe}`, valor: p.valor_total, data: p.created_at, ref: p.id })
+      }
+    }
+  } catch (e) { if (!IS_TEST) console.warn(`varredura de anomalias falhou: ${e.message}`) }
 
   alertas.sort((a, b) => (SEV_PESO[b.severidade] || 0) - (SEV_PESO[a.severidade] || 0))
   return alertas
