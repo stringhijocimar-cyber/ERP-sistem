@@ -27,11 +27,37 @@ function getEmpresas() {
 
 function saveEmpresas(list) { localStorage.setItem(EMPRESAS_KEY, JSON.stringify(list)); }
 
+// Empresa REAL do backend (tenant do usuário logado), cacheada no boot pelo
+// db.js em 'fa_empresa_atual'. A identidade do tenant vem do SERVIDOR — o
+// seletor local não muda de tenant (isolamento), só personalização visual.
+function _empresaServidor() {
+  try {
+    const e = JSON.parse(localStorage.getItem('fa_empresa_atual') || 'null');
+    if (!e || e.id == null) return null;
+    return {
+      id: String(e.id),
+      nome: e.razao_social || e.nome || 'Empresa',
+      fantasia: e.nome_fantasia || e.razao_social || e.nome || 'Empresa',
+      cnpj: e.cnpj || '',
+      _servidor: true,
+    };
+  } catch { return null; }
+}
+
 function getEmpresaAtiva() {
+  const srv = _empresaServidor();
+  if (srv) {
+    // Identidade (nome/CNPJ) do servidor; personalização visual local
+    // (logo/cor) é preservada quando existir empresa local com o mesmo id.
+    const local = getEmpresas().find(x => String(x.id) === srv.id) || {};
+    return { ...local, ...srv };
+  }
   const id  = localStorage.getItem(EMPRESA_ATIVA_KEY);
   const all = getEmpresas();
   return all.find(e => e.id === id) || all[0];
 }
+window.getEmpresaAtiva = getEmpresaAtiva;
+window._empresaServidor = _empresaServidor;
 
 function setEmpresaAtiva(id) {
   localStorage.setItem(EMPRESA_ATIVA_KEY, id);

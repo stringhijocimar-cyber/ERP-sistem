@@ -713,6 +713,16 @@ window.DB._init = async function() {
     }
   } catch {}
 
+  // Empresa REAL do usuário (tenant do servidor) — alimenta o badge
+  // multi-empresa com a identidade verdadeira, não a do seletor local.
+  try {
+    const emp = await _apiFetch('/api/empresas/atual');
+    if (emp && emp.id != null) {
+      localStorage.setItem('fa_empresa_atual', JSON.stringify(emp));
+      if (typeof window._renderEmpresaAtivaBadge === 'function') window._renderEmpresaAtivaBadge();
+    }
+  } catch { /* offline → badge segue com o cache/seletor local */ }
+
   // Reconcilia snapshots só-localStorage (projetos/contratos/crm) com o D1.
   // Roda após o fix do /sync no Express; não bloqueia o boot se falhar.
   try { await window._reconcileSnapshotsOnBoot(); } catch {}
