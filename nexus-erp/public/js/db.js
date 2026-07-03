@@ -577,7 +577,10 @@ window._reconcileSnapshotsOnBoot = async function () {
   ];
   for (const { ent, key } of alvos) {
     try {
-      const local = JSON.parse(localStorage.getItem(key) || '[]');
+      let local = JSON.parse(localStorage.getItem(key) || '[]');
+      // fa_crm_data é um OBJETO { leads: [...] } — extrai o array de leads
+      // (sem isso, o reconcile de CRM nunca empurrava nada).
+      if (ent === 'crm' && local && !Array.isArray(local)) local = local.leads || [];
       if (!Array.isArray(local) || local.length === 0) continue;
       const remoto = await _apiFetch(`/api/${ent}/sync`).catch(() => []);
       if (!Array.isArray(remoto) || remoto.length === 0) {
