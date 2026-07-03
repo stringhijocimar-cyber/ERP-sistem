@@ -798,7 +798,7 @@ function gerarPropostaLead(leadId) {
   `);
 }
 
-function salvarProposta(leadId) {
+async function salvarProposta(leadId) {
   const desc = document.getElementById('propDesc')?.value?.trim();
   const valor = parseFloat(document.getElementById('propValor')?.value || 0);
   if (!desc) { showToast('Informe a descrição.', 'error'); return; }
@@ -819,7 +819,31 @@ function salvarProposta(leadId) {
     versao: 1,
     responsavel: currentUser?.name || '—'
   };
+
+  // ── C2 REAL: lead sincronizado → proposta via /api/propostas ──────────
+  // O servidor impõe o gate "lead sem estimativa de custos (WBS) → 409" e
+  // calcula custo_estimado; a proposta ganha o número oficial (PROP-AAAA-NNN).
+  const leadC2 = CRM_DATA.leads.find(l => l.id === leadId);
+  if (leadC2 && leadC2._srvId != null && window.NexusAPI) {
+    const r = await NexusAPI.post('/api/propostas', {
+      lead_id: leadC2._srvId,
+      cliente: prop.cliente,
+      objeto: desc,
+      valor_total: valor,
+    });
+    if (r && r.id != null && !r._stub) {
+      prop.numero = r.numero || prop.numero;
+      prop._srvId = r.id;
+      prop.custo_estimado = r.custo_estimado;
+    } else if (r && r.error && /bloqueada|estimativa|orçament/i.test(r.error)) {
+      // Gate C2: NÃO cria a proposta — orienta o caminho da estimativa.
+      showToast(`${r.error} Crie a estimativa do lead em Controle de Custos.`, 'error', 8000);
+      return;
+    } // outros erros (offline) → segue no fluxo local abaixo
+  }
+
   CRM_DATA.propostas.unshift(prop);
+  _saveCRMData(CRM_DATA); // antes a proposta só persistia se a etapa mudasse
 
   // Atualiza etapa do lead para "Proposta Enviada"
   const lead = CRM_DATA.leads.find(l => l.id === leadId);
@@ -1555,3 +1579,4 @@ window._crmHtmlProposta    = _crmHtmlProposta;
 window.salvarNovoLead = salvarNovoLead;
 window.salvarEdicaoLead = salvarEdicaoLead;
 window.alterarEtapaLead = alterarEtapaLead;
+window.salvarProposta = salvarProposta;
