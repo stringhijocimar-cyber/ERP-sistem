@@ -3,6 +3,45 @@
  * Exposição financeira, governança do gate, homologação de fornecedores,
  * taxa de entrega e alertas por severidade. Dados 100% do servidor.
  */
+// ── Riscos de compra (motor de anomalias) — bloco do painel gerencial ──
+// Helper puro (testável): recebe k.riscos do /api/bi e devolve o HTML.
+const _BI_RISCO_LABEL = {
+  fracionamento: 'Fracionamento de alçada',
+  duplicidade: 'Possível duplicidade',
+  fora_da_curva: 'Valor fora da curva',
+  fornecedor_novo: 'Fornecedor novo c/ valor alto',
+  credito_baixo: 'Crédito baixo c/ valor alto',
+};
+function _biRiscosHTML(riscos, money) {
+  const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const m = money || (v => 'R$ ' + (v || 0).toLocaleString('pt-BR'));
+  const r = riscos || { total: 0, alta: 0, por_tipo: {}, principais: [] };
+  const corSev = s => s === 'alta' ? '#dc2626' : '#d97706';
+  const chips = Object.entries(r.por_tipo || {})
+    .map(([t, n]) => `<span style="font-size:11px;background:rgba(220,38,38,.08);color:#b91c1c;padding:2px 10px;border-radius:10px;margin:0 6px 6px 0;display:inline-block">${esc(_BI_RISCO_LABEL[t] || t)}: <b>${n}</b></span>`)
+    .join('');
+  const linhas = (r.principais || []).map(p => `
+    <div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid rgba(0,0,0,.06);font-size:12px">
+      <span style="width:8px;height:8px;border-radius:50%;background:${corSev(p.severidade)};flex-shrink:0"></span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.titulo)}</span>
+      ${p.valor ? `<span style="color:var(--text-muted);flex-shrink:0">${m(p.valor)}</span>` : ''}
+    </div>`).join('');
+  return `
+    <div class="info-card" style="padding:16px;margin-top:18px" id="bi_riscos">
+      <h3 style="font-size:14px;margin:0 0 8px"><i class="fas fa-triangle-exclamation" style="color:${r.total ? '#dc2626' : '#16a34a'}"></i> Riscos de compra (anomalias)</h3>
+      ${r.total
+        ? `<div style="display:flex;gap:16px;align-items:baseline;margin-bottom:8px">
+             <div><span style="font-size:26px;font-weight:700;color:#dc2626">${r.alta}</span> <span style="font-size:11px">severidade alta</span></div>
+             <div><span style="font-size:18px;font-weight:600">${r.total}</span> <span style="font-size:11px">total</span></div>
+           </div>
+           <div>${chips}</div>
+           ${linhas}
+           <a href="#" onclick="navigate('alertas')" style="font-size:12px;display:inline-block;margin-top:8px">Ver todos na central de alertas →</a>`
+        : `<div style="font-size:13px;color:#16a34a"><i class="fas fa-check-circle"></i> Nenhuma anomalia detectada nos pedidos recentes.</div>`}
+    </div>`;
+}
+window._biRiscosHTML = _biRiscosHTML;
+
 async function renderBI() {
   const main = document.getElementById('mainContent') || document.getElementById('main');
   if (!main) return;
@@ -70,6 +109,7 @@ async function renderBI() {
           <a href="#" onclick="navigate('alertas')" style="font-size:12px;display:inline-block;margin-top:8px">Ver central de alertas →</a>
         </div>
       </div>
+      ${_biRiscosHTML(k.riscos, money)}
       <div id="bi_fluxo" style="margin-top:18px"></div>
       <div style="font-size:10px;color:var(--text-muted);margin-top:16px">Gerado em ${new Date(k.gerado_em).toLocaleString('pt-BR')}</div>`;
     renderFluxoCaixa(money);
