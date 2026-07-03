@@ -15,6 +15,30 @@ function _saveCRMData(data) {
   localStorage.setItem('fa_crm_data', JSON.stringify(data));
   CRM_DATA = data;
 }
+
+// ── Sync do lead com o SERVIDOR (/api/crm, tenant-isolado) ──────────────
+// POST na criação; PUT nas mudanças (inclusive de etapa — é o PUT que
+// dispara o gatilho C1 de orçamentação no backend quando o lead passa de
+// Qualificação). Defensivo: nunca lança; offline segue só local.
+async function _crmSyncLeadServidor(lead) {
+  if (!lead || !window.NexusAPI) return;
+  const payload = {
+    titulo: lead.empresa, cliente: lead.empresa,
+    valor: Number(lead.potencial) || 0,
+    estagio: lead.etapa || 'Prospecção',
+    probabilidade: Number(lead.probabilidade) || 10,
+    observacoes: lead.obs || '',
+  };
+  try {
+    if (lead._srvId != null) {
+      await NexusAPI.put(`/api/crm/${lead._srvId}`, payload);
+    } else {
+      const r = await NexusAPI.post('/api/crm', payload);
+      if (r && r.id != null && !r._stub) { lead._srvId = r.id; _saveCRMData(CRM_DATA); }
+    }
+  } catch (e) { /* offline → mantém local; reconcile de boot cobre depois */ }
+}
+window._crmSyncLeadServidor = _crmSyncLeadServidor;
 let CRM_DATA = _getCRMData();
 
 const CRM_ETAPAS = ['Prospecção', 'Qualificação', 'Reunião Agendada', 'Proposta Enviada', 'Negociação', 'Fechado Ganho', 'Fechado Perdido'];
@@ -522,6 +546,8 @@ function alterarEtapaLead(id, novaEtapa) {
   const etapaAnterior = l.etapa;
   l.etapa = novaEtapa;
   l.ultimaAcao = new Date().toLocaleDateString('pt-BR');
+  _saveCRMData(CRM_DATA);
+  _crmSyncLeadServidor(l); // servidor dispara a orçamentação (C1) quando passa de Qualificação
   logAction('Editar', 'CRM', `Lead ${l.empresa}: etapa alterada de ${etapaAnterior} para ${novaEtapa}`);
 
   // Se fechado ganho, integra com contratos
@@ -621,6 +647,8 @@ function salvarNovoLead() {
     contratos: []
   };
   CRM_DATA.leads.unshift(lead);
+  _saveCRMData(CRM_DATA);            // antes NEM o localStorage era salvo
+  _crmSyncLeadServidor(lead);        // cria no servidor (tenant-isolado)
   logAction('Criar', 'CRM', `Novo lead cadastrado: ${empresa}`);
   closeModal();
   showToast(`Lead ${empresa} cadastrado com sucesso!`, 'success');
@@ -798,6 +826,8 @@ function salvarProposta(leadId) {
   if (lead && lead.etapa !== 'Fechado Ganho' && lead.etapa !== 'Negociação') {
     lead.etapa = 'Proposta Enviada';
     lead.ultimaAcao = now;
+    _saveCRMData(CRM_DATA);
+    _crmSyncLeadServidor(lead);
   }
 
   logAction('Criar', 'CRM', `Proposta ${prop.numero} gerada para ${prop.cliente}`);
@@ -852,7 +882,7 @@ function _executarConversaoContrato(propostaId) {
 
   prop.status = 'Ganha';
   const lead = CRM_DATA.leads.find(l => l.id === prop.lead);
-  if (lead) lead.etapa = 'Fechado Ganho';
+  if (lead) { lead.etapa = 'Fechado Ganho'; _saveCRMData(CRM_DATA); _crmSyncLeadServidor(lead); }
 
   logAction('Criar', 'Contratos', `Contrato ${idContrato} criado a partir da proposta CRM ${prop.numero}`);
   showToast(`Contrato ${idContrato} criado! Acesse o módulo Contratos para configurar.`, 'success', 6000);
@@ -1011,6 +1041,8 @@ function salvarEdicaoLead(id) {
   l.probabilidade = parseInt(document.getElementById('elProb')?.value || l.probabilidade);
   l.obs = document.getElementById('elObs')?.value || l.obs;
   l.ultimaAcao = new Date().toLocaleDateString('pt-BR');
+  _saveCRMData(CRM_DATA);
+  _crmSyncLeadServidor(l);
   logAction('Editar', 'CRM', `Lead ${l.empresa} editado`);
   closeModal();
   showToast('Lead atualizado!', 'success');
@@ -1518,3 +1550,8 @@ window.gerarWordProposta   = gerarWordProposta;
 window.gerarPDFLead        = gerarPDFLead;
 window.gerarWordLead       = gerarWordLead;
 window._crmHtmlProposta    = _crmHtmlProposta;
+
+// Exposições globais (onclick inline + testes em ambiente de módulo).
+window.salvarNovoLead = salvarNovoLead;
+window.salvarEdicaoLead = salvarEdicaoLead;
+window.alterarEtapaLead = alterarEtapaLead;
