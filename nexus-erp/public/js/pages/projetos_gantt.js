@@ -1516,10 +1516,33 @@ function _pgRenderSuprimentos(proj) {
 
 // ─── MODAIS ────────────────────────────────────────────────────────────
 
+
+// Contratos disponíveis para vínculo do projeto: usa a fonte mesclada da
+// página de contratos (_ctrContratos: reais do servidor normalizados + seed)
+// quando disponível; senão normaliza o cache fa_contratos localmente.
+function _pgContratosDisponiveis() {
+  if (typeof window._ctrContratos === 'function') return window._ctrContratos();
+  let reais = [];
+  try { reais = JSON.parse(localStorage.getItem('fa_contratos') || '[]'); } catch (e) {}
+  const norm = reais.map(c => ({ ...c, cliente: c.cliente || c.titulo || c.fornecedor_nome || '', valor: c.valor ?? c.valor_total ?? 0, numero: c.numero || String(c.id) }));
+  const seed = (window.ERP_DATA && ERP_DATA.contratos) || [];
+  if (!norm.length) return seed;
+  const ids = new Set(norm.map(c => String(c.id)));
+  return [...norm, ...seed.filter(c => !ids.has(String(c.id)))];
+}
+// Options do seletor (com escape — nomes vêm do banco).
+function _pgContratoOpts() {
+  const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  return _pgContratosDisponiveis().map(c =>
+    `<option value="${esc(String(c.id))}" data-valor="${Number(c.valor) || 0}">${esc(c.numero || c.id)} – ${esc(c.nome || c.cliente || '')}</option>`
+  ).join('');
+}
+window._pgContratosDisponiveis = _pgContratosDisponiveis;
+window._pgContratoOpts = _pgContratoOpts;
+
 // MODAL: Novo Projeto
 function pgNovoProjetoModal() {
-  const contratos = JSON.parse(localStorage.getItem('fa_contratos') || '[]');
-  const optsContr = contratos.map(c => `<option value="${c.id}">${c.id} – ${c.nome||c.cliente||''}</option>`).join('');
+  const optsContr = _pgContratoOpts();
 
   openModalWide('Novo Projeto', `
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
@@ -1529,7 +1552,7 @@ function pgNovoProjetoModal() {
     </div>
     <div class="form-group">
       <label style="color:#94a3b8;font-size:12px">Contrato Vinculado</label>
-      <select id="np_contrato" class="form-control" style="background:#0f172a;border:1px solid rgba(255,255,255,0.1);color:#f1f5f9;padding:10px;border-radius:8px;width:100%">
+      <select id="np_contrato" class="form-control" onchange="_pgAutoValorContrato(this)" style="background:#0f172a;border:1px solid rgba(255,255,255,0.1);color:#f1f5f9;padding:10px;border-radius:8px;width:100%">
         <option value="">Sem vínculo</option>${optsContr}
       </select>
     </div>
@@ -1576,6 +1599,16 @@ function pgNovoProjetoModal() {
     <button onclick="pgSalvarNovoProjeto()" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:8px;padding:10px 24px;font-weight:600;cursor:pointer"><i class="fas fa-save" style="margin-right:6px"></i>Criar Projeto</button>
   </div>`);
 }
+
+// Ao vincular um contrato, sugere o valor contratual (não sobrescreve o que
+// o usuário já digitou).
+function _pgAutoValorContrato(sel) {
+  const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+  const v = opt ? parseFloat(opt.getAttribute('data-valor')) || 0 : 0;
+  const campo = document.getElementById('np_valor');
+  if (campo && v > 0 && !campo.value) campo.value = v;
+}
+window._pgAutoValorContrato = _pgAutoValorContrato;
 
 function pgSalvarNovoProjeto() {
   const nome = document.getElementById('np_nome')?.value?.trim();
