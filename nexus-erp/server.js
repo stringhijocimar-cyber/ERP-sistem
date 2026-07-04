@@ -209,6 +209,22 @@ db.exec(`CREATE TABLE IF NOT EXISTS recebimento_itens (
   descricao TEXT,
   quantidade_recebida REAL DEFAULT 0
 )`)
+// Contas a RECEBER (o lado "dinheiro que entra"): espelha a estrutura de
+// contas_pagar. Nasce de contrato/medição/proposta, é faturada (NFS-e) e
+// baixada no recebimento. Isolada por tenant (empresa_id).
+db.exec(`CREATE TABLE IF NOT EXISTS contas_receber (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  numero TEXT, contrato_id TEXT, medicao_id INTEGER, proposta_id INTEGER,
+  cliente TEXT, descricao TEXT,
+  valor REAL DEFAULT 0,
+  data_emissao TEXT, data_vencimento TEXT, data_recebimento TEXT,
+  status TEXT DEFAULT 'A Faturar',
+  nota_fiscal TEXT, forma_recebimento TEXT, observacoes TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`)
+
 // Propostas comerciais (C2): só nascem com estimativa de custos (WBS) do lead.
 db.exec(`CREATE TABLE IF NOT EXISTS propostas (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -608,6 +624,9 @@ app.get('/api/dashboard', requireAuth, (req, res) => {
       a_pagar_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE empresa_id = ? AND status = 'Pendente'`).get(e).v,
       pago_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE empresa_id = ? AND status = 'Pago'`).get(e).v,
       vencido_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_pagar WHERE empresa_id = ? AND status = 'Vencido'`).get(e).v,
+      // Lado "dinheiro que entra" (contas a receber).
+      a_receber_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_receber WHERE empresa_id = ? AND status = 'A Receber'`).get(e).v,
+      recebido_total: db.prepare(`SELECT COALESCE(SUM(valor),0) as v FROM contas_receber WHERE empresa_id = ? AND status = 'Recebida'`).get(e).v,
     },
     fornecedores: {
       total: db.prepare(`SELECT COUNT(*) as n FROM fornecedores WHERE empresa_id = ? AND ativo = 1`).get(e).n,
@@ -2017,6 +2036,73 @@ app.put('/api/contas-pagar/:id', requireAuth, requireRole('admin', 'financeiro')
   db.prepare(`UPDATE contas_pagar SET status=?,data_pagamento=?,forma_pagamento=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
     .run(status, data_pagamento, forma_pagamento, observacoes, req.params.id)
   res.json(ok(db.prepare(`SELECT * FROM contas_pagar WHERE id = ?`).get(req.params.id)))
+})
+
+// ════════════════════════════════════════════════════════════
+// CONTAS A RECEBER (dinheiro que entra) — espelha Contas a Pagar,
+// isolado por tenant. Ciclo: A Faturar → (faturar) → A Receber →
+// (receber) → Recebida.
+// ════════════════════════════════════════════════════════════
+function nextCR(emp) {
+  const year = new Date().getFullYear()
+  const n = db.prepare(`SELECT COUNT(*) as n FROM contas_receber WHERE empresa_id = ? AND numero LIKE ?`).get(emp, `CR-${year}-%`).n
+  return `CR-${year}-${String(n + 1).padStart(3, '0')}`
+}
+
+app.get('/api/contas-receber', requireAuth, (req, res) => {
+  const { status, q = '', contrato_id } = req.query
+  const where = ['empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (status) { where.push('status = ?'); params.push(status) }
+  if (contrato_id) { where.push('contrato_id = ?'); params.push(contrato_id) }
+  if (q) { where.push('(numero LIKE ? OR cliente LIKE ? OR descricao LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`) }
+  const sql = `SELECT * FROM contas_receber WHERE ${where.join(' AND ')} ORDER BY data_vencimento ASC`
+  res.json(ok(db.prepare(sql).all(...params)))
+})
+
+app.post('/api/contas-receber', requireAuth, requireRole('admin', 'financeiro', 'diretor'), (req, res) => {
+  const b = req.body || {}
+  const emp = empresaDoReq(req)
+  if (!(Number(b.valor) > 0)) return res.status(400).json(err('Valor deve ser maior que zero'))
+  const numero = b.numero || nextCR(emp)
+  const r = db.prepare(`INSERT INTO contas_receber(numero, contrato_id, medicao_id, proposta_id, cliente, descricao, valor, data_emissao, data_vencimento, status, observacoes, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(numero, b.contrato_id || null, b.medicao_id || null, b.proposta_id || null, b.cliente || '', b.descricao || '', Number(b.valor),
+      b.data_emissao || new Date().toISOString().slice(0, 10), b.data_vencimento || null, b.status || 'A Receber', b.observacoes || null, emp)
+  log(req.user.usuario_id, req.user.nome, 'Criar', 'contas_receber', `Conta a receber ${numero} (R$ ${Number(b.valor).toFixed(2)}) — ${b.cliente || ''}`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM contas_receber WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+app.put('/api/contas-receber/:id', requireAuth, requireRole('admin', 'financeiro', 'diretor'), (req, res) => {
+  const cur = rowScoped('contas_receber', req)
+  if (!cur) return res.status(404).json(err('Conta a receber não encontrada'))
+  const b = req.body || {}
+  db.prepare(`UPDATE contas_receber SET cliente=?,descricao=?,valor=?,data_vencimento=?,status=?,nota_fiscal=?,observacoes=?,updated_at=datetime('now') WHERE id=?`)
+    .run(b.cliente ?? cur.cliente, b.descricao ?? cur.descricao, b.valor != null ? Number(b.valor) : cur.valor,
+      b.data_vencimento ?? cur.data_vencimento, b.status ?? cur.status, b.nota_fiscal ?? cur.nota_fiscal, b.observacoes ?? cur.observacoes, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM contas_receber WHERE id = ?`).get(req.params.id)))
+})
+
+// Faturar: vincula a nota fiscal e coloca em cobrança.
+app.post('/api/contas-receber/:id/faturar', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
+  const cur = rowScoped('contas_receber', req)
+  if (!cur) return res.status(404).json(err('Conta a receber não encontrada'))
+  if (cur.status === 'Recebida') return res.status(409).json(err('Conta já recebida'))
+  const nf = (req.body && req.body.nota_fiscal) || null
+  db.prepare(`UPDATE contas_receber SET status='A Receber', nota_fiscal=?, updated_at=datetime('now') WHERE id=?`).run(nf, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'cr_faturar', 'contas_receber', `Conta ${cur.numero} faturada (NF ${nf || '—'})`)
+  res.json(ok(db.prepare(`SELECT * FROM contas_receber WHERE id = ?`).get(req.params.id)))
+})
+
+// Receber: baixa o título (o evento "dinheiro entrou").
+app.post('/api/contas-receber/:id/receber', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
+  const cur = rowScoped('contas_receber', req)
+  if (!cur) return res.status(404).json(err('Conta a receber não encontrada'))
+  if (cur.status === 'Recebida' || cur.data_recebimento) return res.status(409).json(err('Conta já recebida (duplicidade)'))
+  const b = req.body || {}
+  db.prepare(`UPDATE contas_receber SET status='Recebida', data_recebimento=?, forma_recebimento=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.data_recebimento || new Date().toISOString().slice(0, 10), b.forma_recebimento || null, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'cr_receber', 'contas_receber', `Recebimento de ${cur.numero} (R$ ${Number(cur.valor).toFixed(2)}) — ${cur.cliente || ''}`)
+  res.json(ok(db.prepare(`SELECT * FROM contas_receber WHERE id = ?`).get(req.params.id)))
 })
 
 // ── Recebimento por item ──────────────────────────────────────
