@@ -93,4 +93,11 @@ describe('ações reais', () => {
     await window.salvarNovaFatura()
     expect(chamadas.some(c => c.method === 'POST' && c.path === '/api/contas-receber')).toBe(false)
   })
+
+  it('emitirNfseConta POSTa /:id/emitir-nfse com o CNPJ do tomador', async () => {
+    window.prompt = () => '11.444.777/0001-61'
+    await window.emitirNfseConta('7')
+    const post = chamadas.find(c => c.method === 'POST' && c.path === '/api/contas-receber/7/emitir-nfse')
+    expect(post.body.cnpj_destinatario).toBe('11.444.777/0001-61')
+  })
 })

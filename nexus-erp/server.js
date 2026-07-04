@@ -2105,6 +2105,62 @@ app.post('/api/contas-receber/:id/receber', requireAuth, requireRole('admin', 'f
   res.json(ok(db.prepare(`SELECT * FROM contas_receber WHERE id = ?`).get(req.params.id)))
 })
 
+// ELO 1 — gera a conta a receber a partir de uma MEDIÇÃO aprovada.
+// Idempotente por (empresa, medicao_id): rechamar não duplica o título.
+app.post('/api/contas-receber/de-medicao', requireAuth, requireRole('admin', 'financeiro', 'diretor'), (req, res) => {
+  const b = req.body || {}
+  const emp = empresaDoReq(req)
+  const medId = b.medicao_id
+  if (medId == null) return res.status(400).json(err('medicao_id obrigatório'))
+  if (!(Number(b.valor) > 0)) return res.status(400).json(err('Valor da medição deve ser maior que zero'))
+  const existente = db.prepare(`SELECT * FROM contas_receber WHERE empresa_id = ? AND medicao_id = ?`).get(emp, medId)
+  if (existente) return res.json(ok({ ...existente, ja_existia: true }))
+  const numero = nextCR(emp)
+  const r = db.prepare(`INSERT INTO contas_receber(numero, contrato_id, medicao_id, cliente, descricao, valor, data_emissao, data_vencimento, status, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(numero, b.contrato_id || null, medId, b.cliente || '', b.descricao || `Medição ${medId}`, Number(b.valor),
+      new Date().toISOString().slice(0, 10), b.data_vencimento || null, 'A Faturar', emp)
+  log(req.user.usuario_id, req.user.nome, 'cr_de_medicao', 'contas_receber', `Conta ${numero} gerada da medição ${medId} (R$ ${Number(b.valor).toFixed(2)})`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM contas_receber WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+// ELO 2 — emite a NFS-e a partir da conta a receber (liga faturamento ao
+// fiscal). Emitente = CNPJ da empresa (tenant); tomador = cliente da conta.
+app.post('/api/contas-receber/:id/emitir-nfse', requireAuth, requireRole('admin', 'financeiro', 'fiscal'), async (req, res) => {
+  const emp = empresaDoReq(req)
+  const cur = rowScoped('contas_receber', req)
+  if (!cur) return res.status(404).json(err('Conta a receber não encontrada'))
+  if (cur.nota_fiscal) return res.status(409).json(err('Conta já faturada (NF ' + cur.nota_fiscal + ')'))
+  const b = req.body || {}
+  const empresa = db.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(emp)
+  const cnpjEmit = b.cnpj_emitente || (empresa && empresa.cnpj) || ''
+  const cnpjDest = b.cnpj_destinatario || cur.cnpj_destinatario || ''
+  const numero = db.prepare(`SELECT COUNT(*) n FROM notas_fiscais WHERE serie = 1 AND empresa_id = ?`).get(emp).n + 1
+  try {
+    const r = await emitirNotaFiscal({
+      tipo: 'nfse', cnpj_emitente: cnpjEmit, cnpj_destinatario: cnpjDest, cpf_destinatario: b.cpf_destinatario,
+      nome_destinatario: cur.cliente, descricao: cur.descricao || `Fatura ${cur.numero}`, valor: Number(cur.valor),
+      numero, serie: 1,
+    }, _nfeOpts())
+    if (r.status !== 'autorizada' && r.status !== 'processando') {
+      return res.status(422).json(err('Emissão de NFS-e rejeitada: ' + (r.motivo || 'dados inválidos')))
+    }
+    const ins = db.prepare(`INSERT INTO notas_fiscais(tipo, numero, serie, chave, protocolo, status, valor, cnpj_emitente, destinatario, descricao, danfe_url, xml_url, emitido_por, fonte, provider_id, empresa_id)
+       VALUES('nfse',?,1,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(r.numero || numero, r.chave || null, r.protocolo || null, r.status, Number(cur.valor), cnpjEmit, cnpjDest || cur.cliente, cur.descricao || '', r.danfe_url || null, r.xml_url || null, req.user.nome, r.fonte || null, r.id || null, emp)
+    const nfNumero = r.numero || String(numero)
+    // Vincula a NF à conta e coloca em cobrança.
+    db.prepare(`UPDATE contas_receber SET status='A Receber', nota_fiscal=?, updated_at=datetime('now') WHERE id=?`).run(String(nfNumero), cur.id)
+    log(req.user.usuario_id, req.user.nome, 'cr_emitir_nfse', 'contas_receber', `NFS-e ${nfNumero} (${r.status}) para ${cur.cliente} — conta ${cur.numero}`)
+    res.status(201).json(ok({
+      conta: db.prepare(`SELECT * FROM contas_receber WHERE id = ?`).get(cur.id),
+      nota: db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(ins.lastInsertRowid),
+    }))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
 // ── Recebimento por item ──────────────────────────────────────
 app.get('/api/recebimentos', requireAuth, (req, res) => {
   const { pc_id } = req.query
