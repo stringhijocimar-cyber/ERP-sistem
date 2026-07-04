@@ -354,7 +354,10 @@ function _renderEmpresasServidor(list) {
         <div style="font-size:13px;font-weight:800;color:var(--text-primary)">
           <i class="fas fa-server" style="color:var(--fa-teal)"></i> Tenants no servidor (isolamento real)
         </div>
-        ${_souTenantMestre() ? `<button class="btn btn-primary btn-sm" onclick="novaEmpresaServidor()"><i class="fas fa-plus"></i> Novo tenant</button>` : ''}
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" onclick="semearDemoComercial()" title="Popula o seu tenant com um cenário de demonstração"><i class="fas fa-wand-magic-sparkles"></i> Cenário demo</button>
+          ${_souTenantMestre() ? `<button class="btn btn-primary btn-sm" onclick="novaEmpresaServidor()"><i class="fas fa-plus"></i> Novo tenant</button>` : ''}
+        </div>
       </div>
       ${list.length ? `<div style="display:grid;gap:8px">${list.map(e => `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px">
@@ -371,10 +374,35 @@ function _renderEmpresasServidor(list) {
       </div>
     </div>`;
 }
+// Semeia o cenário de demonstração no tenant atual e mostra o roteiro dos
+// 4 momentos de valor (para apresentação comercial).
+async function semearDemoComercial() {
+  if (!window.NexusAPI) { if (typeof showToast === 'function') showToast('Servidor indisponível.', 'error'); return; }
+  const r = await NexusAPI.post('/api/demo/seed', {});
+  const roteiro = r && r.roteiro;
+  if (!Array.isArray(roteiro)) { if (typeof showToast === 'function') showToast('Não foi possível semear (apenas admin).', 'error'); return; }
+  const esc = v => (window.NexusAPI ? NexusAPI.escapeHtml(v) : String(v ?? ''));
+  const passos = roteiro.map(p => `
+    <div style="display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--border)">
+      <span style="width:26px;height:26px;border-radius:50%;background:var(--fa-teal);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex-shrink:0">${p.passo}</span>
+      <div><div style="font-weight:700;font-size:13px">${esc(p.titulo)}</div>
+        <div style="font-size:12px;color:var(--text-muted)"><b>Onde:</b> ${esc(p.onde)}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${esc(p.valor)}</div></div>
+    </div>`).join('');
+  if (typeof openModalWide === 'function') {
+    openModalWide('Cenário de demonstração pronto', `
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:6px">${r.ja_existia ? 'O cenário já existia neste tenant.' : 'Cenário semeado no seu tenant.'} Siga o roteiro dos 4 momentos de valor:</p>
+      ${passos}`, `<button class="btn btn-primary" onclick="closeModal()">Entendi</button>`);
+  } else if (typeof showToast === 'function') {
+    showToast(r.ja_existia ? 'Cenário demo já existia.' : 'Cenário demo semeado!', 'success', 6000);
+  }
+}
+
 window.listarEmpresasServidor = listarEmpresasServidor;
 window.criarEmpresaServidor = criarEmpresaServidor;
 window.novaEmpresaServidor = novaEmpresaServidor;
 window._souTenantMestre = _souTenantMestre;
+window.semearDemoComercial = semearDemoComercial;
 
 function abrirGerenciarEmpresas() {
   const emps  = getEmpresas();
