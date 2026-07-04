@@ -321,7 +321,7 @@ async function _carregarFaturamento() {
         <td>${statusBadge(atraso ? 'Atrasada' : c.status)}</td>
         <td><div class="actions-cell">
           ${c.status !== 'Recebida' ? `<button class="btn btn-success btn-sm btn-icon" onclick="receberFatura('${esc(String(c.id))}')" title="Dar baixa (recebido)"><i class="fas fa-check"></i></button>` : ''}
-          ${c.status === 'A Faturar' ? `<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:4px 8px" onclick="faturarConta('${esc(String(c.id))}')" title="Faturar"><i class="fas fa-file-invoice"></i> Faturar</button>` : ''}
+          ${!c.nota_fiscal && c.status !== 'Recebida' ? `<button class="btn btn-outline-primary btn-sm" style="font-size:11px;padding:4px 8px" onclick="emitirNfseConta('${esc(String(c.id))}')" title="Emitir NFS-e"><i class="fas fa-file-invoice"></i> Emitir NFS-e</button>` : ''}
         </div></td>
       </tr>`;
   }).join('');
@@ -385,8 +385,22 @@ async function faturarConta(id) {
   if (r && r.status && typeof showToast === 'function') showToast('Conta faturada.', 'success');
   _carregarFaturamento();
 }
+// Emite a NFS-e a partir da conta (liga faturamento ao fiscal) e recarrega.
+async function emitirNfseConta(id) {
+  if (!window.NexusAPI) return;
+  const cnpj = (typeof prompt === 'function') ? prompt('CNPJ do tomador (cliente):') : '';
+  if (!cnpj) return;
+  const r = await NexusAPI.post(`/api/contas-receber/${id}/emitir-nfse`, { cnpj_destinatario: cnpj });
+  if (r && r.nota) {
+    if (typeof showToast === 'function') showToast(`NFS-e ${r.nota.numero} ${r.nota.status} — conta faturada.`, 'success', 6000);
+  } else if (typeof showToast === 'function') {
+    showToast(r && r.error ? r.error : 'Não foi possível emitir a NFS-e.', 'error');
+  }
+  _carregarFaturamento();
+}
 window.receberFatura = receberFatura;
 window.faturarConta = faturarConta;
+window.emitirNfseConta = emitirNfseConta;
 window._carregarFaturamento = _carregarFaturamento;
 
 function openNovaFatura() {
