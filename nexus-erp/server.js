@@ -2464,6 +2464,73 @@ app.get('/api/config', requireAuth, (req, res) => {
 })
 
 // ════════════════════════════════════════════════════════════
+// MODO DEMO COMERCIAL — semeia, NO TENANT ATUAL, um cenário coerente que
+// demonstra em 1 clique os 4 momentos de valor do produto. Admin apenas,
+// idempotente por empresa (não duplica), 100% isolado por tenant.
+// ════════════════════════════════════════════════════════════
+app.post('/api/demo/seed', requireAuth, requireRole('admin'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const uidNome = req.user.nome
+  // Idempotência: se já semeamos esta empresa, devolve o roteiro sem duplicar.
+  const jaTem = db.prepare(`SELECT COUNT(*) n FROM contratos WHERE empresa_id = ? AND objeto = 'DEMO'`).get(emp).n
+  if (jaTem) return res.json(ok({ ja_existia: true, roteiro: _demoRoteiro() }))
+
+  const tx = db.transaction(() => {
+    // 1) Fornecedor HOMOLOGADO (libera emissão de PC).
+    const forn = db.prepare(`INSERT INTO fornecedores(nome, razao_social, cnpj, status, ativo, empresa_id) VALUES(?,?,?,?,1,?)`)
+      .run('Aço Forte Ltda (DEMO)', 'Aço Forte Industrial Ltda', '11.222.333/0001-81', 'Homologado', emp).lastInsertRowid
+
+    // 2) Contrato + 3) linha WBS + 4) OS amarrada ao contrato/WBS.
+    const contrato = db.prepare(`INSERT INTO contratos(numero, titulo, fornecedor_id, fornecedor_nome, tipo, status, valor_total, data_inicio, data_fim, objeto, responsavel_id, responsavel_nome, empresa_id)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(nextContratoDemo(emp), 'Manutenção Industrial — Planta Norte', forn, 'Aço Forte Ltda (DEMO)', 'Serviço', 'Ativo', 1200000, '2026-01-01', '2026-12-31', 'DEMO', req.user.usuario_id, uidNome, emp).lastInsertRowid
+    const wbs = db.prepare(`INSERT INTO wbs_linhas(codigo, descricao, tipo, contrato_id, origem, quantidade, valor_unit_est, valor_total_est, empresa_id)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run('1.1', 'Mão de obra de manutenção', 'OPEX', String(contrato), 'contrato', 1, 200000, 200000, emp).lastInsertRowid
+    db.prepare(`INSERT INTO ordens_servico(numero, titulo, descricao, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_estimado, wbs, contrato_id, tipo_recurso, wbs_linha_id, empresa_id)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(nextOS(), 'Troca de rolamentos — Britador 02', 'Serviço de manutenção corretiva', req.user.usuario_id, uidNome, 'Manutenção', 'Alta', 'Concluída', 50000, '1.1', contrato, 'servico', wbs, emp)
+    // Custo realizado lançado na linha WBS (margem visível por contrato).
+    db.prepare(`UPDATE wbs_linhas SET custo_real = 48000 WHERE id = ?`).run(wbs)
+
+    // 5) Fracionamento: 2 PCs de R$30k na janela (cada um < alçada de R$50k).
+    for (let i = 0; i < 2; i++) {
+      db.prepare(`INSERT INTO pedidos_compra(numero, fornecedor_id, fornecedor_nome, status, valor_total, prazo_entrega, condicao_pagamento, comprador_id, comprador_nome, empresa_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(nextPC(), forn, 'Aço Forte Ltda (DEMO)', 'Emitido', 30000, '2026-08-01', '30 dias', req.user.usuario_id, uidNome, emp)
+    }
+
+    // 6) Conta a pagar SEM nota fiscal → o gate de pagamento bloqueia.
+    const cpNum = `CP-${new Date().getFullYear()}-D${db.prepare(`SELECT COUNT(*) n FROM contas_pagar WHERE empresa_id = ?`).get(emp).n + 1}`
+    db.prepare(`INSERT INTO contas_pagar(numero, fornecedor_id, fornecedor_nome, descricao, valor, data_vencimento, status, empresa_id)
+      VALUES(?,?,?,?,?,?,?,?)`).run(cpNum, forn, 'Aço Forte Ltda (DEMO)', 'Serviço de manutenção — aguardando NF', 90000, '2026-08-15', 'Aprovado', emp)
+
+    // 7) Lead em Qualificação com orçamentação pendente → orçamentista alertado.
+    db.prepare(`INSERT INTO crm_oportunidades(titulo, cliente, valor, estagio, probabilidade, responsavel_id, responsavel_nome, observacoes, orcamentacao_status, orcamentacao_em, empresa_id)
+      VALUES(?,?,?,?,?,?,?,?,?,datetime('now'),?)`).run('Obra Mina Serra Azul', 'Minera Serra Azul S.A.', 850000, 'Qualificação', 40, req.user.usuario_id, uidNome, 'Lead demo aguardando estimativa de custos', 'pendente', emp)
+  })
+  try {
+    tx()
+    log(req.user.usuario_id, uidNome, 'demo_seed', 'demo', `Cenário demo semeado para a empresa ${emp}`)
+  } catch (e) {
+    return res.status(500).json(err('Falha ao semear demo: ' + e.message))
+  }
+  res.status(201).json(ok({ semeado: true, roteiro: _demoRoteiro() }))
+})
+
+function nextContratoDemo(emp) {
+  const year = new Date().getFullYear()
+  const n = db.prepare(`SELECT COUNT(*) n FROM contratos WHERE empresa_id = ?`).get(emp).n
+  return `CT-${year}-D${String(n + 1).padStart(2, '0')}`
+}
+// O roteiro de demonstração — os 4 momentos de valor, com onde clicar.
+function _demoRoteiro() {
+  return [
+    { passo: 1, titulo: 'Pagamento bloqueado por falta de lastro', onde: 'Financeiro › Contas a Pagar › tentar pagar "aguardando NF"', valor: 'O gate barra o pagamento sem nota fiscal — evita fraude/erro.' },
+    { passo: 2, titulo: 'Anomalia: fracionamento de alçada', onde: 'Central de Alertas (e e-mail do Financeiro)', valor: '2 pedidos de R$30k ao mesmo fornecedor viram 1 alerta de alta severidade.' },
+    { passo: 3, titulo: 'Orçamentação disparada pelo funil', onde: 'CRM › lead "Obra Mina Serra Azul" (Qualificação)', valor: 'O orçamentista é notificado automaticamente para precificar.' },
+    { passo: 4, titulo: 'Custo real do serviço na margem do contrato', onde: 'Contratos › "Manutenção Industrial" › WBS / Custos', valor: 'A OS concluída lançou R$48k na linha WBS — margem por contrato visível.' },
+  ]
+}
+
+// ════════════════════════════════════════════════════════════
 // START
 // ════════════════════════════════════════════════════════════
 // Exporta o app para testes (supertest) sem subir o listener.
