@@ -420,6 +420,8 @@ function verDetalheContrato(id) {
       </div>
     </div>
 
+    <div style="padding:0 20px"><div id="margemContratoReal"></div></div>
+
     <div id="tabContentContrato" style="padding:20px">
       ${renderTabVisaoContrato(c, saldo, lucro)}
     </div>
@@ -430,6 +432,47 @@ function verDetalheContrato(id) {
   window._contratoAtivo = c;
   window._contratoSaldo = saldo;
   window._contratoLucro = lucro;
+  // Margem real do servidor (P&L: receita − pedidos − mão de obra). Silencioso
+  // se o contrato não existir no backend (modelo local pode ter id diferente).
+  carregarMargemContrato(c.id);
+}
+
+// Renderiza o card de margem real (puro/testável).
+function _margemContratoHTML(m) {
+  if (!m) return '';
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s));
+  const cor = (m.resultado || 0) >= 0 ? '#16a34a' : '#dc2626';
+  const linhas = (m.linhas || []).map(l => {
+    const isTotal = l.tipo === 'total';
+    const c = l.valor < 0 ? '#dc2626' : (isTotal ? cor : '#0f172a');
+    return `<tr style="${isTotal ? 'font-weight:700;border-top:2px solid #e5e7eb' : ''}">
+      <td style="padding:6px 8px">${esc(l.label)}</td>
+      <td style="padding:6px 8px;text-align:right;color:${c}">${fmt(l.valor)}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="card" style="margin:12px 0;border-left:4px solid ${cor}">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h4 style="margin:0"><i class="fas fa-coins" style="color:var(--orange)"></i> Margem real do contrato</h4>
+        <div style="text-align:right">
+          <div style="font-size:12px;color:var(--text-muted)">Margem</div>
+          <div style="font-size:22px;font-weight:800;color:${cor}">${m.margem_pct}%</div>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px">${linhas}</table>
+      <small style="color:var(--text-muted)">Mão de obra: ${fmt(m.custo_mao_obra)} (${m.horas_mao_obra || 0}h apontadas) • deriva de contas a receber/pagar + apontamentos do contrato.</small>
+    </div>`;
+}
+
+async function carregarMargemContrato(id) {
+  const box = document.getElementById('margemContratoReal');
+  if (!box) return;
+  try {
+    const m = await apiAuth(`/api/contratos/${id}/margem`);
+    box.innerHTML = _margemContratoHTML(m);
+  } catch (e) {
+    box.innerHTML = ''; // sem margem no backend para este contrato — silencioso
+  }
 }
 
 function switchTabContrato(tab) {
@@ -897,6 +940,8 @@ async function salvarNovoContrato() {
 window.salvarNovoContrato = salvarNovoContrato;
 window.filterContratos = filterContratos;
 window.salvarEdicaoContrato = salvarEdicaoContrato;
+window._margemContratoHTML = _margemContratoHTML;
+window.carregarMargemContrato = carregarMargemContrato;
 
 function _ctrGetProjetoId(contratoId) {
   if (typeof wbsGetProjetoIdForContrato === 'function') {

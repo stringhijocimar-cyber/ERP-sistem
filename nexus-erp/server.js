@@ -2453,6 +2453,38 @@ app.get('/api/contratos/:id/custo-mao-de-obra', requireAuth, (req, res) => {
   res.json(ok({ contrato_id: req.params.id, custo_total: tot.custo || 0, horas_total: tot.horas || 0, apontamentos: tot.qtd || 0, por_colaborador: porColab }))
 })
 
+// Margem do contrato (P&L): Receita (AR faturada do contrato) − Custo de
+// pedidos (AP do contrato) − Custo de mão de obra (apontamentos). Casa o
+// contrato tanto pelo id numérico quanto pelo número (CT-AAAA-NNN), porque os
+// livros podem referenciar qualquer um dos dois.
+app.get('/api/contratos/:id/margem', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const ct = rowScoped('contratos', req)
+  if (!ct) return res.status(404).json(err('Contrato não encontrado'))
+  const chaves = [String(ct.id), ct.numero].filter(Boolean)
+  const inClause = chaves.map(() => '?').join(',')
+  const one = (sql) => db.prepare(sql).get(emp, ...chaves) || {}
+  const receita = one(`SELECT COALESCE(SUM(valor),0) v FROM contas_receber WHERE empresa_id = ? AND contrato_id IN (${inClause}) AND status IN ('A Receber','Recebida')`).v || 0
+  const custoPedidos = one(`SELECT COALESCE(SUM(valor),0) v FROM contas_pagar WHERE empresa_id = ? AND contrato_id IN (${inClause})`).v || 0
+  const mo = one(`SELECT COALESCE(SUM(custo),0) v, COALESCE(SUM(horas),0) h FROM apontamentos_hora WHERE empresa_id = ? AND contrato_id IN (${inClause})`)
+  const custoMaoObra = mo.v || 0, horas = mo.h || 0
+  const round = n => Math.round(n * 100) / 100
+  const custoTotal = round(custoPedidos + custoMaoObra)
+  const resultado = round(receita - custoTotal)
+  const margemPct = receita > 0 ? round((resultado / receita) * 100) : 0
+  res.json(ok({
+    contrato_id: ct.id, numero: ct.numero, titulo: ct.titulo, valor_contratado: ct.valor_total || 0,
+    receita, custo_pedidos: custoPedidos, custo_mao_obra: custoMaoObra, horas_mao_obra: round(horas),
+    custo_total: custoTotal, resultado, margem_pct: margemPct,
+    linhas: [
+      { label: 'Receita faturada (contas a receber)', valor: receita, tipo: 'receita' },
+      { label: '(-) Custo de pedidos/compras', valor: -custoPedidos, tipo: 'custo' },
+      { label: '(-) Custo de mão de obra', valor: -custoMaoObra, tipo: 'custo' },
+      { label: '= Resultado do contrato', valor: resultado, tipo: 'total' },
+    ],
+  }))
+})
+
 // ── Recebimento por item ──────────────────────────────────────
 app.get('/api/recebimentos', requireAuth, (req, res) => {
   const { pc_id } = req.query
