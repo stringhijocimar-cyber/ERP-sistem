@@ -1524,6 +1524,7 @@ function _pgContratosDisponiveis() {
   if (typeof window._ctrContratos === 'function') return window._ctrContratos();
   let reais = [];
   try { reais = JSON.parse(localStorage.getItem('fa_contratos') || '[]'); } catch (e) {}
+  if (!Array.isArray(reais)) reais = Array.isArray(reais && reais.items) ? reais.items : []; // JSON não-array não quebra o modal
   const norm = reais.map(c => ({ ...c, cliente: c.cliente || c.titulo || c.fornecedor_nome || '', valor: c.valor ?? c.valor_total ?? 0, numero: c.numero || String(c.id) }));
   const seed = (window.ERP_DATA && ERP_DATA.contratos) || [];
   if (!norm.length) return seed;
