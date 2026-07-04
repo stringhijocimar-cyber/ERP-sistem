@@ -916,6 +916,54 @@ app.get('/api/fluxo-caixa', requireAuth, (req, res) => {
   res.json(ok(montarFluxoCaixa(contas, { semanas })))
 })
 
+// DRE (Demonstração de Resultado) REAL, derivada dos livros do tenant:
+// Receita (contas a receber faturadas) − Custos (contas a pagar de pedidos) −
+// Despesas (contas a pagar de overhead). Competência por data; ?ano&?mes
+// filtram o período. Também expõe a visão CAIXA (recebido − pago).
+function _montarDRE(emp, { ano, mes } = {}) {
+  const pref = mes && ano ? `${ano}-${String(mes).padStart(2, '0')}` : (ano ? String(ano) : '')
+  const like = pref ? pref + '%' : '%'
+  const one = (sql, ...p) => db.prepare(sql).get(...p) || {}
+  const rec = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM contas_receber
+     WHERE empresa_id = ? AND status IN ('A Receber','Recebida') AND COALESCE(data_emissao,'') LIKE ?`, emp, like)
+  const cpv = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar
+     WHERE empresa_id = ? AND pc_id IS NOT NULL AND COALESCE(data_vencimento,'') LIKE ?`, emp, like)
+  const desp = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar
+     WHERE empresa_id = ? AND pc_id IS NULL AND COALESCE(data_vencimento,'') LIKE ?`, emp, like)
+  const recebido = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_receber
+     WHERE empresa_id = ? AND status='Recebida' AND COALESCE(data_recebimento,'') LIKE ?`, emp, like)
+  const pago = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar
+     WHERE empresa_id = ? AND status='Pago' AND COALESCE(data_pagamento,'') LIKE ?`, emp, like)
+
+  const receita = rec.val, custos = cpv.val, despesas = desp.val
+  const resultadoBruto = receita - custos
+  const resultadoOperacional = resultadoBruto - despesas
+  const round = n => Math.round(n * 100) / 100
+  const pct = (n, base) => base > 0 ? round((n / base) * 100) : 0
+  return {
+    periodo: pref || 'total', gerado_em: new Date().toISOString(),
+    receita_bruta: receita, receita_qtd: rec.qtd || 0,
+    custos, despesas,
+    resultado_bruto: round(resultadoBruto), margem_bruta_pct: pct(resultadoBruto, receita),
+    resultado_operacional: round(resultadoOperacional), margem_liquida_pct: pct(resultadoOperacional, receita),
+    caixa: { recebido: recebido.val, pago: pago.val, saldo: round(recebido.val - pago.val) },
+    linhas: [
+      { label: 'Receita Bruta de Serviços', valor: receita, tipo: 'receita', nivel: 1 },
+      { label: '(-) Custo dos Serviços (pedidos)', valor: -custos, tipo: 'custo', nivel: 2 },
+      { label: '= Resultado Bruto', valor: round(resultadoBruto), tipo: 'subtotal', nivel: 1 },
+      { label: '(-) Despesas Operacionais (overhead)', valor: -despesas, tipo: 'custo', nivel: 2 },
+      { label: '= Resultado Operacional', valor: round(resultadoOperacional), tipo: 'total', nivel: 1 },
+    ],
+  }
+}
+
+app.get('/api/dre', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso à DRE', 403))
+  const ano = req.query.ano ? parseInt(req.query.ano) : null
+  const mes = req.query.mes ? parseInt(req.query.mes) : null
+  res.json(ok(_montarDRE(empresaDoReq(req), { ano, mes })))
+})
+
 // Consulta a bureau de crédito (provedor por env; mock por padrão).
 app.post('/api/credito/consultar', requireAuth, async (req, res) => {
   try {

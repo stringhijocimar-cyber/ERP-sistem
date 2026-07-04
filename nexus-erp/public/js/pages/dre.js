@@ -116,11 +116,55 @@ function renderDRE() {
       </button>
     </div>
 
+    <!-- DRE REAL (derivada dos livros: contas a pagar + receber) -->
+    <div id="dreReal"></div>
+
     <div id="dreConteudo"></div>
   `;
 
   _dreRenderAba();
+  _dreCarregarReal();
 }
+
+// Monta o card da DRE real (função pura, testável) a partir do /api/dre.
+function _dreRealHTML(d) {
+  if (!d) return '';
+  const m = v => typeof fmt === 'function' ? fmt(v) : ('R$ ' + Number(v || 0).toLocaleString('pt-BR'));
+  const cor = v => v >= 0 ? 'var(--green-light)' : 'var(--red-light)';
+  const linhas = (d.linhas || []).map(l => `
+    <div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);font-size:13px;${l.tipo === 'total' || l.tipo === 'subtotal' ? 'font-weight:700' : ''}">
+      <span style="${l.nivel === 2 ? 'padding-left:14px;color:var(--text-muted)' : ''}">${l.label}</span>
+      <span style="color:${l.tipo === 'total' ? cor(l.valor) : 'var(--text-primary)'}">${m(l.valor)}</span>
+    </div>`).join('');
+  return `
+    <div class="card page-section"><div class="card-body">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:800"><i class="fas fa-database" style="color:var(--fa-teal)"></i> DRE Real — da operação (${d.periodo})</div>
+        <span style="font-size:11px;color:var(--text-muted)">margem líquida <b style="color:${cor(d.resultado_operacional)}">${d.margem_liquida_pct}%</b></span>
+      </div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:18px">
+        <div>${linhas}</div>
+        <div style="border-left:1px solid var(--border);padding-left:16px">
+          <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Visão Caixa</div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:6px"><span>Recebido</span><b style="color:var(--green-light)">${m(d.caixa.recebido)}</b></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px"><span>Pago</span><b style="color:var(--red-light)">${m(d.caixa.pago)}</b></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><span>Saldo</span><b style="color:${cor(d.caixa.saldo)}">${m(d.caixa.saldo)}</b></div>
+        </div>
+      </div>
+    </div></div>`;
+}
+window._dreRealHTML = _dreRealHTML;
+
+async function _dreCarregarReal() {
+  const box = document.getElementById('dreReal');
+  if (!box || typeof apiAuth !== 'function') return;
+  try {
+    const ano = new Date().getFullYear();
+    const d = await apiAuth(`/api/dre?ano=${ano}`);
+    box.innerHTML = _dreRealHTML(d);
+  } catch (e) { /* silencioso: a DRE manual segue disponível abaixo */ }
+}
+window._dreCarregarReal = _dreCarregarReal;
 
 function _dreSetAba(aba) {
   _dreAba = aba;
