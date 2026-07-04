@@ -247,6 +247,30 @@ db.exec(`CREATE TABLE IF NOT EXISTS extrato_lancamentos (
   created_at TEXT DEFAULT (datetime('now'))
 )`)
 
+// RH — colaboradores (mão de obra própria) com custo/hora. A mão de obra é o
+// maior custo de uma empresa de serviços; apontar horas em contratos torna a
+// margem (DRE) verdadeira. Isolado por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS colaboradores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nome TEXT NOT NULL, cpf TEXT, cargo TEXT, departamento TEXT,
+  custo_hora REAL DEFAULT 0, email TEXT, telefone TEXT,
+  data_admissao TEXT, status TEXT DEFAULT 'Ativo',
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`)
+// Apontamento de horas: cada lançamento vira custo (horas × custo/hora), com
+// snapshot do custo/hora vigente (histórico não muda se o salário mudar).
+db.exec(`CREATE TABLE IF NOT EXISTS apontamentos_hora (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  colaborador_id INTEGER REFERENCES colaboradores(id) ON DELETE CASCADE,
+  contrato_id TEXT, data TEXT, horas REAL DEFAULT 0,
+  custo_hora REAL DEFAULT 0, custo REAL DEFAULT 0,
+  descricao TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+
 // Propostas comerciais (C2): só nascem com estimativa de custos (WBS) do lead.
 db.exec(`CREATE TABLE IF NOT EXISTS propostas (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -952,26 +976,33 @@ function _montarDRE(emp, { ano, mes } = {}) {
      WHERE empresa_id = ? AND pc_id IS NOT NULL AND COALESCE(data_vencimento,'') LIKE ?`, emp, like)
   const desp = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar
      WHERE empresa_id = ? AND pc_id IS NULL AND COALESCE(data_vencimento,'') LIKE ?`, emp, like)
+  // Mão de obra própria: custo dos apontamentos de horas no período (competência
+  // pela data do apontamento). Compõe o custo dos serviços junto com os pedidos.
+  const mo = one(`SELECT COALESCE(SUM(custo),0) val, COALESCE(SUM(horas),0) horas FROM apontamentos_hora
+     WHERE empresa_id = ? AND COALESCE(data,'') LIKE ?`, emp, like)
   const recebido = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_receber
      WHERE empresa_id = ? AND status='Recebida' AND COALESCE(data_recebimento,'') LIKE ?`, emp, like)
   const pago = one(`SELECT COALESCE(SUM(valor),0) val FROM contas_pagar
      WHERE empresa_id = ? AND status='Pago' AND COALESCE(data_pagamento,'') LIKE ?`, emp, like)
 
-  const receita = rec.val, custos = cpv.val, despesas = desp.val
+  const round = n => Math.round(n * 100) / 100
+  const receita = rec.val, custoPedidos = cpv.val, custoMaoObra = round(mo.val), despesas = desp.val
+  const custos = round(custoPedidos + custoMaoObra)
   const resultadoBruto = receita - custos
   const resultadoOperacional = resultadoBruto - despesas
-  const round = n => Math.round(n * 100) / 100
   const pct = (n, base) => base > 0 ? round((n / base) * 100) : 0
   return {
     periodo: pref || 'total', gerado_em: new Date().toISOString(),
     receita_bruta: receita, receita_qtd: rec.qtd || 0,
-    custos, despesas,
+    custos, custo_pedidos: custoPedidos, custo_mao_obra: custoMaoObra, horas_mao_obra: round(mo.horas || 0),
+    despesas,
     resultado_bruto: round(resultadoBruto), margem_bruta_pct: pct(resultadoBruto, receita),
     resultado_operacional: round(resultadoOperacional), margem_liquida_pct: pct(resultadoOperacional, receita),
     caixa: { recebido: recebido.val, pago: pago.val, saldo: round(recebido.val - pago.val) },
     linhas: [
       { label: 'Receita Bruta de Serviços', valor: receita, tipo: 'receita', nivel: 1 },
-      { label: '(-) Custo dos Serviços (pedidos)', valor: -custos, tipo: 'custo', nivel: 2 },
+      { label: '(-) Custo dos Serviços (pedidos)', valor: -custoPedidos, tipo: 'custo', nivel: 2 },
+      { label: '(-) Custo de Mão de Obra (apontamentos)', valor: -custoMaoObra, tipo: 'custo', nivel: 2 },
       { label: '= Resultado Bruto', valor: round(resultadoBruto), tipo: 'subtotal', nivel: 1 },
       { label: '(-) Despesas Operacionais (overhead)', valor: -despesas, tipo: 'custo', nivel: 2 },
       { label: '= Resultado Operacional', valor: round(resultadoOperacional), tipo: 'total', nivel: 1 },
@@ -2338,6 +2369,88 @@ app.get('/api/conciliacao/resumo', requireAuth, (req, res) => {
     conciliados: conc.qtd || 0, valor_conciliado: conc.val || 0,
     ignorados: ign.qtd || 0,
   }))
+})
+
+// ════════════════════════════════════════════════════════════
+// RH — colaboradores (custo/hora) e apontamento de horas em contratos.
+// A mão de obra apontada compõe o custo dos serviços na DRE real.
+// ════════════════════════════════════════════════════════════
+
+app.get('/api/colaboradores', requireAuth, (req, res) => {
+  const { status, q = '' } = req.query
+  const where = ['empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (status) { where.push('status = ?'); params.push(status) }
+  if (q) { where.push('(nome LIKE ? OR cargo LIKE ? OR departamento LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`) }
+  res.json(ok(db.prepare(`SELECT * FROM colaboradores WHERE ${where.join(' AND ')} ORDER BY nome ASC`).all(...params)))
+})
+
+app.get('/api/colaboradores/:id', requireAuth, (req, res) => {
+  const c = rowScoped('colaboradores', req)
+  if (!c) return res.status(404).json(err('Colaborador não encontrado'))
+  res.json(ok(c))
+})
+
+app.post('/api/colaboradores', requireAuth, requireRole('admin', 'diretor', 'rh'), (req, res) => {
+  const b = req.body || {}
+  if (!String(b.nome || '').trim()) return res.status(400).json(err('Nome obrigatório'))
+  if (b.custo_hora != null && !(Number(b.custo_hora) >= 0)) return res.status(400).json(err('Custo/hora inválido'))
+  const r = db.prepare(`INSERT INTO colaboradores(nome, cpf, cargo, departamento, custo_hora, email, telefone, data_admissao, status, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(String(b.nome).trim(), b.cpf || null, b.cargo || null, b.departamento || null, Number(b.custo_hora) || 0,
+      b.email || null, b.telefone || null, b.data_admissao || null, b.status || 'Ativo', empresaDoReq(req))
+  log(req.user.usuario_id, req.user.nome, 'Criar', 'colaboradores', `Colaborador ${b.nome} (${b.cargo || '—'}, R$ ${Number(b.custo_hora) || 0}/h)`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM colaboradores WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+app.put('/api/colaboradores/:id', requireAuth, requireRole('admin', 'diretor', 'rh'), (req, res) => {
+  const cur = rowScoped('colaboradores', req)
+  if (!cur) return res.status(404).json(err('Colaborador não encontrado'))
+  const b = req.body || {}
+  if (b.custo_hora != null && !(Number(b.custo_hora) >= 0)) return res.status(400).json(err('Custo/hora inválido'))
+  db.prepare(`UPDATE colaboradores SET nome=?,cpf=?,cargo=?,departamento=?,custo_hora=?,email=?,telefone=?,data_admissao=?,status=?,updated_at=datetime('now') WHERE id=?`)
+    .run(b.nome ?? cur.nome, b.cpf ?? cur.cpf, b.cargo ?? cur.cargo, b.departamento ?? cur.departamento,
+      b.custo_hora != null ? Number(b.custo_hora) : cur.custo_hora, b.email ?? cur.email, b.telefone ?? cur.telefone,
+      b.data_admissao ?? cur.data_admissao, b.status ?? cur.status, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM colaboradores WHERE id = ?`).get(req.params.id)))
+})
+
+// Apontar horas: gera custo (horas × custo/hora vigente, com snapshot).
+app.post('/api/apontamentos-hora', requireAuth, requireRole('admin', 'diretor', 'rh', 'financeiro'), (req, res) => {
+  const b = req.body || {}
+  const emp = empresaDoReq(req)
+  const colab = db.prepare(`SELECT * FROM colaboradores WHERE id = ? AND empresa_id = ?`).get(b.colaborador_id, emp)
+  if (!colab) return res.status(404).json(err('Colaborador não encontrado'))
+  const horas = Number(b.horas)
+  if (!(horas > 0)) return res.status(400).json(err('Horas devem ser maiores que zero'))
+  const custoHora = b.custo_hora != null ? Number(b.custo_hora) : Number(colab.custo_hora) || 0
+  const custo = Math.round(horas * custoHora * 100) / 100
+  const r = db.prepare(`INSERT INTO apontamentos_hora(colaborador_id, contrato_id, data, horas, custo_hora, custo, descricao, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?)`)
+    .run(colab.id, b.contrato_id || null, b.data || new Date().toISOString().slice(0, 10), horas, custoHora, custo, b.descricao || null, emp)
+  log(req.user.usuario_id, req.user.nome, 'apontar_horas', 'apontamentos_hora', `${horas}h de ${colab.nome} (R$ ${custo.toFixed(2)}) — contrato ${b.contrato_id || '—'}`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM apontamentos_hora WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+app.get('/api/apontamentos-hora', requireAuth, (req, res) => {
+  const { colaborador_id, contrato_id } = req.query
+  const where = ['a.empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (colaborador_id) { where.push('a.colaborador_id = ?'); params.push(colaborador_id) }
+  if (contrato_id) { where.push('a.contrato_id = ?'); params.push(contrato_id) }
+  const rows = db.prepare(`SELECT a.*, c.nome AS colaborador_nome, c.cargo AS colaborador_cargo
+     FROM apontamentos_hora a LEFT JOIN colaboradores c ON c.id = a.colaborador_id
+     WHERE ${where.join(' AND ')} ORDER BY a.data DESC, a.id DESC`).all(...params)
+  res.json(ok(rows))
+})
+
+// Rollup de custo de mão de obra por contrato (para a margem do contrato).
+app.get('/api/contratos/:id/custo-mao-de-obra', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const tot = db.prepare(`SELECT COALESCE(SUM(custo),0) custo, COALESCE(SUM(horas),0) horas, COUNT(*) qtd
+     FROM apontamentos_hora WHERE empresa_id = ? AND contrato_id = ?`).get(emp, req.params.id) || {}
+  const porColab = db.prepare(`SELECT c.nome, c.cargo, COALESCE(SUM(a.horas),0) horas, COALESCE(SUM(a.custo),0) custo
+     FROM apontamentos_hora a LEFT JOIN colaboradores c ON c.id = a.colaborador_id
+     WHERE a.empresa_id = ? AND a.contrato_id = ? GROUP BY a.colaborador_id ORDER BY custo DESC`).all(emp, req.params.id)
+  res.json(ok({ contrato_id: req.params.id, custo_total: tot.custo || 0, horas_total: tot.horas || 0, apontamentos: tot.qtd || 0, por_colaborador: porColab }))
 })
 
 // ── Recebimento por item ──────────────────────────────────────

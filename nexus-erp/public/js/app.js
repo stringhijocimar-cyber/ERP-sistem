@@ -629,6 +629,7 @@ function navigate(page) {
     notificacoes: function() { if(typeof renderNotificacoes === 'function') renderNotificacoes(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Notificações...</p>'; },
     meu_painel: function() { if(typeof renderMeuPainel === 'function') renderMeuPainel(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Meu Painel...</p>'; },
     equipe: renderEquipe,
+    rh: function() { if(typeof renderRH === 'function') renderRH(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando RH...</p>'; },
     frota: renderFrota,
     estoque: function() { if(typeof renderAlmoxarifado === 'function') renderAlmoxarifado(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Almoxarifado...</p>'; },
     ssma: renderSSMA,
