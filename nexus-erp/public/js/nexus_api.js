@@ -73,8 +73,12 @@
       return (out === null || out === undefined) ? { ok: true } : out;
     } catch (e) {
       console.debug('[NexusAPI] POST', path, e.status || '', e.message);
-      if (window.NexusToast) window.NexusToast(`Módulo ainda não conectado: ${path.replace('/api/', '')}`, 'info');
-      return { ok: false, _stub: true, error: e.message };
+      // "Módulo não conectado" só faz sentido para rota ausente (404) ou
+      // rede caída (sem status). 400/403/409 são respostas de negócio
+      // legítimas que o chamador trata — não mostrar o toast enganoso.
+      const naoConectado = !e.status || e.status === 404;
+      if (naoConectado && window.NexusToast) window.NexusToast(`Módulo ainda não conectado: ${path.replace('/api/', '')}`, 'info');
+      return { ok: false, _stub: naoConectado, error: e.message, status: e.status };
     }
   }
 

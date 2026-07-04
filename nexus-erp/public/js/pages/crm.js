@@ -33,8 +33,14 @@ async function _crmSyncLeadServidor(lead) {
     if (lead._srvId != null) {
       await NexusAPI.put(`/api/crm/${lead._srvId}`, payload);
     } else {
-      const r = await NexusAPI.post('/api/crm', payload);
-      if (r && r.id != null && !r._stub) { lead._srvId = r.id; _saveCRMData(CRM_DATA); }
+      // Guarda anti-duplicidade: duas ações no lead novo antes do 1º POST
+      // resolver (criar → arrastar etapa) criavam DOIS leads no tenant.
+      if (lead._posting) return;
+      lead._posting = true;
+      try {
+        const r = await NexusAPI.post('/api/crm', payload);
+        if (r && r.id != null && !r._stub) { lead._srvId = r.id; _saveCRMData(CRM_DATA); }
+      } finally { delete lead._posting; }
     }
   } catch (e) { /* offline → mantém local; reconcile de boot cobre depois */ }
 }

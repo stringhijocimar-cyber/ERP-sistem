@@ -33,6 +33,7 @@ function _ctrTiposOpts(selected) {
 function _ctrContratos() {
   let reais = [];
   try { reais = JSON.parse(localStorage.getItem('fa_contratos') || '[]'); } catch (e) {}
+  if (!Array.isArray(reais)) reais = Array.isArray(reais && reais.items) ? reais.items : []; // JSON não-array não quebra
   const norm = reais.map(c => ({
     id: c.id, numero: c.numero || String(c.id),
     cliente: c.cliente || c.titulo || c.fornecedor_nome || '—',
@@ -363,9 +364,10 @@ function filterContratos() {
   const tipo = document.getElementById('filterTipo').value;
 
   let filtered = _ctrContratos().filter(c => {
-    const matchSearch = !search || c.cliente.toLowerCase().includes(search) ||
-      c.id.toLowerCase().includes(search) || c.gestor.toLowerCase().includes(search) ||
-      c.descricao.toLowerCase().includes(search);
+    // String(...) blinda contra id numérico de contrato real (server) e nulos.
+    const matchSearch = !search || String(c.cliente||'').toLowerCase().includes(search) ||
+      String(c.id||'').toLowerCase().includes(search) || String(c.gestor||'').toLowerCase().includes(search) ||
+      String(c.descricao||'').toLowerCase().includes(search);
     const matchStatus = !status || c.status === status;
     const matchTipo = !tipo || c.tipo === tipo;
     return matchSearch && matchStatus && matchTipo;
@@ -893,6 +895,7 @@ async function salvarNovoContrato() {
   renderContratos();
 }
 window.salvarNovoContrato = salvarNovoContrato;
+window.filterContratos = filterContratos;
 window.salvarEdicaoContrato = salvarEdicaoContrato;
 
 function _ctrGetProjetoId(contratoId) {
