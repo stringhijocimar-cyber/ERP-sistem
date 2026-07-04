@@ -22,7 +22,7 @@ import { consultarReceita, consultarCadastroCNPJ } from './lib/receita.js'
 import { analisarFinanceiro } from './lib/analise_financeira.js'
 import { calcularIDF } from './lib/idf.js'
 import { montarRollupWBS } from './lib/wbs_rollup.js'
-import { emitirNotaFiscal, cancelarNotaFiscal } from './lib/nfe.js'
+import { emitirNotaFiscal, cancelarNotaFiscal, consultarNotaFiscal } from './lib/nfe.js'
 import { enviarEmail } from './lib/email.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
@@ -257,6 +257,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS notas_fiscais (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 )`)
+// Emissor real (PlugNotas): rastreia a fonte, o id do provedor (para consulta
+// de status assíncrona), o XML e o tenant.
+ensureColumns('notas_fiscais', [
+  ['fonte', 'fonte TEXT'],
+  ['provider_id', 'provider_id TEXT'],
+  ['xml_url', 'xml_url TEXT'],
+  ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
+])
 // Soma do que já foi recebido por item de um pedido (chave: código ou descrição).
 function itensRecebidosAcumulados(pcId) {
   return db.prepare(
@@ -1090,41 +1098,74 @@ app.post('/api/notificacoes', requireAuth, requireRole('admin', 'diretor', 'fina
 // ════════════════════════════════════════════════════════════
 // FISCAL — emissão de NF-e / NFS-e / CT-e (adaptador server-side)
 // ════════════════════════════════════════════════════════════
+// Credenciais do emissor fiscal, injetadas do env (a lib nfe.js é pura).
+function _nfeOpts() {
+  return {
+    provider: process.env.NFE_PROVIDER,
+    apiKey: process.env.NFE_API_KEY,
+    baseUrl: process.env.NFE_BASE_URL,
+    ambiente: process.env.NFE_AMBIENTE,
+  }
+}
+
 app.get('/api/nfe', requireAuth, (req, res) => {
-  res.json(ok(db.prepare(`SELECT * FROM notas_fiscais ORDER BY created_at DESC LIMIT 200`).all()))
+  res.json(ok(db.prepare(`SELECT * FROM notas_fiscais WHERE empresa_id = ? ORDER BY created_at DESC LIMIT 200`).all(empresaDoReq(req))))
 })
 
 app.get('/api/nfe/:id', requireAuth, (req, res) => {
-  const n = db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(req.params.id)
+  const n = rowScoped('notas_fiscais', req)
   if (!n) return res.status(404).json(err('Nota não encontrada'))
   res.json(ok(n))
 })
 
 app.post('/api/nfe/emitir', requireAuth, requireRole('admin', 'financeiro', 'fiscal'), async (req, res) => {
   const b = req.body || {}
+  const emp = empresaDoReq(req)
   // Numeração por série quando não informada.
   const serie = Number(b.serie) || 1
-  const numero = Number(b.numero) || (db.prepare(`SELECT COUNT(*) n FROM notas_fiscais WHERE serie = ?`).get(serie).n + 1)
+  const numero = Number(b.numero) || (db.prepare(`SELECT COUNT(*) n FROM notas_fiscais WHERE serie = ? AND empresa_id = ?`).get(serie, emp).n + 1)
   try {
-    const r = await emitirNotaFiscal({ ...b, numero, serie }, { provider: process.env.NFE_PROVIDER })
-    if (r.status !== 'autorizada') return res.status(422).json(err('Emissão rejeitada: ' + (r.motivo || 'dados inválidos')))
+    const r = await emitirNotaFiscal({ ...b, numero, serie }, _nfeOpts())
+    // 'autorizada' (mock) ou 'processando' (emissor autoriza em background)
+    // ambos persistem a nota; 'rejeitada'/'erro' não.
+    if (r.status !== 'autorizada' && r.status !== 'processando') {
+      return res.status(422).json(err('Emissão rejeitada: ' + (r.motivo || 'dados inválidos')))
+    }
     const destinatario = b.cnpj_destinatario || b.cpf_destinatario || b.destinatario || ''
-    const ins = db.prepare(`INSERT INTO notas_fiscais(tipo, numero, serie, chave, protocolo, status, valor, cnpj_emitente, destinatario, descricao, danfe_url, pedido_id, emitido_por)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(r.tipo, r.numero, r.serie, r.chave, r.protocolo, r.status, r.valor, b.cnpj_emitente || '', destinatario, b.descricao || '', r.danfe_url, b.pedido_id || null, req.user.nome)
-    log(req.user.usuario_id, req.user.nome, 'nfe_emitir', 'notas_fiscais', `${r.tipo_label} ${r.numero}/${r.serie} autorizada (chave ${r.chave})`)
+    const ins = db.prepare(`INSERT INTO notas_fiscais(tipo, numero, serie, chave, protocolo, status, valor, cnpj_emitente, destinatario, descricao, danfe_url, xml_url, pedido_id, emitido_por, fonte, provider_id, empresa_id)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(r.tipo || (b.tipo || 'nfe'), r.numero || numero, r.serie || serie, r.chave || null, r.protocolo || null, r.status, (r.valor ?? Number(b.valor)) || 0,
+        b.cnpj_emitente || '', destinatario, b.descricao || '', r.danfe_url || null, r.xml_url || null, b.pedido_id || null, req.user.nome, r.fonte || null, r.id || null, emp)
+    log(req.user.usuario_id, req.user.nome, 'nfe_emitir', 'notas_fiscais', `${r.tipo_label || r.tipo} ${numero}/${serie} — ${r.status} (${r.fonte || 'mock'})`)
     res.status(201).json(ok(db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(ins.lastInsertRowid)))
   } catch (e) {
     res.status(400).json(err(e.message))
   }
 })
 
+// Consulta o status assíncrono de uma nota no emissor (PlugNotas autoriza em
+// background) e atualiza a linha. mock retorna 'autorizada' de imediato.
+app.post('/api/nfe/:id/status', requireAuth, requireRole('admin', 'financeiro', 'fiscal'), async (req, res) => {
+  const n = rowScoped('notas_fiscais', req)
+  if (!n) return res.status(404).json(err('Nota não encontrada'))
+  try {
+    const r = await consultarNotaFiscal(n.provider_id || n.id, _nfeOpts())
+    if (r.status === 'autorizada' || r.status === 'rejeitada' || r.status === 'processando') {
+      db.prepare(`UPDATE notas_fiscais SET status=?, chave=COALESCE(?,chave), protocolo=COALESCE(?,protocolo), danfe_url=COALESCE(?,danfe_url), xml_url=COALESCE(?,xml_url), updated_at=datetime('now') WHERE id=?`)
+        .run(r.status, r.chave, r.protocolo, r.danfe_url, r.xml_url, n.id)
+    }
+    res.json(ok({ ...db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(n.id), _consulta: r.status, _motivo: r.motivo || null }))
+  } catch (e) {
+    res.status(400).json(err(e.message))
+  }
+})
+
 app.post('/api/nfe/:id/cancelar', requireAuth, requireRole('admin', 'financeiro', 'fiscal'), (req, res) => {
-  const n = db.prepare(`SELECT * FROM notas_fiscais WHERE id = ?`).get(req.params.id)
+  const n = rowScoped('notas_fiscais', req)
   if (!n) return res.status(404).json(err('Nota não encontrada'))
   if (n.status === 'cancelada') return res.status(409).json(err('Nota já cancelada'))
   try {
-    const r = cancelarNotaFiscal(n.chave, req.body && req.body.justificativa, { provider: process.env.NFE_PROVIDER })
+    const r = cancelarNotaFiscal(n.chave, req.body && req.body.justificativa, _nfeOpts())
     if (r.status !== 'cancelada') return res.status(400).json(err(r.motivo || 'cancelamento rejeitado'))
     db.prepare(`UPDATE notas_fiscais SET status='cancelada', justificativa_cancel=?, updated_at=datetime('now') WHERE id=?`)
       .run(String(req.body.justificativa).trim(), req.params.id)
