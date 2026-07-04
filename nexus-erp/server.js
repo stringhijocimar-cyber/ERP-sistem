@@ -23,6 +23,7 @@ import { analisarFinanceiro } from './lib/analise_financeira.js'
 import { calcularIDF } from './lib/idf.js'
 import { montarRollupWBS } from './lib/wbs_rollup.js'
 import { emitirNotaFiscal, cancelarNotaFiscal, consultarNotaFiscal } from './lib/nfe.js'
+import { parseExtrato, sugerirMatch } from './lib/conciliacao.js'
 import { enviarEmail } from './lib/email.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 
@@ -223,6 +224,27 @@ db.exec(`CREATE TABLE IF NOT EXISTS contas_receber (
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
+)`)
+
+// Conciliação bancária: um extrato importado (lote) e seus lançamentos.
+// Cada lançamento é uma linha do banco (crédito/débito) que, ao ser
+// conciliada, baixa uma conta a pagar/receber. Isolado por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS extratos_bancarios (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  banco TEXT, conta TEXT, arquivo_nome TEXT, formato TEXT,
+  periodo_inicio TEXT, periodo_fim TEXT, qtd_lancamentos INTEGER DEFAULT 0,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+db.exec(`CREATE TABLE IF NOT EXISTS extrato_lancamentos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  extrato_id INTEGER REFERENCES extratos_bancarios(id) ON DELETE CASCADE,
+  data TEXT, descricao TEXT, documento TEXT,
+  valor REAL DEFAULT 0, tipo TEXT,
+  status TEXT DEFAULT 'pendente',
+  conciliado_tipo TEXT, conciliado_id INTEGER, conciliado_em TEXT, conciliado_por TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
 )`)
 
 // Propostas comerciais (C2): só nascem com estimativa de custos (WBS) do lead.
@@ -2207,6 +2229,115 @@ app.post('/api/contas-receber/:id/emitir-nfse', requireAuth, requireRole('admin'
   } catch (e) {
     res.status(400).json(err(e.message))
   }
+})
+
+// ════════════════════════════════════════════════════════════
+// CONCILIAÇÃO BANCÁRIA — importa extrato (CSV/OFX), sugere o casamento
+// com contas a pagar/receber e baixa o título ao conciliar.
+// ════════════════════════════════════════════════════════════
+
+// Importa um extrato: parseia o conteúdo e grava os lançamentos (pendentes).
+app.post('/api/conciliacao/importar', requireAuth, requireRole('admin', 'financeiro', 'diretor'), (req, res) => {
+  const b = req.body || {}
+  const emp = empresaDoReq(req)
+  let lancs
+  try { lancs = parseExtrato(b.formato, b.conteudo) } catch (e) { return res.status(400).json(err('Falha ao ler o extrato: ' + e.message)) }
+  if (!Array.isArray(lancs) || !lancs.length) return res.status(400).json(err('Nenhum lançamento reconhecido no arquivo (verifique o formato CSV/OFX)'))
+  const datas = lancs.map(l => l.data).filter(Boolean).sort()
+  const info = db.prepare(`INSERT INTO extratos_bancarios(banco, conta, arquivo_nome, formato, periodo_inicio, periodo_fim, qtd_lancamentos, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?)`)
+    .run(b.banco || '', b.conta || '', b.arquivo_nome || '', String(b.formato || 'auto'), datas[0] || null, datas[datas.length - 1] || null, lancs.length, emp)
+  const extId = info.lastInsertRowid
+  const ins = db.prepare(`INSERT INTO extrato_lancamentos(extrato_id, data, descricao, documento, valor, tipo, empresa_id) VALUES(?,?,?,?,?,?,?)`)
+  const tx = db.transaction(() => { for (const l of lancs) ins.run(extId, l.data, l.descricao, l.documento, l.valor, l.tipo, emp) })
+  tx()
+  log(req.user.usuario_id, req.user.nome, 'conc_importar', 'conciliacao', `Extrato ${b.banco || ''} importado: ${lancs.length} lançamento(s)`)
+  res.status(201).json(ok({ extrato_id: extId, importados: lancs.length, periodo: { inicio: datas[0] || null, fim: datas[datas.length - 1] || null } }))
+})
+
+// Lista lançamentos do tenant (filtra por status/extrato).
+app.get('/api/conciliacao/lancamentos', requireAuth, (req, res) => {
+  const { status, extrato_id } = req.query
+  const where = ['empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (status) { where.push('status = ?'); params.push(status) }
+  if (extrato_id) { where.push('extrato_id = ?'); params.push(extrato_id) }
+  const rows = db.prepare(`SELECT * FROM extrato_lancamentos WHERE ${where.join(' AND ')} ORDER BY data ASC, id ASC`).all(...params)
+  res.json(ok(rows))
+})
+
+// Sugere o casamento de cada lançamento pendente com AP (débito) / AR (crédito).
+// Débito → conta a pagar em aberto; crédito → conta a receber em cobrança.
+app.get('/api/conciliacao/sugestoes', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const janela = parseInt(req.query.janela) || 5
+  const lancs = db.prepare(`SELECT * FROM extrato_lancamentos WHERE empresa_id = ? AND status = 'pendente' ORDER BY data ASC`).all(emp)
+  const pagar = db.prepare(`SELECT id, valor, data_vencimento AS data, numero, descricao, fornecedor_nome FROM contas_pagar WHERE empresa_id = ? AND status NOT IN ('Pago','Cancelado')`).all(emp)
+  const receber = db.prepare(`SELECT id, valor, data_vencimento AS data, numero, descricao, cliente FROM contas_receber WHERE empresa_id = ? AND status IN ('A Receber','A Faturar')`).all(emp)
+  const out = lancs.map(l => {
+    const tipoConta = l.tipo === 'debito' ? 'contas_pagar' : 'contas_receber'
+    const candidatos = l.tipo === 'debito' ? pagar : receber
+    const m = sugerirMatch(l, candidatos, { janelaDias: janela })
+    let sugestao = null
+    if (m) {
+      const c = candidatos.find(x => x.id === m.ref_id)
+      sugestao = { tipo: tipoConta, ref_id: m.ref_id, score: m.score, dias: m.dias, numero: c && c.numero, descricao: c && c.descricao, parte: c && (c.fornecedor_nome || c.cliente) }
+    }
+    return { lancamento: l, sugestao }
+  })
+  res.json(ok(out))
+})
+
+// Concilia um lançamento com uma conta: baixa o título (Pago/Recebida) e
+// marca o lançamento como conciliado. Idempotente (409 se já conciliado).
+app.post('/api/conciliacao/:id/conciliar', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const lanc = rowScoped('extrato_lancamentos', req)
+  if (!lanc) return res.status(404).json(err('Lançamento não encontrado'))
+  if (lanc.status === 'conciliado') return res.status(409).json(err('Lançamento já conciliado'))
+  const b = req.body || {}
+  const tipo = b.tipo || (lanc.tipo === 'debito' ? 'contas_pagar' : 'contas_receber')
+  const refId = b.ref_id
+  if (tipo !== 'contas_pagar' && tipo !== 'contas_receber') return res.status(400).json(err('tipo inválido (contas_pagar|contas_receber)'))
+  if (refId == null) return res.status(400).json(err('ref_id obrigatório'))
+  const conta = db.prepare(`SELECT * FROM ${tipo} WHERE id = ? AND empresa_id = ?`).get(refId, emp)
+  if (!conta) return res.status(404).json(err('Conta a conciliar não encontrada'))
+  const hoje = new Date().toISOString().slice(0, 10)
+  if (tipo === 'contas_pagar') {
+    if (conta.status !== 'Pago') db.prepare(`UPDATE contas_pagar SET status='Pago', data_pagamento=?, forma_pagamento=COALESCE(forma_pagamento,'Conciliação bancária'), updated_at=datetime('now') WHERE id=?`).run(lanc.data || hoje, refId)
+  } else {
+    if (conta.status !== 'Recebida') db.prepare(`UPDATE contas_receber SET status='Recebida', data_recebimento=?, forma_recebimento=COALESCE(forma_recebimento,'Conciliação bancária'), updated_at=datetime('now') WHERE id=?`).run(lanc.data || hoje, refId)
+  }
+  db.prepare(`UPDATE extrato_lancamentos SET status='conciliado', conciliado_tipo=?, conciliado_id=?, conciliado_em=datetime('now'), conciliado_por=? WHERE id=?`)
+    .run(tipo, refId, req.user.nome, lanc.id)
+  log(req.user.usuario_id, req.user.nome, 'conc_conciliar', 'conciliacao', `Lançamento ${lanc.data} R$ ${Number(lanc.valor).toFixed(2)} conciliado com ${tipo} #${refId} (${conta.numero || ''})`)
+  res.json(ok({
+    lancamento: db.prepare(`SELECT * FROM extrato_lancamentos WHERE id = ?`).get(lanc.id),
+    conta: db.prepare(`SELECT * FROM ${tipo} WHERE id = ?`).get(refId),
+  }))
+})
+
+// Ignora um lançamento (tarifa, transferência interna etc. — não vira baixa).
+app.post('/api/conciliacao/:id/ignorar', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {
+  const lanc = rowScoped('extrato_lancamentos', req)
+  if (!lanc) return res.status(404).json(err('Lançamento não encontrado'))
+  if (lanc.status === 'conciliado') return res.status(409).json(err('Lançamento já conciliado — não pode ser ignorado'))
+  db.prepare(`UPDATE extrato_lancamentos SET status='ignorado' WHERE id=?`).run(lanc.id)
+  log(req.user.usuario_id, req.user.nome, 'conc_ignorar', 'conciliacao', `Lançamento ${lanc.data} R$ ${Number(lanc.valor).toFixed(2)} ignorado`)
+  res.json(ok(db.prepare(`SELECT * FROM extrato_lancamentos WHERE id = ?`).get(lanc.id)))
+})
+
+// Resumo da conciliação (para o dashboard/cabeçalho da tela).
+app.get('/api/conciliacao/resumo', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const one = (sql) => db.prepare(sql).get(emp) || {}
+  const pend = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM extrato_lancamentos WHERE empresa_id = ? AND status='pendente'`)
+  const conc = one(`SELECT COUNT(*) qtd, COALESCE(SUM(valor),0) val FROM extrato_lancamentos WHERE empresa_id = ? AND status='conciliado'`)
+  const ign = one(`SELECT COUNT(*) qtd FROM extrato_lancamentos WHERE empresa_id = ? AND status='ignorado'`)
+  res.json(ok({
+    pendentes: pend.qtd || 0, valor_pendente: pend.val || 0,
+    conciliados: conc.qtd || 0, valor_conciliado: conc.val || 0,
+    ignorados: ign.qtd || 0,
+  }))
 })
 
 // ── Recebimento por item ──────────────────────────────────────

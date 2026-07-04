@@ -602,6 +602,7 @@ function navigate(page) {
     financeiro: renderFinanceiro,
     faturamento: renderFaturamento,
     contas_pagar: renderContasPagar,
+    conciliacao: function() { if(typeof renderConciliacao === 'function') renderConciliacao(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Conciliação...</p>'; },
     compras: renderCompras,
     fluxo_compras:         function() { if(typeof renderFluxoAprovacaoRC === 'function') renderFluxoAprovacaoRC(); else renderFluxoCompras(); },
     fluxo_aprovacao_rc:    function() { if(typeof renderFluxoAprovacaoRC === 'function') renderFluxoAprovacaoRC(); else renderFluxoCompras(); },
