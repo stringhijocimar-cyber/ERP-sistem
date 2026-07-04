@@ -1,0 +1,39 @@
+name: CI
+
+# Roda a suíte de testes (vitest) em todo push e PR. Fecha um gap de
+# "operação de produto": até aqui os testes só rodavam localmente.
+on:
+  push:
+    branches: [genspark_ai_developer, main]
+  pull_request:
+
+jobs:
+  test:
+    name: Testes (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: nexus-erp/package-lock.json
+
+      - name: Instalar dependências (nexus-erp)
+        working-directory: nexus-erp
+        run: npm ci
+
+      - name: Validar sintaxe dos backends
+        run: |
+          node --check nexus-erp/server.js
+          node --check nexus-cf/src/index.js
+
+      - name: Rodar a suíte de testes
+        working-directory: nexus-erp
+        run: npm test
