@@ -11,9 +11,22 @@ const SEP = ';'
 const EOL = '\r\n'
 const BOM = '﻿'
 
-// Escapa um campo: envolve em aspas se contiver separador, aspas ou quebra.
+// Neutraliza injeção de fórmula (CSV/formula injection — CWE-1236): células que
+// começam com = + - @ (ou tab/CR) são interpretadas como fórmula pelo Excel.
+// Prefixamos com apóstrofo. NÃO neutraliza números negativos legítimos
+// (-1234,56), que começam com '-' seguido de dígito.
+function _riscoFormula(s) {
+  const c = s.charCodeAt(0)
+  if (s[0] === '=' || s[0] === '@' || c === 9 || c === 13) return true
+  if ((s[0] === '+' || s[0] === '-') && !(s[1] >= '0' && s[1] <= '9')) return true
+  return false
+}
+
+// Escapa um campo: neutraliza fórmula e envolve em aspas se contiver
+// separador, aspas ou quebra.
 function _campo(v) {
-  const s = v == null ? '' : String(v)
+  let s = v == null ? '' : String(v)
+  if (s && _riscoFormula(s)) s = "'" + s
   if (s.includes('"') || s.includes(SEP) || s.includes('\n') || s.includes('\r')) {
     return '"' + s.replace(/"/g, '""') + '"'
   }

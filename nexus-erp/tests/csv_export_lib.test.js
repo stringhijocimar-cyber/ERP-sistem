@@ -16,6 +16,30 @@ describe('toCSV', () => {
   })
 })
 
+describe('neutralização de injeção de fórmula (CWE-1236)', () => {
+  it('prefixa apóstrofo em células que começam com = @ + - (não-número)', () => {
+    const csv = toCSV(['h'], [['=1+1'], ['@SUM(A1)'], ['+cmd'], ['-cmd|calc']], { bom: false })
+    expect(csv).toContain("'=1+1")
+    expect(csv).toContain("'@SUM(A1)")
+    expect(csv).toContain("'+cmd")
+    expect(csv).toContain("'-cmd|calc")
+  })
+  it('NÃO altera números negativos legítimos', () => {
+    const csv = toCSV(['h'], [['-30000,00'], ['-0,5']], { bom: false })
+    expect(csv).toContain('\r\n-30000,00')
+    expect(csv).not.toContain("'-30000")
+  })
+  it('neutraliza título de contrato malicioso no dashboard', () => {
+    const csv = dashboardParaCSV({
+      periodo: '2026', dre: {}, posicao: {}, projecao: {},
+      contratos: { top: [{ numero: 'CT-1', titulo: '=HYPERLINK("http://evil")', receita: 0, resultado: 0, margem_pct: 0 }] },
+      conciliacao_pendente: 0,
+    })
+    expect(csv).toContain('"\'=HYPERLINK')
+    expect(csv).not.toMatch(/;=HYPERLINK/)
+  })
+})
+
 describe('dreParaCSV', () => {
   const dre = {
     periodo: '2026', margem_bruta_pct: 80, margem_liquida_pct: 66,
