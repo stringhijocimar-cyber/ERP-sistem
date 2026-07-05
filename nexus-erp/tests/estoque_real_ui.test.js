@@ -10,14 +10,20 @@ const REP = { total: 1, custo_estimado_total: 80, itens: [
 ] }
 const VAL = { total: 45, itens: 1, por_categoria: [{ categoria: 'EPI', valor: 45 }] }
 
+let chamadas = []
 beforeAll(async () => {
   window.fmt = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR')
-  window.apiAuth = vi.fn(async (path) => path.includes('reposicao') ? REP : VAL)
+  window.showToast = vi.fn(); window.logAction = vi.fn()
+  window.apiAuth = vi.fn(async (path, opts = {}) => {
+    chamadas.push({ path, method: (opts.method || 'GET').toUpperCase() })
+    if (path.includes('requisicao-reposicao')) return { numero: 'RC-2026-005', itens_repostos: 1 }
+    return path.includes('reposicao') ? REP : VAL
+  })
   await import('../public/js/nexus_api.js')
   await import('../public/js/pages/estoque_real.js')
 })
 
-beforeEach(() => { document.body.innerHTML = '<div id="estoqueRealPanel"></div>' })
+beforeEach(() => { chamadas = []; document.body.innerHTML = '<div id="estoqueRealPanel"></div>' })
 
 describe('_estoqueRealHTML (puro)', () => {
   it('renderiza reposição e valorização', () => {
@@ -44,5 +50,18 @@ describe('_carregarEstoqueReal', () => {
     expect(window.apiAuth).toHaveBeenCalledWith('/api/almoxarifado/reposicao')
     expect(window.apiAuth).toHaveBeenCalledWith('/api/almoxarifado/valorizacao')
     expect(document.getElementById('estoqueRealPanel').innerHTML).toContain('LUVA-01')
+  })
+  it('painel com itens mostra o botão de gerar requisição', () => {
+    document.getElementById('estoqueRealPanel').innerHTML = window._estoqueRealHTML(REP, VAL)
+    expect(document.getElementById('estoqueRealPanel').innerHTML).toContain('gerarRequisicaoReposicao()')
+  })
+})
+
+describe('gerarRequisicaoReposicao', () => {
+  it('POSTa a reposição e avisa com o número da RC', async () => {
+    await window.gerarRequisicaoReposicao()
+    const post = chamadas.find(c => c.method === 'POST' && c.path === '/api/almoxarifado/requisicao-reposicao')
+    expect(post).toBeTruthy()
+    expect(window.showToast).toHaveBeenCalledWith(expect.stringMatching(/RC-2026-005/), 'success')
   })
 })
