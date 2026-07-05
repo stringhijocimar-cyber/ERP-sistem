@@ -644,6 +644,7 @@ function navigate(page) {
     perfil: renderPerfil,
     projetos_gantt: function() { if(typeof renderProjetosGantt === 'function') renderProjetosGantt(); else document.getElementById('mainContent').innerHTML = '<p style="color:#fff;padding:40px">Módulo Projetos & Gantt carregando...</p>'; },
     dre:        function() { if(typeof renderDRE === 'function') renderDRE(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando DRE...</p>'; },
+    orcamento:  function() { if(typeof renderOrcamento === 'function') renderOrcamento(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Orçamento...</p>'; },
     ativo_fixo: function() { if(typeof renderAtivoFixo === 'function') renderAtivoFixo(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Ativo Fixo...</p>'; },
     kpi_exec:   function() { if(typeof renderKPIExecutivo === 'function') renderKPIExecutivo(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando KPI Executivo...</p>'; },
     fiscal:     function() { if(typeof renderFiscal === 'function') renderFiscal(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Fiscal...</p>'; },
