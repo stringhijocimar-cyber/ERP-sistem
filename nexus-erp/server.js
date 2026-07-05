@@ -1936,18 +1936,15 @@ function normalizarTipoRC(v) {
   return null
 }
 
-app.post('/api/rc', requireAuth, (req, res) => {
-  const { os_id, os_numero, departamento, prioridade, observacoes, tipo, wbs, itens = [] } = req.body
-  // Compliance: tipo válido e WBS são obrigatórios para rastreabilidade de custo.
-  const tipoCanon = normalizarTipoRC(tipo)
-  if (!tipoCanon) return res.status(400).json(err('Tipo da RC obrigatório: Material, Serviço ou Equipamento'))
-  if (!wbs || !String(wbs).trim()) return res.status(400).json(err('Vínculo WBS obrigatório na RC (rastreabilidade de custo)'))
+// Insere uma RC + itens (reutilizado por POST /api/rc e pela reposição de
+// estoque). tipo já canônico; wbs já validada pelo chamador.
+function inserirRC(emp, user, { os_id = null, os_numero = null, departamento = null, prioridade = 'Normal', observacoes = null, tipo, wbs }, itens = []) {
   const numero = nextRC()
   const valorTotal = itens.reduce((s, i) => s + ((i.quantidade || 1) * (i.valor_unitario_estimado || 0)), 0)
   const r = db.prepare(
     `INSERT INTO requisicoes_compra(numero, os_id, os_numero, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_total, observacoes, tipo, wbs, empresa_id)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, os_id || null, os_numero, req.user.usuario_id, req.user.nome, departamento, prioridade || 'Normal', 'Rascunho', valorTotal, observacoes, tipoCanon, String(wbs).trim(), empresaDoReq(req))
+  ).run(numero, os_id, os_numero, user.usuario_id, user.nome, departamento, prioridade, 'Rascunho', valorTotal, observacoes, tipo, String(wbs).trim(), emp)
   const rcId = r.lastInsertRowid
   for (const item of itens) {
     const vt = (item.quantidade || 1) * (item.valor_unitario_estimado || 0)
@@ -1955,8 +1952,18 @@ app.post('/api/rc', requireAuth, (req, res) => {
       .run(rcId, item.descricao, item.quantidade || 1, item.unidade || 'UN', item.valor_unitario_estimado || 0, vt, item.codigo_produto)
   }
   const rc = db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(rcId)
-  log(req.user.usuario_id, req.user.nome, 'Criar', 'rc', `RC criada: ${numero}`)
-  res.status(201).json(ok({ ...rc, itens: db.prepare(`SELECT * FROM rc_itens WHERE rc_id = ?`).all(rcId) }))
+  return { ...rc, itens: db.prepare(`SELECT * FROM rc_itens WHERE rc_id = ?`).all(rcId) }
+}
+
+app.post('/api/rc', requireAuth, (req, res) => {
+  const { os_id, os_numero, departamento, prioridade, observacoes, tipo, wbs, itens = [] } = req.body
+  // Compliance: tipo válido e WBS são obrigatórios para rastreabilidade de custo.
+  const tipoCanon = normalizarTipoRC(tipo)
+  if (!tipoCanon) return res.status(400).json(err('Tipo da RC obrigatório: Material, Serviço ou Equipamento'))
+  if (!wbs || !String(wbs).trim()) return res.status(400).json(err('Vínculo WBS obrigatório na RC (rastreabilidade de custo)'))
+  const rc = inserirRC(empresaDoReq(req), req.user, { os_id: os_id || null, os_numero, departamento, prioridade: prioridade || 'Normal', observacoes, tipo: tipoCanon, wbs }, itens)
+  log(req.user.usuario_id, req.user.nome, 'Criar', 'rc', `RC criada: ${rc.numero}`)
+  res.status(201).json(ok(rc))
 })
 
 app.put('/api/rc/:id', requireAuth, (req, res) => {
@@ -2833,6 +2840,34 @@ app.get('/api/almoxarifado/reposicao', requireAuth, (req, res) => {
 app.get('/api/almoxarifado/valorizacao', requireAuth, (req, res) => {
   const itens = db.prepare(`SELECT quantidade_atual, valor_medio, categoria FROM almoxarifado_itens WHERE ativo = 1 AND empresa_id = ?`).all(empresaDoReq(req))
   res.json(ok(valorizarEstoque(itens)))
+})
+
+// ELO estoque → suprimentos: gera uma requisição de compra (RC) a partir dos
+// itens em ponto de reposição, com a quantidade sugerida e o custo médio como
+// estimativa. Fecha o ciclo de abastecimento. tipo = Material.
+app.post('/api/almoxarifado/requisicao-reposicao', requireAuth, requireRole('admin', 'diretor', 'comprador', 'almoxarife', 'operacao'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const b = req.body || {}
+  const itensRows = db.prepare(`SELECT id, codigo, descricao, unidade, quantidade_atual, quantidade_minima, quantidade_maxima, valor_medio FROM almoxarifado_itens WHERE ativo = 1 AND empresa_id = ?`).all(emp)
+  let repor = itensParaRepor(itensRows)
+  // Seleção opcional de itens específicos (senão, todos em reposição).
+  if (Array.isArray(b.item_ids) && b.item_ids.length) {
+    const set = new Set(b.item_ids.map(String))
+    repor = repor.filter(i => set.has(String(i.id)))
+  }
+  if (!repor.length) return res.status(400).json(err('Nenhum item em ponto de reposição'))
+  const byId = new Map(itensRows.map(i => [i.id, i]))
+  const itens = repor.map(i => {
+    const it = byId.get(i.id) || {}
+    return { descricao: i.descricao, codigo_produto: i.codigo, quantidade: i.sugestao_compra, unidade: it.unidade || 'UN', valor_unitario_estimado: it.valor_medio || 0 }
+  })
+  const wbs = (b.wbs && String(b.wbs).trim()) || 'ESTOQUE'
+  const rc = inserirRC(emp, req.user, {
+    departamento: b.departamento || 'Almoxarifado', prioridade: b.prioridade || 'Normal',
+    observacoes: b.observacoes || 'Reposição automática de estoque (ponto de reposição)', tipo: 'Material', wbs,
+  }, itens)
+  log(req.user.usuario_id, req.user.nome, 'rc_reposicao', 'almoxarifado', `RC ${rc.numero} gerada da reposição (${repor.length} item(ns))`)
+  res.status(201).json(ok({ ...rc, origem: 'reposicao', itens_repostos: repor.length }))
 })
 
 // ════════════════════════════════════════════════════════════

@@ -27,7 +27,10 @@ function _estoqueRealHTML(reposicao, valorizacao) {
   return `
     <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:16px">
       <div class="card"><div class="card-body">
-        <h4 style="margin:0 0 6px"><i class="fas fa-cart-arrow-down" style="color:#dc2626"></i> Ponto de reposição (${rep.length})</h4>
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <h4 style="margin:0 0 6px"><i class="fas fa-cart-arrow-down" style="color:#dc2626"></i> Ponto de reposição (${rep.length})</h4>
+          ${rep.length ? `<button class="btn btn-primary btn-sm" onclick="gerarRequisicaoReposicao()"><i class="fas fa-file-invoice"></i> Gerar requisição de compra</button>` : ''}
+        </div>
         <table style="width:100%;border-collapse:collapse">
           <thead><tr style="font-size:11px;color:var(--text-muted);text-transform:uppercase">
             <th style="padding:4px 8px;text-align:left">Código</th><th style="padding:4px 8px;text-align:left">Item</th>
@@ -58,5 +61,19 @@ async function _carregarEstoqueReal() {
   } catch (e) { box.innerHTML = '' /* silencioso: página local segue funcionando */ }
 }
 
+// Gera uma requisição de compra a partir do ponto de reposição (elo estoque→
+// suprimentos) e recarrega o painel.
+async function gerarRequisicaoReposicao() {
+  try {
+    const rc = await apiAuth('/api/almoxarifado/requisicao-reposicao', { method: 'POST', body: {} })
+    if (typeof showToast === 'function') showToast(`Requisição ${rc && rc.numero ? rc.numero : ''} gerada (${(rc && rc.itens_repostos) || 0} itens)`, 'success')
+    if (typeof logAction === 'function') logAction('Gerar RC reposição', 'almoxarifado')
+    await _carregarEstoqueReal()
+  } catch (e) {
+    if (typeof showToast === 'function') showToast(e && e.message ? e.message : 'Falha ao gerar requisição', 'error')
+  }
+}
+
 window._estoqueRealHTML = _estoqueRealHTML
 window._carregarEstoqueReal = _carregarEstoqueReal
+window.gerarRequisicaoReposicao = gerarRequisicaoReposicao
