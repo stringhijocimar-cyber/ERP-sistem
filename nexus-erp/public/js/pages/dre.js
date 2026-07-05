@@ -119,12 +119,66 @@ function renderDRE() {
     <!-- DRE REAL (derivada dos livros: contas a pagar + receber) -->
     <div id="dreReal"></div>
 
+    <!-- FLUXO DE CAIXA PROJETADO (forward-looking: AR × AP futuras) -->
+    <div id="fluxoProjetado"></div>
+
     <div id="dreConteudo"></div>
   `;
 
   _dreRenderAba();
   _dreCarregarReal();
+  _carregarFluxoProjetado();
 }
+
+// Card do fluxo de caixa projetado (função pura, testável) a partir do
+// /api/fluxo-caixa-projetado. Realça a semana crítica (menor saldo).
+function _fluxoProjetadoHTML(d) {
+  if (!d || !d.resumo) return '';
+  const m = v => typeof fmt === 'function' ? fmt(v) : ('R$ ' + Number(v || 0).toLocaleString('pt-BR'));
+  const cor = v => v >= 0 ? 'var(--green-light)' : 'var(--red-light)';
+  const cols = (d.semanas || []).map(s => {
+    const critica = s.semana === d.resumo.semana_critica;
+    return `<tr style="${critica ? 'background:rgba(220,38,38,.08)' : ''}">
+      <td style="padding:5px 8px;font-size:12px">${s.inicio}${critica ? ' <span style="color:var(--red-light)">⚠</span>' : ''}</td>
+      <td style="padding:5px 8px;text-align:right;color:var(--green-light)">${m(s.entradas)}</td>
+      <td style="padding:5px 8px;text-align:right;color:var(--red-light)">${m(s.saidas)}</td>
+      <td style="padding:5px 8px;text-align:right">${m(s.liquido)}</td>
+      <td style="padding:5px 8px;text-align:right;font-weight:700;color:${cor(s.saldo_acumulado)}">${m(s.saldo_acumulado)}</td>
+    </tr>`;
+  }).join('');
+  const alerta = d.resumo.menor_saldo < 0
+    ? `<span style="font-size:11px;color:var(--red-light)"><i class="fas fa-triangle-exclamation"></i> aperto de caixa previsto — menor saldo ${m(d.resumo.menor_saldo)}</span>`
+    : `<span style="font-size:11px;color:var(--green-light)">saldo positivo em todo o horizonte</span>`;
+  return `
+    <div class="card page-section"><div class="card-body">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:800"><i class="fas fa-water" style="color:var(--fa-teal)"></i> Fluxo de Caixa Projetado (saldo inicial ${m(d.saldo_inicial)})</div>
+        ${alerta}
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="font-size:11px;color:var(--text-muted);text-transform:uppercase">
+          <th style="padding:4px 8px;text-align:left">Semana</th>
+          <th style="padding:4px 8px;text-align:right">Entradas</th>
+          <th style="padding:4px 8px;text-align:right">Saídas</th>
+          <th style="padding:4px 8px;text-align:right">Líquido</th>
+          <th style="padding:4px 8px;text-align:right">Saldo</th>
+        </tr></thead>
+        <tbody>${cols}</tbody>
+      </table>
+      ${(d.vencido && (d.vencido.entradas || d.vencido.saidas)) ? `<small style="color:var(--text-muted)">Inclui vencidos em aberto na 1ª semana: a receber ${m(d.vencido.entradas)} • a pagar ${m(d.vencido.saidas)}.</small>` : ''}
+    </div></div>`;
+}
+window._fluxoProjetadoHTML = _fluxoProjetadoHTML;
+
+async function _carregarFluxoProjetado() {
+  const box = document.getElementById('fluxoProjetado');
+  if (!box || typeof apiAuth !== 'function') return;
+  try {
+    const d = await apiAuth('/api/fluxo-caixa-projetado?semanas=8');
+    box.innerHTML = _fluxoProjetadoHTML(d);
+  } catch (e) { /* silencioso */ }
+}
+window._carregarFluxoProjetado = _carregarFluxoProjetado;
 
 // Monta o card da DRE real (função pura, testável) a partir do /api/dre.
 function _dreRealHTML(d) {

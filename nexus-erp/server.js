@@ -26,6 +26,7 @@ import { emitirNotaFiscal, cancelarNotaFiscal, consultarNotaFiscal } from './lib
 import { parseExtrato, sugerirMatch } from './lib/conciliacao.js'
 import { enviarEmail } from './lib/email.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
+import { montarFluxoProjetado } from './lib/fluxo_projetado.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -960,6 +961,19 @@ app.get('/api/fluxo-caixa', requireAuth, (req, res) => {
   const semanas = Math.max(1, Math.min(parseInt(req.query.semanas) || 8, 52))
   const contas = db.prepare(`SELECT valor, data_vencimento, data_pagamento, status, contrato_id, pc_numero FROM contas_pagar WHERE empresa_id = ?`).all(empresaDoReq(req))
   res.json(ok(montarFluxoCaixa(contas, { semanas })))
+})
+
+// Fluxo de caixa PROJETADO (forward-looking): entradas (AR em aberto) × saídas
+// (AP em aberto) por semana, com saldo acumulado a partir de um saldo inicial.
+// Antecipa aperto de caixa (semanas com saldo negativo). Isolado por tenant.
+app.get('/api/fluxo-caixa-projetado', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao fluxo de caixa', 403))
+  const emp = empresaDoReq(req)
+  const semanas = Math.max(1, Math.min(parseInt(req.query.semanas) || 8, 52))
+  const saldoInicial = req.query.saldo_inicial != null ? Number(req.query.saldo_inicial) || 0 : 0
+  const receber = db.prepare(`SELECT valor, data_vencimento, status FROM contas_receber WHERE empresa_id = ?`).all(emp)
+  const pagar = db.prepare(`SELECT valor, data_vencimento, status FROM contas_pagar WHERE empresa_id = ?`).all(emp)
+  res.json(ok(montarFluxoProjetado({ receber, pagar, semanas, saldoInicial })))
 })
 
 // DRE (Demonstração de Resultado) REAL, derivada dos livros do tenant:
