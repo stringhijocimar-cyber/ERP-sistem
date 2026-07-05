@@ -1985,6 +1985,44 @@ app.put('/api/rc/:id', requireAuth, (req, res) => {
   res.json(ok(db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(req.params.id)))
 })
 
+// Aprova a RC (segregação: quem aprova ≠ quem requisita idealmente). Registra
+// aprovador/data; a RC aprovada pode virar pedido de compra.
+app.post('/api/rc/:id/aprovar', requireAuth, requireRole('admin', 'diretor', 'comprador', 'gestor'), (req, res) => {
+  const rc = rowScoped('requisicoes_compra', req)
+  if (!rc) return res.status(404).json(err('RC não encontrada'))
+  if (rc.status === 'Aprovada') return res.json(ok({ ...rc, ja_aprovada: true }))
+  if (rc.status === 'Atendida' || rc.status === 'Cancelada') return res.status(409).json(err(`RC ${rc.status} não pode ser aprovada`))
+  db.prepare(`UPDATE requisicoes_compra SET status='Aprovada', aprovado_por=?, aprovado_em=datetime('now'), updated_at=datetime('now') WHERE id=?`)
+    .run(req.user.nome, rc.id)
+  log(req.user.usuario_id, req.user.nome, 'rc_aprovar', 'rc', `RC ${rc.numero} aprovada`)
+  res.json(ok(db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(rc.id)))
+})
+
+// Gera o Pedido de Compra a partir de uma RC APROVADA: os itens da RC viram
+// itens do PC (estimativa → preço do pedido), aplicando os gates de compliance.
+// Fecha o caminho requisição → pedido. Marca a RC como Atendida.
+app.post('/api/rc/:id/gerar-pedido', requireAuth, requireRole('admin', 'diretor', 'comprador'), async (req, res) => {
+  const emp = empresaDoReq(req)
+  const rc = rowScoped('requisicoes_compra', req)
+  if (!rc) return res.status(404).json(err('RC não encontrada'))
+  if (rc.status !== 'Aprovada') return res.status(409).json(err('Aprove a RC antes de gerar o pedido de compra'))
+  const b = req.body || {}
+  if (!b.fornecedor_id) return res.status(400).json(err('Fornecedor obrigatório para gerar o pedido'))
+  const itensRC = db.prepare(`SELECT * FROM rc_itens WHERE rc_id = ?`).all(rc.id)
+  if (!itensRC.length) return res.status(400).json(err('RC sem itens'))
+  const itens = itensRC.map(i => ({ descricao: i.descricao, quantidade: i.quantidade, unidade: i.unidade, valor_unitario: i.valor_unitario_estimado, codigo_produto: i.codigo_produto }))
+  const valorTotal = itens.reduce((s, i) => s + ((i.quantidade || 1) * (i.valor_unitario || 0)), 0)
+  const r = await criarPedidoCompra(emp, req.user, {
+    rc_id: rc.id, fornecedor_id: b.fornecedor_id, valor_total: valorTotal,
+    prazo_entrega: b.prazo_entrega, condicao_pagamento: b.condicao_pagamento, local_entrega: b.local_entrega,
+    observacoes: b.observacoes || `Gerado da requisição ${rc.numero}`,
+  }, itens)
+  if (!r.ok) return res.status(r.code || 400).json(err(r.erro, r.code || 400))
+  db.prepare(`UPDATE requisicoes_compra SET status='Atendida', updated_at=datetime('now') WHERE id=?`).run(rc.id)
+  log(req.user.usuario_id, req.user.nome, 'rc_gerar_pedido', 'rc', `RC ${rc.numero} → pedido ${r.pc.numero}`)
+  res.status(201).json(ok({ pedido: r.pc, rc: db.prepare(`SELECT * FROM requisicoes_compra WHERE id = ?`).get(rc.id) }))
+})
+
 // ════════════════════════════════════════════════════════════
 // RFQ
 // ════════════════════════════════════════════════════════════
@@ -2161,53 +2199,50 @@ app.get('/api/pedidos/:id', requireAuth, (req, res) => {
   res.json(ok({ ...pc, itens, historico, contas_pagar }))
 })
 
-app.post('/api/pedidos', requireAuth, async (req, res) => {
-  const { mapa_id, mapa_numero, rc_id, fornecedor_id, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, itens = [] } = req.body
-  if (!fornecedor_id) return res.status(400).json(err('Fornecedor obrigatório'))
-  // Multi-tenant: o fornecedor precisa existir NO TENANT do usuário — sem
-  // isso, um tenant emitia PC referenciando fornecedor (e homologação) de outro.
-  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(fornecedor_id, empresaDoReq(req))
-  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+// Cria um Pedido de Compra com todos os gates de compliance (homologação +
+// Receita), gera a conta a pagar e roda o motor de anomalias. async por causa
+// da consulta à Receita. Reutilizado por POST /api/pedidos e pela geração de
+// PC a partir de uma RC aprovada. Retorna { ok, pc } ou { ok:false, erro, code }.
+async function criarPedidoCompra(emp, user, campos, itens = []) {
+  const { mapa_id = null, mapa_numero = null, rc_id = null, fornecedor_id, valor_total = 0, prazo_entrega = null, condicao_pagamento = '30 dias', local_entrega = null, observacoes = null } = campos
+  if (!fornecedor_id) return { ok: false, erro: 'Fornecedor obrigatório', code: 400 }
+  const f = db.prepare(`SELECT * FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(fornecedor_id, emp)
+  if (!f) return { ok: false, erro: 'Fornecedor não encontrado', code: 404 }
   // Compliance: fornecedor precisa estar HOMOLOGADO (Financeiro + Compliance).
-  if (f && (process.env.ENFORCE_HOMOLOGACAO_PO ?? '1') !== '0' && !fornecedorHomologado(f)) {
-    log(req.user.usuario_id, req.user.nome, 'po_bloqueada_homologacao', 'pedidos_compra', `Fornecedor ${f.nome} não homologado`)
-    return res.status(409).json(err('Emissão bloqueada: fornecedor não homologado (pendente de aprovação Financeiro/Compliance)'))
+  if ((process.env.ENFORCE_HOMOLOGACAO_PO ?? '1') !== '0' && !fornecedorHomologado(f)) {
+    log(user.usuario_id, user.nome, 'po_bloqueada_homologacao', 'pedidos_compra', `Fornecedor ${f.nome} não homologado`)
+    return { ok: false, erro: 'Emissão bloqueada: fornecedor não homologado (pendente de aprovação Financeiro/Compliance)', code: 409 }
   }
   // Compliance: valida a situação cadastral (Receita/SEFAZ) antes de emitir a PC.
-  if (f && f.cnpj && (process.env.ENFORCE_RECEITA_PO ?? '1') !== '0') {
+  if (f.cnpj && (process.env.ENFORCE_RECEITA_PO ?? '1') !== '0') {
     try {
       const sit = await consultarReceita(f.cnpj, { provider: process.env.RECEITA_PROVIDER })
       if (!sit.regular) {
-        log(req.user.usuario_id, req.user.nome, 'po_bloqueada_receita', 'pedidos_compra', `Fornecedor ${f.nome} com situação ${sit.situacao_cadastral}`)
-        return res.status(409).json(err(`Emissão bloqueada: fornecedor com situação cadastral irregular na Receita (${sit.situacao_cadastral})`))
+        log(user.usuario_id, user.nome, 'po_bloqueada_receita', 'pedidos_compra', `Fornecedor ${f.nome} com situação ${sit.situacao_cadastral}`)
+        return { ok: false, erro: `Emissão bloqueada: fornecedor com situação cadastral irregular na Receita (${sit.situacao_cadastral})`, code: 409 }
       }
     } catch (e) { /* CNPJ inválido/sem provedor não bloqueia a emissão aqui */ }
   }
-  const emp = empresaDoReq(req)
   const numero = nextPC()
   const r = db.prepare(
     `INSERT INTO pedidos_compra(numero, mapa_id, mapa_numero, rc_id, fornecedor_id, fornecedor_nome, status, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, comprador_id, comprador_nome, empresa_id)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, mapa_id || null, mapa_numero, rc_id || null, fornecedor_id, f?.nome, 'Emitido', valor_total || 0, prazo_entrega, condicao_pagamento || '30 dias', local_entrega, observacoes, req.user.usuario_id, req.user.nome, emp)
+  ).run(numero, mapa_id, mapa_numero, rc_id, fornecedor_id, f.nome, 'Emitido', valor_total || 0, prazo_entrega, condicao_pagamento || '30 dias', local_entrega, observacoes, user.usuario_id, user.nome, emp)
   const pcId = r.lastInsertRowid
   for (const item of itens) {
     const vt = (item.quantidade || 1) * (item.valor_unitario || 0)
     db.prepare(`INSERT INTO pc_itens(pc_id, descricao, quantidade, unidade, valor_unitario, valor_total, codigo_produto) VALUES(?,?,?,?,?,?,?)`)
       .run(pcId, item.descricao, item.quantidade || 1, item.unidade || 'UN', item.valor_unitario || 0, vt, item.codigo_produto)
   }
-  // Registra histórico
   db.prepare(`INSERT INTO pc_historico(pc_id, usuario_nome, acao, descricao, status_para) VALUES(?,?,?,?,?)`)
-    .run(pcId, req.user.nome, 'Emissão', `Pedido emitido`, 'Emitido')
+    .run(pcId, user.nome, 'Emissão', `Pedido emitido`, 'Emitido')
   // Gera conta a pagar automaticamente
   const cpNum = `CP-${new Date().getFullYear()}-${String(db.prepare(`SELECT COUNT(*) as n FROM contas_pagar`).get().n + 1).padStart(3, '0')}`
   db.prepare(`INSERT INTO contas_pagar(numero, pc_id, pc_numero, fornecedor_id, fornecedor_nome, descricao, valor, data_vencimento, status, empresa_id)
     VALUES(?,?,?,?,?,?,?,?,?,?)`)
-    .run(cpNum, pcId, numero, fornecedor_id, f?.nome, `${numero} – ${f?.nome}`, valor_total || 0, prazo_entrega, 'Pendente', emp)
-
-  log(req.user.usuario_id, req.user.nome, 'Criar', 'pedidos', `PC emitido: ${numero}`)
-
-  // Inteligência proativa: roda o motor de anomalias no pedido recém-emitido.
-  // Severidade ALTA → notifica Financeiro (com e-mail) e Compliance do tenant.
+    .run(cpNum, pcId, numero, fornecedor_id, f.nome, `${numero} – ${f.nome}`, valor_total || 0, prazo_entrega, 'Pendente', emp)
+  log(user.usuario_id, user.nome, 'Criar', 'pedidos', `PC emitido: ${numero}`)
+  // Inteligência proativa: motor de anomalias no pedido recém-emitido.
   try {
     const histRows = db.prepare(
       `SELECT id, fornecedor_id, valor_total, created_at FROM pedidos_compra
@@ -2216,15 +2251,21 @@ app.post('/api/pedidos', requireAuth, async (req, res) => {
     const hist = histRows.map(h => ({ id: h.id, fornecedor_id: h.fornecedor_id, valor: h.valor_total, data: h.created_at }))
     const rAn = detectarAnomalias({ id: pcId, fornecedor_id, valor: valor_total || 0, data: new Date().toISOString() }, hist, f || {})
     for (const a of rAn.alertas.filter(x => x.severidade === 'alta')) {
-      const msg = `${numero} (${f?.nome || 'fornecedor ' + fornecedor_id}) — ${a.mensagem}. ${a.detalhe}`
+      const msg = `${numero} (${f.nome || 'fornecedor ' + fornecedor_id}) — ${a.mensagem}. ${a.detalhe}`
       notificar({ perfil: 'financeiro', titulo: `Risco em compras: ${a.mensagem}`, mensagem: msg, tipo: 'anomalia', ref_tipo: 'pedido', ref_id: String(pcId), email: true, empresa: emp })
       notificar({ perfil: 'compliance', titulo: `Risco em compras: ${a.mensagem}`, mensagem: msg, tipo: 'anomalia', ref_tipo: 'pedido', ref_id: String(pcId), empresa: emp })
-      log(req.user.usuario_id, req.user.nome, 'anomalia_detectada', 'pedidos', msg)
+      log(user.usuario_id, user.nome, 'anomalia_detectada', 'pedidos', msg)
     }
   } catch (e) { if (!IS_TEST) console.warn(`anomalia pós-emissão falhou: ${e.message}`) }
-
   const pc = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(pcId)
-  res.status(201).json(ok({ ...pc, itens: db.prepare(`SELECT * FROM pc_itens WHERE pc_id = ?`).all(pcId) }))
+  return { ok: true, pc: { ...pc, itens: db.prepare(`SELECT * FROM pc_itens WHERE pc_id = ?`).all(pcId) } }
+}
+
+app.post('/api/pedidos', requireAuth, async (req, res) => {
+  const b = req.body || {}
+  const r = await criarPedidoCompra(empresaDoReq(req), req.user, b, b.itens || [])
+  if (!r.ok) return res.status(r.code || 400).json(err(r.erro, r.code || 400))
+  res.status(201).json(ok(r.pc))
 })
 
 app.put('/api/pedidos/:id', requireAuth, (req, res) => {
