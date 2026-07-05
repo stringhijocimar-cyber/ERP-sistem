@@ -1031,6 +1031,67 @@ app.get('/api/dre', requireAuth, (req, res) => {
   res.json(ok(_montarDRE(empresaDoReq(req), { ano, mes })))
 })
 
+// Dashboard financeiro CONSOLIDADO — o "cockpit" executivo: junta a DRE real,
+// o fluxo de caixa projetado, a posição de contas a receber/pagar e o ranking
+// de contratos por resultado, numa só resposta. Isolado por tenant.
+app.get('/api/dashboard-financeiro', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao dashboard financeiro', 403))
+  const emp = empresaDoReq(req)
+  const ano = req.query.ano ? parseInt(req.query.ano) : new Date().getFullYear()
+  const hoje = new Date().toISOString().slice(0, 10)
+  const round = n => Math.round(n * 100) / 100
+  const one = (sql, ...p) => db.prepare(sql).get(emp, ...p) || {}
+
+  // 1) DRE real do ano.
+  const dre = _montarDRE(emp, { ano })
+
+  // 2) Fluxo de caixa projetado (12 semanas) — saldo inicial = saldo caixa da DRE.
+  const receber = db.prepare(`SELECT valor, data_vencimento, status FROM contas_receber WHERE empresa_id = ?`).all(emp)
+  const pagar = db.prepare(`SELECT valor, data_vencimento, status FROM contas_pagar WHERE empresa_id = ?`).all(emp)
+  const fluxo = montarFluxoProjetado({ receber, pagar, semanas: 12, saldoInicial: dre.caixa.saldo })
+
+  // 3) Posição de contas a receber/pagar (aberto e vencido).
+  const arAberto = one(`SELECT COALESCE(SUM(valor),0) v, COUNT(*) n FROM contas_receber WHERE empresa_id = ? AND status IN ('A Receber','A Faturar')`)
+  const arVencido = one(`SELECT COALESCE(SUM(valor),0) v FROM contas_receber WHERE empresa_id = ? AND status IN ('A Receber','A Faturar') AND COALESCE(data_vencimento,'') <> '' AND data_vencimento < ?`, hoje)
+  const apAberto = one(`SELECT COALESCE(SUM(valor),0) v, COUNT(*) n FROM contas_pagar WHERE empresa_id = ? AND status NOT IN ('Pago','Cancelado')`)
+  const apVencido = one(`SELECT COALESCE(SUM(valor),0) v FROM contas_pagar WHERE empresa_id = ? AND status NOT IN ('Pago','Cancelado') AND COALESCE(data_vencimento,'') <> '' AND data_vencimento < ?`, hoje)
+
+  // 4) Ranking de contratos por resultado (usa o helper de margem).
+  const contratos = db.prepare(`SELECT * FROM contratos WHERE empresa_id = ? ORDER BY created_at DESC LIMIT 100`).all(emp)
+  const margens = contratos.map(ct => {
+    const m = _margemDoContrato(emp, ct)
+    return { contrato_id: m.contrato_id, numero: m.numero, titulo: m.titulo, receita: m.receita, resultado: m.resultado, margem_pct: m.margem_pct }
+  }).filter(m => m.receita || m.resultado)
+  const topContratos = [...margens].sort((a, b) => b.resultado - a.resultado).slice(0, 5)
+  const piores = [...margens].sort((a, b) => a.margem_pct - b.margem_pct).filter(m => m.margem_pct < 0).slice(0, 5)
+
+  // 5) Conciliação pendente (lançamentos bancários não conciliados).
+  const conc = one(`SELECT COUNT(*) n FROM extrato_lancamentos WHERE empresa_id = ? AND status='pendente'`)
+
+  res.json(ok({
+    periodo: String(ano), gerado_em: new Date().toISOString(),
+    dre: {
+      receita: dre.receita_bruta, custos: dre.custos, despesas: dre.despesas,
+      resultado_operacional: dre.resultado_operacional, margem_liquida_pct: dre.margem_liquida_pct,
+      custo_mao_obra: dre.custo_mao_obra,
+    },
+    caixa: { ...dre.caixa },
+    projecao: {
+      saldo_inicial: fluxo.saldo_inicial, saldo_final: fluxo.resumo.saldo_final,
+      menor_saldo: fluxo.resumo.menor_saldo, semana_critica: fluxo.resumo.semana_critica,
+      aperto_previsto: fluxo.resumo.menor_saldo < 0,
+      entradas_previstas: fluxo.resumo.entradas_total, saidas_previstas: fluxo.resumo.saidas_total,
+    },
+    posicao: {
+      a_receber: round(arAberto.v || 0), a_receber_qtd: arAberto.n || 0, a_receber_vencido: round(arVencido.v || 0),
+      a_pagar: round(apAberto.v || 0), a_pagar_qtd: apAberto.n || 0, a_pagar_vencido: round(apVencido.v || 0),
+      capital_giro: round((arAberto.v || 0) - (apAberto.v || 0)),
+    },
+    contratos: { top: topContratos, prejuizo: piores, total_avaliados: margens.length },
+    conciliacao_pendente: conc.n || 0,
+  }))
+})
+
 // Consulta a bureau de crédito (provedor por env; mock por padrão).
 app.post('/api/credito/consultar', requireAuth, async (req, res) => {
   try {
@@ -2470,11 +2531,9 @@ app.get('/api/contratos/:id/custo-mao-de-obra', requireAuth, (req, res) => {
 // Margem do contrato (P&L): Receita (AR faturada do contrato) − Custo de
 // pedidos (AP do contrato) − Custo de mão de obra (apontamentos). Casa o
 // contrato tanto pelo id numérico quanto pelo número (CT-AAAA-NNN), porque os
-// livros podem referenciar qualquer um dos dois.
-app.get('/api/contratos/:id/margem', requireAuth, (req, res) => {
-  const emp = empresaDoReq(req)
-  const ct = rowScoped('contratos', req)
-  if (!ct) return res.status(404).json(err('Contrato não encontrado'))
+// livros podem referenciar qualquer um dos dois. Helper reutilizado pelo
+// dashboard financeiro para rankear contratos.
+function _margemDoContrato(emp, ct) {
   const chaves = [String(ct.id), ct.numero].filter(Boolean)
   const inClause = chaves.map(() => '?').join(',')
   const one = (sql) => db.prepare(sql).get(emp, ...chaves) || {}
@@ -2486,7 +2545,7 @@ app.get('/api/contratos/:id/margem', requireAuth, (req, res) => {
   const custoTotal = round(custoPedidos + custoMaoObra)
   const resultado = round(receita - custoTotal)
   const margemPct = receita > 0 ? round((resultado / receita) * 100) : 0
-  res.json(ok({
+  return {
     contrato_id: ct.id, numero: ct.numero, titulo: ct.titulo, valor_contratado: ct.valor_total || 0,
     receita, custo_pedidos: custoPedidos, custo_mao_obra: custoMaoObra, horas_mao_obra: round(horas),
     custo_total: custoTotal, resultado, margem_pct: margemPct,
@@ -2496,7 +2555,13 @@ app.get('/api/contratos/:id/margem', requireAuth, (req, res) => {
       { label: '(-) Custo de mão de obra', valor: -custoMaoObra, tipo: 'custo' },
       { label: '= Resultado do contrato', valor: resultado, tipo: 'total' },
     ],
-  }))
+  }
+}
+
+app.get('/api/contratos/:id/margem', requireAuth, (req, res) => {
+  const ct = rowScoped('contratos', req)
+  if (!ct) return res.status(404).json(err('Contrato não encontrado'))
+  res.json(ok(_margemDoContrato(empresaDoReq(req), ct)))
 })
 
 // ── Recebimento por item ──────────────────────────────────────
