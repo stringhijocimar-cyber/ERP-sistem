@@ -29,6 +29,7 @@ import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 import { montarFluxoProjetado } from './lib/fluxo_projetado.js'
 import { dreParaCSV, dashboardParaCSV } from './lib/csv_export.js'
 import { montarOrcamentoAnual } from './lib/orcamento.js'
+import { aplicarMovimento, itensParaRepor, valorizarEstoque } from './lib/estoque.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -369,6 +370,13 @@ for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativo
                  'contratos', 'crm_oportunidades', 'propostas', 'projetos', 'wbs_linhas', 'almoxarifado_itens', 'logs_sistema', 'notificacoes']) {
   ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']])
 }
+// Estoque: ponto de reposição por máximo + trilha de movimentos por tenant,
+// com saldo resultante gravado (auditoria de estoque).
+ensureColumns('almoxarifado_itens', [['quantidade_maxima', 'quantidade_maxima REAL DEFAULT 0']])
+ensureColumns('almoxarifado_movimentos', [
+  ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
+  ['saldo_apos', 'saldo_apos REAL'],
+])
 const TIPOS_SEQ = new Set(['PC', 'RC', 'RFQ', 'MAPA', 'CP'])
 function proximaSequencia(tipoRaw, anoRaw) {
   const tipo = String(tipoRaw || '').toUpperCase().replace(/[^A-Z]/g, '')
@@ -2764,34 +2772,67 @@ app.get('/api/almoxarifado', requireAuth, (req, res) => {
 })
 
 app.post('/api/almoxarifado', requireAuth, (req, res) => {
-  const { codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio } = req.body
+  const { codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, quantidade_maxima, localizacao, valor_medio } = req.body
   if (!descricao) return res.status(400).json(err('Descrição obrigatória'))
+  // quantidade_maxima explícita (default 0 = "sem máximo"; a reposição usa 2×min).
+  // Evita o default de schema (999), que tornava a sugestão de compra absurda.
   const r = db.prepare(
-    `INSERT INTO almoxarifado_itens(codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio, empresa_id)
-     VALUES(?,?,?,?,?,?,?,?,?)`
-  ).run(codigo, descricao, categoria || 'Geral', unidade || 'UN', quantidade_atual || 0, quantidade_minima || 0, localizacao, valor_medio || 0, empresaDoReq(req))
+    `INSERT INTO almoxarifado_itens(codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, quantidade_maxima, localizacao, valor_medio, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`
+  ).run(codigo, descricao, categoria || 'Geral', unidade || 'UN', quantidade_atual || 0, quantidade_minima || 0, Number(quantidade_maxima) || 0, localizacao, valor_medio || 0, empresaDoReq(req))
   res.status(201).json(ok(db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ?`).get(r.lastInsertRowid)))
 })
 
 app.put('/api/almoxarifado/:id', requireAuth, (req, res) => {
-  if (!rowScoped('almoxarifado_itens', req)) return res.status(404).json(err('Item não encontrado'))
-  const { codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio, ativo } = req.body
-  db.prepare(`UPDATE almoxarifado_itens SET codigo=?,descricao=?,categoria=?,unidade=?,quantidade_atual=?,quantidade_minima=?,localizacao=?,valor_medio=?,ativo=?,updated_at=datetime('now') WHERE id=?`)
-    .run(codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, localizacao, valor_medio, ativo ?? 1, req.params.id)
+  const cur = rowScoped('almoxarifado_itens', req)
+  if (!cur) return res.status(404).json(err('Item não encontrado'))
+  const { codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, quantidade_maxima, localizacao, valor_medio, ativo } = req.body
+  db.prepare(`UPDATE almoxarifado_itens SET codigo=?,descricao=?,categoria=?,unidade=?,quantidade_atual=?,quantidade_minima=?,quantidade_maxima=?,localizacao=?,valor_medio=?,ativo=?,updated_at=datetime('now') WHERE id=?`)
+    .run(codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima,
+      quantidade_maxima != null ? Number(quantidade_maxima) || 0 : cur.quantidade_maxima, localizacao, valor_medio, ativo ?? 1, req.params.id)
   res.json(ok(db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ?`).get(req.params.id)))
 })
 
+// Movimenta o estoque com regras reais: custo médio ponderado na entrada e
+// bloqueio de saída sem lastro (não zera silenciosamente). Grava o movimento
+// com o saldo resultante (trilha) e o tenant. Pura em lib/estoque.js.
 app.post('/api/almoxarifado/:id/movimentar', requireAuth, (req, res) => {
-  const { tipo, quantidade, valor_unitario, documento, observacao } = req.body
+  const b = req.body || {}
   const item = rowScoped('almoxarifado_itens', req)
   if (!item) return res.status(404).json(err('Item não encontrado'))
-  let novaQtd = item.quantidade_atual
-  if (tipo === 'Entrada') novaQtd += parseFloat(quantidade)
-  else if (tipo === 'Saída') novaQtd = Math.max(0, novaQtd - parseFloat(quantidade))
-  db.prepare(`UPDATE almoxarifado_itens SET quantidade_atual = ?, updated_at = datetime('now') WHERE id = ?`).run(novaQtd, req.params.id)
-  db.prepare(`INSERT INTO almoxarifado_movimentos(item_id, tipo, quantidade, valor_unitario, documento, observacao, usuario_id, usuario_nome) VALUES(?,?,?,?,?,?,?,?)`)
-    .run(req.params.id, tipo, quantidade, valor_unitario || 0, documento, observacao, req.user.usuario_id, req.user.nome)
-  res.json(ok(db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ?`).get(req.params.id)))
+  const r = aplicarMovimento(item, {
+    tipo: b.tipo, quantidade: b.quantidade, valor_unitario: b.valor_unitario,
+    permitir_negativo: !!b.permitir_negativo,
+  })
+  if (!r.ok) return res.status(r.code || 400).json(err(r.erro, r.code || 400))
+  db.prepare(`UPDATE almoxarifado_itens SET quantidade_atual = ?, valor_medio = ?, updated_at = datetime('now') WHERE id = ?`)
+    .run(r.quantidade, r.valor_medio, item.id)
+  db.prepare(`INSERT INTO almoxarifado_movimentos(item_id, tipo, quantidade, valor_unitario, documento, observacao, saldo_apos, usuario_id, usuario_nome, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(item.id, b.tipo, Number(b.quantidade), b.valor_unitario || 0, b.documento || null, b.observacao || null, r.quantidade, req.user.usuario_id, req.user.nome, empresaDoReq(req))
+  log(req.user.usuario_id, req.user.nome, 'movimentar', 'almoxarifado', `${b.tipo} ${b.quantidade} de ${item.descricao} → saldo ${r.quantidade}`)
+  res.json(ok(db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ?`).get(item.id)))
+})
+
+// Histórico de movimentos de um item (tenant-scoped).
+app.get('/api/almoxarifado/:id/movimentos', requireAuth, (req, res) => {
+  const item = rowScoped('almoxarifado_itens', req)
+  if (!item) return res.status(404).json(err('Item não encontrado'))
+  const rows = db.prepare(`SELECT * FROM almoxarifado_movimentos WHERE item_id = ? ORDER BY id DESC LIMIT 200`).all(item.id)
+  res.json(ok(rows))
+})
+
+// Ponto de reposição: itens no/abaixo do mínimo + sugestão de compra.
+app.get('/api/almoxarifado/reposicao', requireAuth, (req, res) => {
+  const itens = db.prepare(`SELECT id, codigo, descricao, quantidade_atual, quantidade_minima, quantidade_maxima, valor_medio FROM almoxarifado_itens WHERE ativo = 1 AND empresa_id = ?`).all(empresaDoReq(req))
+  const repor = itensParaRepor(itens)
+  res.json(ok({ itens: repor, total: repor.length, custo_estimado_total: Math.round(repor.reduce((s, i) => s + (i.custo_estimado || 0), 0) * 100) / 100 }))
+})
+
+// Valorização do estoque: total e por categoria (Σ saldo × custo médio).
+app.get('/api/almoxarifado/valorizacao', requireAuth, (req, res) => {
+  const itens = db.prepare(`SELECT quantidade_atual, valor_medio, categoria FROM almoxarifado_itens WHERE ativo = 1 AND empresa_id = ?`).all(empresaDoReq(req))
+  res.json(ok(valorizarEstoque(itens)))
 })
 
 // ════════════════════════════════════════════════════════════

@@ -128,6 +128,8 @@ function renderAlmoxarifado() {
 
   // Sincroniza API em background sem bloquear a renderização
   _almoxSincronizarAPI();
+  // Painel real do servidor (reposição + valorização por custo médio).
+  if (typeof _carregarEstoqueReal === 'function') setTimeout(_carregarEstoqueReal, 0);
 
   document.getElementById('mainContent').innerHTML = `
     <div class="page-header">
@@ -178,6 +180,9 @@ function renderAlmoxarifado() {
         <div class="kpi-value" style="color:${itensBaixo>0?'var(--red)':'var(--green)'}">${itensBaixo}</div>
       </div>
     </div>
+
+    <!-- Painel real do servidor: reposição + valorização (custo médio) -->
+    <div id="estoqueRealPanel"></div>
 
     <!-- Barra de pesquisa rápida global -->
     <div class="search-bar" style="margin-bottom:16px;border-radius:var(--radius);border:1.5px solid var(--border);background:var(--bg-secondary)">
