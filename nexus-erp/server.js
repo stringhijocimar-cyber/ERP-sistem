@@ -28,6 +28,7 @@ import { enviarEmail } from './lib/email.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 import { montarFluxoProjetado } from './lib/fluxo_projetado.js'
 import { dreParaCSV, dashboardParaCSV } from './lib/csv_export.js'
+import { montarOrcamentoAnual } from './lib/orcamento.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -271,6 +272,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS apontamentos_hora (
   descricao TEXT,
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
+)`)
+
+// Orçamento anual (budget): metas mensais de receita/custo/despesa por tenant.
+// Uma linha por (empresa, ano, mês); comparado com o realizado da DRE.
+db.exec(`CREATE TABLE IF NOT EXISTS orcamento_metas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ano INTEGER NOT NULL, mes INTEGER NOT NULL,
+  receita_meta REAL DEFAULT 0, custo_meta REAL DEFAULT 0, despesa_meta REAL DEFAULT 0,
+  empresa_id INTEGER DEFAULT 1,
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(empresa_id, ano, mes)
 )`)
 
 // Propostas comerciais (C2): só nascem com estimativa de custos (WBS) do lead.
@@ -1115,6 +1127,42 @@ app.get('/api/dashboard-financeiro/export.csv', requireAuth, (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8')
   res.setHeader('Content-Disposition', `attachment; filename="dashboard-financeiro-${dash.periodo}.csv"`)
   res.send(dashboardParaCSV(dash))
+})
+
+// ════════════════════════════════════════════════════════════
+// ORÇAMENTO ANUAL (budget) × REALIZADO — planejamento financeiro.
+// Metas mensais versus o realizado derivado da DRE, com desvio e % atingido.
+// ════════════════════════════════════════════════════════════
+
+// Orçado × realizado do ano: 12 meses + totais. Reusa _montarDRE por mês.
+app.get('/api/orcamento', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao orçamento', 403))
+  const emp = empresaDoReq(req)
+  const ano = req.query.ano ? parseInt(req.query.ano) : new Date().getFullYear()
+  const metasRows = db.prepare(`SELECT mes, receita_meta, custo_meta, despesa_meta FROM orcamento_metas WHERE empresa_id = ? AND ano = ?`).all(emp, ano)
+  const metasPorMes = {}
+  for (const m of metasRows) metasPorMes[m.mes] = m
+  const realPorMes = {}
+  for (let mes = 1; mes <= 12; mes++) {
+    const dre = _montarDRE(emp, { ano, mes })
+    realPorMes[mes] = { receita: dre.receita_bruta, custos: dre.custos, despesas: dre.despesas }
+  }
+  res.json(ok(montarOrcamentoAnual(ano, metasPorMes, realPorMes)))
+})
+
+// Upsert das metas de um mês (ano/mes). Só financeiro/admin/diretor.
+app.post('/api/orcamento', requireAuth, requireRole('admin', 'diretor', 'financeiro'), (req, res) => {
+  const b = req.body || {}
+  const emp = empresaDoReq(req)
+  const ano = parseInt(b.ano), mes = parseInt(b.mes)
+  if (!(ano > 0) || !(mes >= 1 && mes <= 12)) return res.status(400).json(err('Ano e mês (1-12) obrigatórios'))
+  const num = (v) => { const n = Number(v); return isFinite(n) && n >= 0 ? n : 0 }
+  db.prepare(`INSERT INTO orcamento_metas(ano, mes, receita_meta, custo_meta, despesa_meta, empresa_id)
+     VALUES(?,?,?,?,?,?)
+     ON CONFLICT(empresa_id, ano, mes) DO UPDATE SET receita_meta=excluded.receita_meta, custo_meta=excluded.custo_meta, despesa_meta=excluded.despesa_meta, updated_at=datetime('now')`)
+    .run(ano, mes, num(b.receita_meta), num(b.custo_meta), num(b.despesa_meta), emp)
+  log(req.user.usuario_id, req.user.nome, 'orcamento_meta', 'orcamento', `Meta ${ano}-${String(mes).padStart(2, '0')}: receita ${num(b.receita_meta)}`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM orcamento_metas WHERE empresa_id = ? AND ano = ? AND mes = ?`).get(emp, ano, mes)))
 })
 
 // Consulta a bureau de crédito (provedor por env; mock por padrão).
