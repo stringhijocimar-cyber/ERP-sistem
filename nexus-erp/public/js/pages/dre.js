@@ -92,7 +92,10 @@ function renderDRE() {
           <i class="fas fa-plus"></i> Lançamento
         </button>` : ''}
         <button class="btn btn-secondary btn-sm" onclick="_dreExportar()">
-          <i class="fas fa-file-excel"></i> Exportar
+          <i class="fas fa-file-excel"></i> Exportar lançamentos
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="_dreExportarReal()">
+          <i class="fas fa-file-csv"></i> Exportar DRE real
         </button>
       </div>
     </div>
@@ -925,3 +928,12 @@ function _dreExportar() {
   a.click();
   showToast('Exportação concluída!','success');
 }
+
+// Exporta a DRE REAL (derivada dos livros, do servidor) via endpoint CSV.
+function _dreExportarReal() {
+  const ano = new Date().getFullYear();
+  const fn = typeof window.baixarCSVFinanceiro === 'function' ? window.baixarCSVFinanceiro : null;
+  if (fn) fn(`/api/dre/export.csv?ano=${ano}`, `dre-real-${ano}.csv`);
+  else if (typeof showToast === 'function') showToast('Exportação indisponível', 'error');
+}
+window._dreExportarReal = _dreExportarReal;

@@ -27,6 +27,7 @@ import { parseExtrato, sugerirMatch } from './lib/conciliacao.js'
 import { enviarEmail } from './lib/email.js'
 import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 import { montarFluxoProjetado } from './lib/fluxo_projetado.js'
+import { dreParaCSV, dashboardParaCSV } from './lib/csv_export.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -1034,10 +1035,8 @@ app.get('/api/dre', requireAuth, (req, res) => {
 // Dashboard financeiro CONSOLIDADO — o "cockpit" executivo: junta a DRE real,
 // o fluxo de caixa projetado, a posição de contas a receber/pagar e o ranking
 // de contratos por resultado, numa só resposta. Isolado por tenant.
-app.get('/api/dashboard-financeiro', requireAuth, (req, res) => {
-  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao dashboard financeiro', 403))
-  const emp = empresaDoReq(req)
-  const ano = req.query.ano ? parseInt(req.query.ano) : new Date().getFullYear()
+function _montarDashboardFinanceiro(emp, { ano } = {}) {
+  ano = ano || new Date().getFullYear()
   const hoje = new Date().toISOString().slice(0, 10)
   const round = n => Math.round(n * 100) / 100
   const one = (sql, ...p) => db.prepare(sql).get(emp, ...p) || {}
@@ -1068,7 +1067,7 @@ app.get('/api/dashboard-financeiro', requireAuth, (req, res) => {
   // 5) Conciliação pendente (lançamentos bancários não conciliados).
   const conc = one(`SELECT COUNT(*) n FROM extrato_lancamentos WHERE empresa_id = ? AND status='pendente'`)
 
-  res.json(ok({
+  return {
     periodo: String(ano), gerado_em: new Date().toISOString(),
     dre: {
       receita: dre.receita_bruta, custos: dre.custos, despesas: dre.despesas,
@@ -1089,7 +1088,33 @@ app.get('/api/dashboard-financeiro', requireAuth, (req, res) => {
     },
     contratos: { top: topContratos, prejuizo: piores, total_avaliados: margens.length },
     conciliacao_pendente: conc.n || 0,
-  }))
+  }
+}
+
+app.get('/api/dashboard-financeiro', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao dashboard financeiro', 403))
+  const ano = req.query.ano ? parseInt(req.query.ano) : null
+  res.json(ok(_montarDashboardFinanceiro(empresaDoReq(req), { ano })))
+})
+
+// Exportações CSV (Excel abre direto) para diretoria/contador.
+app.get('/api/dre/export.csv', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso à DRE', 403))
+  const ano = req.query.ano ? parseInt(req.query.ano) : null
+  const mes = req.query.mes ? parseInt(req.query.mes) : null
+  const dre = _montarDRE(empresaDoReq(req), { ano, mes })
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="dre-${dre.periodo}.csv"`)
+  res.send(dreParaCSV(dre))
+})
+
+app.get('/api/dashboard-financeiro/export.csv', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao dashboard financeiro', 403))
+  const ano = req.query.ano ? parseInt(req.query.ano) : null
+  const dash = _montarDashboardFinanceiro(empresaDoReq(req), { ano })
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="dashboard-financeiro-${dash.periodo}.csv"`)
+  res.send(dashboardParaCSV(dash))
 })
 
 // Consulta a bureau de crédito (provedor por env; mock por padrão).
