@@ -91,7 +91,11 @@ async function renderDashboardFinanceiro() {
         <h1><i class="fas fa-gauge-high"></i> Dashboard Financeiro</h1>
         <p class="page-subtitle">Cockpit executivo: resultado, caixa projetado, posição e margem por contrato.</p>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="renderDashboardFinanceiro()"><i class="fas fa-sync-alt"></i> Atualizar</button>
+      <div>
+        <button class="btn btn-secondary btn-sm" onclick="baixarCSVFinanceiro('/api/dashboard-financeiro/export.csv','dashboard-financeiro.csv')"><i class="fas fa-file-csv"></i> Exportar CSV</button>
+        <button class="btn btn-secondary btn-sm" onclick="window.print()"><i class="fas fa-print"></i> Imprimir / PDF</button>
+        <button class="btn btn-secondary btn-sm" onclick="renderDashboardFinanceiro()"><i class="fas fa-sync-alt"></i> Atualizar</button>
+      </div>
     </div>
     <div id="dashFinConteudo"><p style="padding:20px;color:#888">Carregando cockpit financeiro...</p></div>
   `
@@ -104,5 +108,25 @@ async function renderDashboardFinanceiro() {
   }
 }
 
+// Baixa um CSV de um endpoint autenticado (fetch com token + blob download).
+// Compartilhado com a página DRE. Testável via injeção de fetch/URL.
+async function baixarCSVFinanceiro(path, filename) {
+  try {
+    const token = (function () { try { return sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '' } catch { return '' } })()
+    const resp = await fetch(path, { headers: { 'Authorization': `Bearer ${token}` } })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename || 'export.csv'
+    document.body.appendChild(a); a.click(); a.remove()
+    URL.revokeObjectURL(url)
+    if (typeof showToast === 'function') showToast('Exportação gerada', 'success')
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Falha ao exportar CSV', 'error')
+  }
+}
+
 window._dashFinHTML = _dashFinHTML
 window.renderDashboardFinanceiro = renderDashboardFinanceiro
+window.baixarCSVFinanceiro = baixarCSVFinanceiro
