@@ -1644,6 +1644,12 @@ app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, (req, res) =
   }
   const b = req.body || {}
   const itens = Array.isArray(b.itens) ? b.itens : []
+  // Cada item precisa ser são: preço ≥ 0 e quantidade > 0 — um "desconto"
+  // negativo embutido distorceria o mapa comparativo do comprador.
+  for (const i of itens) {
+    if (!(Number(i.valor_unitario) >= 0)) return res.status(400).json(err(`Item "${i.descricao || '?'}" com preço unitário inválido`))
+    if (i.quantidade != null && !(Number(i.quantidade) > 0)) return res.status(400).json(err(`Item "${i.descricao || '?'}" com quantidade inválida`))
+  }
   // Valor: soma dos itens quando enviados; senão o total informado. Precisa ser > 0.
   const valorItens = itens.reduce((s, i) => s + ((Number(i.quantidade) || 1) * (Number(i.valor_unitario) || 0)), 0)
   const valorTotal = itens.length ? Math.round(valorItens * 100) / 100 : Number(b.valor_total) || 0
@@ -1785,6 +1791,8 @@ app.post('/api/portal/entregas/:id/confirmar', requireAuth, requirePortal, (req,
   if (e.data_entregue) return res.status(409).json(err('Entrega já realizada'))
   const b = req.body || {}
   const novaData = b.data_confirmada ? String(b.data_confirmada).slice(0, 10) : null
+  // Data precisa ser ISO de verdade — lixo aqui corromperia OTIF e ordenação.
+  if (novaData && !/^\d{4}-\d{2}-\d{2}$/.test(novaData)) return res.status(400).json(err('Data confirmada inválida (use AAAA-MM-DD)'))
   const replanejo = !!(novaData && e.data_prometida && novaData !== String(e.data_prometida).slice(0, 10))
   if (replanejo && !String(b.justificativa || '').trim()) {
     return res.status(400).json(err('Replanejamento exige justificativa'))
@@ -2427,6 +2435,13 @@ app.get('/api/rfq/:id', requireAuth, (req, res) => {
 app.post('/api/rfq', requireAuth, (req, res) => {
   const { rc_id, rc_numero, titulo, descricao, prazo_resposta, fornecedor_ids = [], valor_estimado } = req.body
   if (!titulo) return res.status(400).json(err('Título obrigatório'))
+  // Isolamento: todo convidado precisa ser fornecedor DESTE tenant — senão um
+  // tenant convidaria (e exporia a RFQ a) fornecedor de outro cliente.
+  const empRfq = empresaDoReq(req)
+  for (const fid of fornecedor_ids) {
+    const pertence = db.prepare(`SELECT 1 FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(fid, empRfq)
+    if (!pertence) return res.status(400).json(err(`Fornecedor ${fid} não pertence a esta empresa`))
+  }
   const numero = nextRFQ()
   const r = db.prepare(
     `INSERT INTO rfq(numero, rc_id, rc_numero, titulo, descricao, status, prazo_resposta, comprador_id, comprador_nome, valor_estimado, empresa_id)
