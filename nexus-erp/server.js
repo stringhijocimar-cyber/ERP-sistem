@@ -1571,6 +1571,16 @@ app.put('/api/portal/perfil', requireAuth, requirePortal, (req, res) => {
   res.json(ok(db.prepare(`SELECT id, nome, contato, email, telefone, banco, agencia, conta, banco_solicitado_por FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)))
 })
 
+// Notifica TODOS os usuários de portal de um fornecedor (in-app; e-mail
+// opcional). O fornecedor não tem "perfil" interno de notificação — o alvo é
+// o usuario_id de cada login vinculado ao fornecedor.
+function notificarFornecedor(fornecedorId, { titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null, email = false, empresa = null } = {}) {
+  try {
+    const users = db.prepare(`SELECT id FROM usuarios WHERE fornecedor_id = ? AND perfil = 'fornecedor' AND ativo = 1`).all(fornecedorId)
+    for (const u of users) notificar({ usuario_id: u.id, titulo, mensagem, tipo, ref_tipo, ref_id, email, empresa })
+  } catch {}
+}
+
 // ── Portal · RFQ (cotação self-service) ───────────────────────
 // O fornecedor vê SOMENTE as RFQs onde foi convidado (rfq_fornecedores) e
 // SOMENTE a própria cotação — nunca a dos concorrentes (dado competitivo).
@@ -1864,6 +1874,36 @@ app.post('/api/portal/trocar-senha', requireAuth, requirePortal, (req, res) => {
   db.prepare(`DELETE FROM sessoes WHERE usuario_id = ? AND token != ?`).run(u.id, tokenAtual)
   log(req.user.usuario_id, req.user.nome, 'portal_trocar_senha', 'auth', 'Senha alterada pelo portal')
   res.json(ok({ alterada: true }))
+})
+
+// ── Portal · Qualidade ────────────────────────────────────────
+// Feedback de desempenho para o fornecedor: as avaliações que a contratante
+// registrou (qualidade/prazo/preço/atendimento), alertas de nota baixa e a
+// documentação pendente — o que ele precisa corrigir para vender mais.
+app.get('/api/portal/qualidade', requireAuth, requirePortal, (req, res) => {
+  const fid = req.user.fornecedor_id
+  const avaliacoes = db.prepare(
+    `SELECT nota_qualidade, nota_prazo, nota_preco, nota_atendimento, nota_media, comentario, pedido_id, created_at
+       FROM avaliacoes_fornecedor WHERE fornecedor_id = ? ORDER BY created_at DESC LIMIT 20`
+  ).all(fid)
+  const medias = db.prepare(
+    `SELECT ROUND(AVG(nota_qualidade),1) qualidade, ROUND(AVG(nota_prazo),1) prazo,
+            ROUND(AVG(nota_preco),1) preco, ROUND(AVG(nota_atendimento),1) atendimento,
+            ROUND(AVG(nota_media),1) geral, COUNT(*) total
+       FROM avaliacoes_fornecedor WHERE fornecedor_id = ?`
+  ).get(fid) || {}
+  const alertas = []
+  for (const a of avaliacoes.slice(0, 10)) {
+    if ((Number(a.nota_qualidade) || 0) > 0 && Number(a.nota_qualidade) <= 2) {
+      alertas.push({ tipo: 'qualidade_baixa', detalhe: `Avaliação de qualidade ${a.nota_qualidade}/5${a.comentario ? ' — ' + a.comentario : ''}`, quando: a.created_at })
+    }
+  }
+  // Documentação exigida: vencidos e a vencer entram como pendência de qualidade.
+  const docsResumo = resumoDocumentos(_docsDoFornecedor(fid), _hojeYMD(), PORTAL_DOC_AVISO_DIAS)
+  for (const d of docsResumo.alertas) {
+    alertas.push({ tipo: d.situacao === 'Vencido' ? 'documento_vencido' : 'documento_a_vencer', detalhe: `${d.tipo} — ${d.situacao.toLowerCase()} (validade ${d.validade})` })
+  }
+  res.json(ok({ medias, avaliacoes, alertas, otif: calcularOTIF(db.prepare(`SELECT * FROM programacao_entregas WHERE fornecedor_id = ?`).all(fid), _hojeYMD()) }))
 })
 
 // Normalização de CNPJ em SQL (só dígitos) — usada na detecção de duplicatas.
@@ -2397,6 +2437,12 @@ app.post('/api/rfq', requireAuth, (req, res) => {
     const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fid)
     db.prepare(`INSERT INTO rfq_fornecedores(rfq_id, fornecedor_id, fornecedor_nome) VALUES(?,?,?)`)
       .run(rfqId, fid, f?.nome || '')
+    // Convite chega ao portal do fornecedor na hora (in-app + e-mail).
+    notificarFornecedor(fid, {
+      titulo: `Nova cotação: ${numero}`,
+      mensagem: `${titulo}${prazo_resposta ? ' — responda até ' + prazo_resposta : ''}. Acesse o portal para cotar.`,
+      tipo: 'rfq', ref_tipo: 'rfq', ref_id: String(rfqId), email: true, empresa: empresaDoReq(req),
+    })
   }
   const rfq = db.prepare(`SELECT * FROM rfq WHERE id = ?`).get(rfqId)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'rfq', `RFQ criada: ${numero}`)
@@ -2576,6 +2622,12 @@ async function criarPedidoCompra(emp, user, campos, itens = []) {
     VALUES(?,?,?,?,?,?,?,?,?,?)`)
     .run(cpNum, pcId, numero, fornecedor_id, f.nome, `${numero} – ${f.nome}`, valor_total || 0, prazo_entrega, 'Pendente', emp)
   log(user.usuario_id, user.nome, 'Criar', 'pedidos', `PC emitido: ${numero}`)
+  // O fornecedor fica sabendo do pedido no portal (in-app + e-mail).
+  notificarFornecedor(fornecedor_id, {
+    titulo: `Pedido emitido: ${numero}`,
+    mensagem: `Valor R$ ${(valor_total || 0).toFixed(2)}${prazo_entrega ? ' — entrega ' + prazo_entrega : ''}. Confirme o prazo no portal.`,
+    tipo: 'pedido', ref_tipo: 'pedido', ref_id: String(pcId), email: true, empresa: emp,
+  })
   // Programação de entrega (base do OTIF): promessa original = prazo do pedido.
   db.prepare(`INSERT INTO programacao_entregas(pc_id, pc_numero, fornecedor_id, descricao, valor, data_prometida, empresa_id)
      VALUES(?,?,?,?,?,?,?)`)
@@ -3143,6 +3195,14 @@ app.post('/api/contas-pagar/:id/pagar', requireAuth, requireRole('admin', 'finan
   const data_pagamento = new Date().toISOString().split('T')[0]
   db.prepare(`UPDATE contas_pagar SET status='Pago', data_pagamento=?, updated_at=datetime('now') WHERE id=?`).run(data_pagamento, req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Pagar', 'contas_pagar', `Pagamento liberado: ${conta.descricao} (R$ ${conta.valor})`)
+  // O fornecedor é avisado do pagamento no portal (in-app + e-mail).
+  if (conta.fornecedor_id) {
+    notificarFornecedor(conta.fornecedor_id, {
+      titulo: `Pagamento realizado — ${conta.pc_numero || conta.numero}`,
+      mensagem: `R$ ${Number(conta.valor || 0).toFixed(2)} pago em ${data_pagamento}${conta.nota_fiscal ? ' (NF ' + conta.nota_fiscal + ')' : ''}.`,
+      tipo: 'pagamento', ref_tipo: 'conta_pagar', ref_id: String(conta.id), email: true, empresa: empresaDoReq(req),
+    })
+  }
   res.json(ok({ id: conta.id, status: 'Pago', data_pagamento }))
 })
 
