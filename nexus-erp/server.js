@@ -292,6 +292,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS programacao_entregas (
   updated_at TEXT DEFAULT (datetime('now'))
 )`)
 
+// Anexos técnicos da cotação (datasheet, desenho, certificado de usina).
+// Registro/ponteiro como fornecedor_documentos — binário fica no storage do
+// deploy (S3/R2), fora do banco.
+db.exec(`CREATE TABLE IF NOT EXISTS cotacao_anexos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cotacao_id INTEGER NOT NULL,
+  arquivo_nome TEXT NOT NULL, descricao TEXT,
+  enviado_por TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+
 // Documentos do fornecedor (certidões/contratos/comprovações) com validade.
 // Append-only: reenvio do mesmo tipo substitui o vigente sem apagar a trilha.
 db.exec(`CREATE TABLE IF NOT EXISTS fornecedor_documentos (
@@ -1534,6 +1545,22 @@ app.get('/api/portal/pedidos', requireAuth, requirePortal, (req, res) => {
   res.json(ok(rows))
 })
 
+// Detalhe do pedido para o fornecedor: itens, entrega programada e situação
+// do pagamento (read-only) — o que ele precisa para produzir e faturar certo.
+app.get('/api/portal/pedidos/:id', requireAuth, requirePortal, (req, res) => {
+  const ped = db.prepare(
+    `SELECT id, numero, status, valor_total, prazo_entrega, condicao_pagamento, local_entrega, observacoes, created_at, nf_numero, nf_valor
+       FROM pedidos_compra WHERE id = ?`
+  ).get(req.params.id)
+  if (!ped) return res.status(404).json(err('Pedido não encontrado'))
+  const dono = db.prepare(`SELECT fornecedor_id FROM pedidos_compra WHERE id = ?`).get(ped.id)
+  if (dono.fornecedor_id !== req.user.fornecedor_id) return res.status(404).json(err('Pedido não encontrado')) // não revela existência
+  const itens = db.prepare(`SELECT descricao, quantidade, unidade, valor_unitario, valor_total, codigo_produto FROM pc_itens WHERE pc_id = ?`).all(ped.id)
+  const entrega = db.prepare(`SELECT id, data_prometida, data_confirmada, data_entregue, status, justificativa FROM programacao_entregas WHERE pc_id = ? ORDER BY id DESC LIMIT 1`).get(ped.id) || null
+  const pagamento = db.prepare(`SELECT status, valor, data_vencimento, data_pagamento FROM contas_pagar WHERE pc_id = ? ORDER BY id DESC LIMIT 1`).get(ped.id) || null
+  res.json(ok({ ...ped, itens, entrega: entrega ? { ...entrega, status_efetivo: statusEntrega(entrega, _hojeYMD()) } : null, pagamento }))
+})
+
 app.post('/api/portal/pedidos/:id/nf', requireAuth, requirePortal, (req, res) => {
   const ped = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(req.params.id)
   if (!ped) return res.status(404).json(err('Pedido não encontrado'))
@@ -1617,11 +1644,12 @@ app.get('/api/portal/rfq/:id', requireAuth, requirePortal, (req, res) => {
   // Só a PRÓPRIA cotação — as dos concorrentes nunca saem por aqui.
   const minha = db.prepare(`SELECT * FROM cotacoes WHERE rfq_id = ? AND fornecedor_id = ?`).get(req.params.id, req.user.fornecedor_id)
   const itens = minha ? db.prepare(`SELECT * FROM cotacao_itens WHERE cotacao_id = ?`).all(minha.id) : []
+  const anexos = minha ? db.prepare(`SELECT * FROM cotacao_anexos WHERE cotacao_id = ?`).all(minha.id) : []
   res.json(ok({
     ...rfq, convite_status: convite.status,
     prazo_expirado: _rfqPrazoExpirado(rfq),
     pode_responder: rfq.status === 'Aberta' && !_rfqPrazoExpirado(rfq),
-    minha_cotacao: minha ? { ...minha, itens } : null,
+    minha_cotacao: minha ? { ...minha, itens, anexos } : null,
   }))
 })
 
@@ -1677,6 +1705,13 @@ app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, (req, res) =
       db.prepare(`INSERT INTO cotacao_itens(cotacao_id, descricao, quantidade, unidade, valor_unitario, valor_total) VALUES(?,?,?,?,?,?)`)
         .run(cotId, item.descricao || '', Number(item.quantidade) || 1, item.unidade || 'UN', Number(item.valor_unitario) || 0, vt)
     }
+    // Anexos técnicos (datasheet/desenho/certificado): revisão também substitui.
+    const anexos = Array.isArray(b.anexos) ? b.anexos.filter(a => a && String(a.arquivo_nome || '').trim()) : []
+    if (existente) db.prepare(`DELETE FROM cotacao_anexos WHERE cotacao_id = ?`).run(cotId)
+    for (const a of anexos.slice(0, 10)) {
+      db.prepare(`INSERT INTO cotacao_anexos(cotacao_id, arquivo_nome, descricao, enviado_por) VALUES(?,?,?,?)`)
+        .run(cotId, String(a.arquivo_nome).trim(), a.descricao || null, req.user.nome)
+    }
     db.prepare(`UPDATE rfq_fornecedores SET status='Respondida', respondido_em=datetime('now') WHERE rfq_id = ? AND fornecedor_id = ?`)
       .run(rfq.id, req.user.fornecedor_id)
   })
@@ -1691,6 +1726,7 @@ app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, (req, res) =
   res.status(existente ? 200 : 201).json(ok({
     ...db.prepare(`SELECT * FROM cotacoes WHERE id = ?`).get(cotId),
     itens: db.prepare(`SELECT * FROM cotacao_itens WHERE cotacao_id = ?`).all(cotId),
+    anexos: db.prepare(`SELECT * FROM cotacao_anexos WHERE cotacao_id = ?`).all(cotId),
     revisada: !!existente,
   }))
 })
@@ -2429,6 +2465,7 @@ app.get('/api/rfq/:id', requireAuth, (req, res) => {
   if (!rfq) return res.status(404).json(err('RFQ não encontrada'))
   const fornecedores = db.prepare(`SELECT rf.*, f.nome as fornecedor_nome FROM rfq_fornecedores rf JOIN fornecedores f ON f.id = rf.fornecedor_id WHERE rf.rfq_id = ?`).all(req.params.id)
   const cotacoes = db.prepare(`SELECT c.*, f.nome as fornecedor FROM cotacoes c JOIN fornecedores f ON f.id = c.fornecedor_id WHERE c.rfq_id = ? ORDER BY c.valor_total`).all(req.params.id)
+    .map(c => ({ ...c, anexos: db.prepare(`SELECT arquivo_nome, descricao, created_at FROM cotacao_anexos WHERE cotacao_id = ?`).all(c.id) }))
   res.json(ok({ ...rfq, fornecedores, cotacoes }))
 })
 
