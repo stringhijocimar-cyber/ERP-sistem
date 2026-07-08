@@ -17,6 +17,7 @@ async function renderPortal() {
     <div id="portal_entregas" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_pedidos" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_docs" class="info-card" style="padding:16px;margin-bottom:16px"></div>
+    <div id="portal_qualidade" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_financeiro" class="info-card" style="padding:16px"></div>`;
 
   // Módulos server-backed do portal; silenciosos se ausentes.
@@ -24,6 +25,7 @@ async function renderPortal() {
   if (typeof window._portalCarregarRFQs === 'function') window._portalCarregarRFQs();
   if (typeof window._portalCarregarEntregas === 'function') window._portalCarregarEntregas();
   if (typeof window._portalCarregarDocs === 'function') window._portalCarregarDocs();
+  if (typeof window._portalCarregarQualidade === 'function') window._portalCarregarQualidade();
   if (typeof window._portalCarregarFinanceiro === 'function') window._portalCarregarFinanceiro();
 
   // Perfil
