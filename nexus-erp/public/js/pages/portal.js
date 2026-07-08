@@ -16,12 +16,14 @@ async function renderPortal() {
     <div id="portal_rfq" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_entregas" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_pedidos" class="info-card" style="padding:16px;margin-bottom:16px"></div>
+    <div id="portal_docs" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_financeiro" class="info-card" style="padding:16px"></div>`;
 
   // Módulos server-backed do portal; silenciosos se ausentes.
   if (typeof window._portalCarregarDashboard === 'function') window._portalCarregarDashboard();
   if (typeof window._portalCarregarRFQs === 'function') window._portalCarregarRFQs();
   if (typeof window._portalCarregarEntregas === 'function') window._portalCarregarEntregas();
+  if (typeof window._portalCarregarDocs === 'function') window._portalCarregarDocs();
   if (typeof window._portalCarregarFinanceiro === 'function') window._portalCarregarFinanceiro();
 
   // Perfil
@@ -31,6 +33,7 @@ async function renderPortal() {
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <strong style="font-size:14px"><i class="fas fa-id-card" style="margin-right:6px"></i>${f.razao_social || f.nome} ${f.cnpj ? '· ' + f.cnpj : ''}</strong>
         <button class="btn btn-secondary btn-sm" onclick="portalEditarPerfil()"><i class="fas fa-pen"></i> Editar contato/banco</button>
+        ${typeof window.portalVerAcessos === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="portalVerAcessos()"><i class="fas fa-shield-alt"></i> Acessos & senha</button>' : ''}
       </div>
       <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Contato: ${f.contato || '—'} · ${f.email || '—'} · ${f.telefone || '—'}${f.banco ? ' · Banco ' + f.banco + ' Ag ' + (f.agencia || '—') + ' C/C ' + (f.conta || '—') : ''}</div>`;
     window._portalPerfil = f;

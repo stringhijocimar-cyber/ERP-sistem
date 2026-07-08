@@ -31,6 +31,7 @@ import { dreParaCSV, dashboardParaCSV } from './lib/csv_export.js'
 import { montarOrcamentoAnual } from './lib/orcamento.js'
 import { aplicarMovimento, itensParaRepor, valorizarEstoque } from './lib/estoque.js'
 import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo } from './lib/otif.js'
+import { statusDocumento, vigentesPorTipo, resumoDocumentos } from './lib/documentos.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -289,6 +290,24 @@ db.exec(`CREATE TABLE IF NOT EXISTS programacao_entregas (
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
+)`)
+
+// Documentos do fornecedor (certidões/contratos/comprovações) com validade.
+// Append-only: reenvio do mesmo tipo substitui o vigente sem apagar a trilha.
+db.exec(`CREATE TABLE IF NOT EXISTS fornecedor_documentos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fornecedor_id INTEGER NOT NULL,
+  tipo TEXT NOT NULL, numero TEXT, arquivo_nome TEXT,
+  validade TEXT, observacoes TEXT, enviado_por TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+// Histórico de acessos ao portal (transparência para o fornecedor e trilha
+// de segurança para a contratante).
+db.exec(`CREATE TABLE IF NOT EXISTS portal_acessos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER, fornecedor_id INTEGER,
+  ip TEXT, quando TEXT DEFAULT (datetime('now'))
 )`)
 
 // Orçamento anual (budget): metas mensais de receita/custo/despesa por tenant.
@@ -572,7 +591,7 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
   if (!email || !senha) return res.status(400).json(err('Email e senha obrigatórios'))
 
   const user = db.prepare(
-    `SELECT id, nome, email, perfil, senha_hash FROM usuarios WHERE email = ? AND ativo = 1`
+    `SELECT id, nome, email, perfil, fornecedor_id, senha_hash FROM usuarios WHERE email = ? AND ativo = 1`
   ).get(String(email).toLowerCase().trim())
 
   // Compara sempre com bcrypt (mesmo quando o usuário não existe, para não
@@ -589,6 +608,10 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
     .run(token, user.id, expira, req.ip || '')
 
   log(user.id, user.nome, 'Login', 'auth', 'Login realizado')
+  // Trilha do portal: acesso de usuário fornecedor fica visível a ele mesmo.
+  if (user.perfil === 'fornecedor' && user.fornecedor_id) {
+    try { db.prepare(`INSERT INTO portal_acessos(usuario_id, fornecedor_id, ip) VALUES(?,?,?)`).run(user.id, user.fornecedor_id, req.ip || '') } catch {}
+  }
 
   res.json(ok({ token, user: { id: user.id, nome: user.nome, email: user.email, perfil: user.perfil } }))
 })
@@ -1599,6 +1622,16 @@ app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, (req, res) =
   const rfq = db.prepare(`SELECT * FROM rfq WHERE id = ?`).get(req.params.id)
   if (!rfq || rfq.status !== 'Aberta') return res.status(409).json(err('RFQ não está aberta para cotação'))
   if (_rfqPrazoExpirado(rfq)) return res.status(409).json(err(`Prazo de resposta expirado em ${rfq.prazo_resposta}`))
+  // Gate opcional de compliance: certidão vencida bloqueia nova cotação
+  // (PORTAL_BLOQUEIA_DOC_VENCIDO=1). Padrão desligado — cada contratante decide.
+  if ((process.env.PORTAL_BLOQUEIA_DOC_VENCIDO ?? '0') === '1') {
+    const docs = db.prepare(`SELECT * FROM fornecedor_documentos WHERE fornecedor_id = ?`).all(req.user.fornecedor_id)
+    const resumo = resumoDocumentos(docs, _hojeYMD())
+    if (resumo.vencidos > 0) {
+      const tipos = resumo.alertas.filter(a => a.situacao === 'Vencido').map(a => a.tipo).join(', ')
+      return res.status(409).json(err(`Cotação bloqueada: documento(s) vencido(s) — ${tipos}. Atualize em "Meus Documentos".`))
+    }
+  }
   const b = req.body || {}
   const itens = Array.isArray(b.itens) ? b.itens : []
   // Valor: soma dos itens quando enviados; senão o total informado. Precisa ser > 0.
@@ -1710,10 +1743,12 @@ app.get('/api/portal/dashboard', requireAuth, requirePortal, (req, res) => {
     const prazo = String(e.data_confirmada || e.data_prometida || '').slice(0, 10)
     return prazo && prazo <= em7
   }).length
+  // Documentos vencidos/a vencer (pendência de compliance).
+  const docsResumo = resumoDocumentos(db.prepare(`SELECT * FROM fornecedor_documentos WHERE fornecedor_id = ?`).all(fid), hoje)
   res.json(ok({
     rfqs_aguardando: { qtd: rfqs.length, itens: rfqs.slice(0, 5) },
     pedidos_ativos: { qtd: pedAtivos.n || 0, valor: pedAtivos.v || 0 },
-    pendencias: { nf_a_enviar: semNF },
+    pendencias: { nf_a_enviar: semNF, docs_vencidos: docsResumo.vencidos, docs_a_vencer: docsResumo.a_vencer },
     pagamentos_proximos: { qtd: pagProximos.n || 0, valor: pagProximos.v || 0, ate: em30 },
     entregas: { otif_pct: otif.otif_pct, atrasadas: otif.atrasadas_abertas, criticas_7d: criticas, abertas: otif.abertas },
   }))
@@ -1756,6 +1791,79 @@ app.post('/api/portal/entregas/:id/confirmar', requireAuth, requirePortal, (req,
   log(req.user.usuario_id, req.user.nome, replanejo ? 'portal_entrega_replanejada' : 'portal_entrega_confirmada', 'entregas',
     `${e.pc_numero}: ${replanejo ? `replanejada para ${novaData}` : 'prazo confirmado'} por ${fNome}`)
   res.json(ok(db.prepare(`SELECT * FROM programacao_entregas WHERE id = ?`).get(e.id)))
+})
+
+// ── Portal · Documentos com validade ──────────────────────────
+// Certidões/contratos/comprovações com controle de vencimento. Append-only:
+// reenvio do mesmo tipo substitui o vigente mantendo a trilha. O upload aqui
+// registra o DOCUMENTO (nome do arquivo como ponteiro) — binário fica para o
+// storage do deploy (S3/R2), fora do banco.
+const PORTAL_DOC_AVISO_DIAS = parseInt(process.env.PORTAL_DOC_AVISO_DIAS) || 30
+
+function _docsDoFornecedor(fornecedorId) {
+  return db.prepare(`SELECT * FROM fornecedor_documentos WHERE fornecedor_id = ? ORDER BY created_at DESC LIMIT 300`).all(fornecedorId)
+}
+
+app.get('/api/portal/documentos', requireAuth, requirePortal, (req, res) => {
+  const hoje = _hojeYMD()
+  const docs = _docsDoFornecedor(req.user.fornecedor_id)
+  const vigentesIds = new Set(vigentesPorTipo(docs).map(d => d.id))
+  res.json(ok({
+    documentos: docs.map(d => ({ ...d, situacao: statusDocumento(d, hoje, PORTAL_DOC_AVISO_DIAS), vigente: vigentesIds.has(d.id) })),
+    resumo: resumoDocumentos(docs, hoje, PORTAL_DOC_AVISO_DIAS),
+  }))
+})
+
+app.post('/api/portal/documentos', requireAuth, requirePortal, (req, res) => {
+  const b = req.body || {}
+  if (!String(b.tipo || '').trim()) return res.status(400).json(err('Tipo do documento obrigatório (ex.: CND Federal, FGTS, Contrato Social)'))
+  if (b.validade && !/^\d{4}-\d{2}-\d{2}/.test(String(b.validade))) return res.status(400).json(err('Validade deve ser uma data (AAAA-MM-DD)'))
+  const r = db.prepare(`INSERT INTO fornecedor_documentos(fornecedor_id, tipo, numero, arquivo_nome, validade, observacoes, enviado_por, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?)`)
+    .run(req.user.fornecedor_id, String(b.tipo).trim(), b.numero || null, b.arquivo_nome || null,
+      b.validade ? String(b.validade).slice(0, 10) : null, b.observacoes || null, req.user.nome, empresaDoReq(req))
+  // Compliance é avisado para conferir o documento novo.
+  const fNome = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)?.nome || ''
+  notificar({ perfil: 'compliance', titulo: `Documento recebido — ${fNome}`,
+    mensagem: `${String(b.tipo).trim()}${b.validade ? ' (validade ' + String(b.validade).slice(0, 10) + ')' : ''} enviado pelo portal.`,
+    tipo: 'documento', ref_tipo: 'fornecedor', ref_id: String(req.user.fornecedor_id), empresa: empresaDoReq(req) })
+  log(req.user.usuario_id, req.user.nome, 'portal_documento', 'fornecedores', `Documento ${String(b.tipo).trim()} enviado por ${fNome}`)
+  const doc = db.prepare(`SELECT * FROM fornecedor_documentos WHERE id = ?`).get(r.lastInsertRowid)
+  res.status(201).json(ok({ ...doc, situacao: statusDocumento(doc, _hojeYMD(), PORTAL_DOC_AVISO_DIAS) }))
+})
+
+// Visão interna (comprador/compliance): documentos de um fornecedor do tenant.
+app.get('/api/fornecedores/:id/documentos', requireAuth, (req, res) => {
+  const f = db.prepare(`SELECT id FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(req.params.id, empresaDoReq(req))
+  if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+  const hoje = _hojeYMD()
+  const docs = _docsDoFornecedor(f.id)
+  res.json(ok({
+    documentos: vigentesPorTipo(docs).map(d => ({ ...d, situacao: statusDocumento(d, hoje, PORTAL_DOC_AVISO_DIAS) })),
+    resumo: resumoDocumentos(docs, hoje, PORTAL_DOC_AVISO_DIAS),
+  }))
+})
+
+// ── Portal · Histórico de acessos + troca de senha ────────────
+app.get('/api/portal/acessos', requireAuth, requirePortal, (req, res) => {
+  const rows = db.prepare(`SELECT ip, quando FROM portal_acessos WHERE fornecedor_id = ? ORDER BY id DESC LIMIT 20`).all(req.user.fornecedor_id)
+  res.json(ok(rows))
+})
+
+// Troca de senha self-service (exige a senha atual — não é o admin reset).
+app.post('/api/portal/trocar-senha', requireAuth, requirePortal, (req, res) => {
+  const { senha_atual, senha_nova } = req.body || {}
+  if (!senha_atual || !senha_nova) return res.status(400).json(err('Informe a senha atual e a nova'))
+  const u = db.prepare(`SELECT id, senha_hash FROM usuarios WHERE id = ?`).get(req.user.usuario_id)
+  if (!u || !bcrypt.compareSync(String(senha_atual), u.senha_hash)) return res.status(401).json(err('Senha atual incorreta', 401))
+  const pol = validarSenhaForte(senha_nova)
+  if (!pol.ok) return res.status(400).json(err(pol.motivo))
+  db.prepare(`UPDATE usuarios SET senha_hash = ? WHERE id = ?`).run(bcrypt.hashSync(String(senha_nova), 10), u.id)
+  // Segurança: derruba as OUTRAS sessões deste usuário (a atual permanece).
+  const tokenAtual = (req.headers['authorization'] || '').replace('Bearer ', '').trim()
+  db.prepare(`DELETE FROM sessoes WHERE usuario_id = ? AND token != ?`).run(u.id, tokenAtual)
+  log(req.user.usuario_id, req.user.nome, 'portal_trocar_senha', 'auth', 'Senha alterada pelo portal')
+  res.json(ok({ alterada: true }))
 })
 
 // Normalização de CNPJ em SQL (só dígitos) — usada na detecção de duplicatas.
