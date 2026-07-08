@@ -74,6 +74,15 @@ async function portalAbrirCotacao(id) {
     ${soLeitura ? `<p style="font-size:12px;color:#dc2626"><i class="fas fa-lock"></i> RFQ fechada para novas respostas.</p>` : ''}
     <div id="prfq_itens">${itens.map(linha).join('')}</div>
     ${soLeitura ? '' : `<button class="btn btn-secondary btn-sm" onclick="portalAddItemCotacao()"><i class="fas fa-plus"></i> Item</button>`}
+    <div style="margin-top:10px">
+      <div style="font-size:12px;font-weight:700;margin-bottom:4px">Anexos técnicos (datasheet, desenho, certificado)</div>
+      <div id="prfq_anexos">${((cot && cot.anexos) || []).map(a => `
+        <div class="prfq-anexo" style="display:grid;grid-template-columns:2fr 3fr;gap:6px;margin-bottom:6px">
+          <input class="form-control prfq-anexo-nome" placeholder="arquivo.pdf" value="${esc(a.arquivo_nome || '')}" ${soLeitura ? 'disabled' : ''}>
+          <input class="form-control prfq-anexo-desc" placeholder="Descrição" value="${esc(a.descricao || '')}" ${soLeitura ? 'disabled' : ''}>
+        </div>`).join('')}</div>
+      ${soLeitura ? '' : `<button class="btn btn-secondary btn-sm" onclick="portalAddAnexoCotacao()"><i class="fas fa-paperclip"></i> Anexo</button>`}
+    </div>
     <div class="form-row" style="margin-top:10px">
       <div class="form-group"><label>Prazo de entrega (dias)</label>
         <input class="form-control" id="prfq_prazo" type="number" min="1" value="${(cot && cot.prazo_entrega) || 7}" ${soLeitura ? 'disabled' : ''}></div>
@@ -102,6 +111,26 @@ function portalAddItemCotacao() {
   box.appendChild(div)
 }
 
+function portalAddAnexoCotacao() {
+  const box = document.getElementById('prfq_anexos')
+  if (!box) return
+  const div = document.createElement('div')
+  div.className = 'prfq-anexo'
+  div.style.cssText = 'display:grid;grid-template-columns:2fr 3fr;gap:6px;margin-bottom:6px'
+  div.innerHTML = `
+    <input class="form-control prfq-anexo-nome" placeholder="arquivo.pdf">
+    <input class="form-control prfq-anexo-desc" placeholder="Descrição">`
+  box.appendChild(div)
+}
+
+// Coleta os anexos do formulário (puro sobre o DOM; testável).
+function _portalColetarAnexos() {
+  return Array.from(document.querySelectorAll('.prfq-anexo')).map(row => ({
+    arquivo_nome: ((row.querySelector('.prfq-anexo-nome') || {}).value || '').trim(),
+    descricao: ((row.querySelector('.prfq-anexo-desc') || {}).value || '').trim(),
+  })).filter(a => a.arquivo_nome)
+}
+
 // Coleta os itens do formulário (puro sobre o DOM; testável).
 function _portalColetarItens() {
   return Array.from(document.querySelectorAll('.prfq-item')).map(row => ({
@@ -118,6 +147,7 @@ async function portalEnviarCotacao(id) {
   try {
     const r = await apiAuth(`/api/portal/rfq/${id}/cotacao`, { method: 'POST', body: JSON.stringify({
       itens,
+      anexos: _portalColetarAnexos(),
       prazo_entrega: Number((document.getElementById('prfq_prazo') || {}).value) || 7,
       condicao_pagamento: (document.getElementById('prfq_cond') || {}).value || '',
       observacoes: (document.getElementById('prfq_obs') || {}).value || '',
@@ -131,6 +161,8 @@ async function portalEnviarCotacao(id) {
 window._portalRfqHTML = _portalRfqHTML
 window._portalCarregarRFQs = _portalCarregarRFQs
 window._portalColetarItens = _portalColetarItens
+window._portalColetarAnexos = _portalColetarAnexos
+window.portalAddAnexoCotacao = portalAddAnexoCotacao
 window.portalAbrirCotacao = portalAbrirCotacao
 window.portalAddItemCotacao = portalAddItemCotacao
 window.portalEnviarCotacao = portalEnviarCotacao

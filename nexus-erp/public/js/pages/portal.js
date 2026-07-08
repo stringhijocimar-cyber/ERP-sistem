@@ -58,7 +58,7 @@ async function renderPortal() {
         </tr></thead>
         <tbody>
           ${peds.map(p => `<tr>
-            <td style="padding:6px 8px">${p.numero}</td>
+            <td style="padding:6px 8px"><a href="#" onclick="portalVerPedido(${p.id});return false" style="color:var(--fa-teal);text-decoration:underline">${p.numero}</a></td>
             <td style="padding:6px 8px">${p.status || '—'}</td>
             <td style="padding:6px 8px">${typeof fmt === 'function' ? fmt(p.valor_total) : (p.valor_total || 0)}</td>
             <td style="padding:6px 8px">${p.nf_numero || '—'}</td>
@@ -132,6 +132,37 @@ async function portalSalvarPerfil() {
     renderPortal();
   } catch (e) { showToast('Falha ao salvar: ' + e.message, 'error'); }
 }
+
+// Detalhe do pedido: itens, entrega e pagamento (read-only).
+async function portalVerPedido(id) {
+  if (typeof openModal !== 'function' || typeof apiAuth !== 'function') return;
+  let p;
+  try { p = await apiAuth(`/api/portal/pedidos/${id}`); } catch (e) { showToast(e.message, 'error'); return; }
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s));
+  const m = v => typeof fmt === 'function' ? fmt(v) : ('R$ ' + Number(v || 0).toLocaleString('pt-BR'));
+  const itens = (p.itens || []).map(i => `<tr>
+      <td style="padding:4px 8px">${esc(i.descricao)}</td>
+      <td style="padding:4px 8px;text-align:right">${i.quantidade} ${esc(i.unidade || '')}</td>
+      <td style="padding:4px 8px;text-align:right">${m(i.valor_unitario)}</td>
+      <td style="padding:4px 8px;text-align:right">${m(i.valor_total)}</td>
+    </tr>`).join('') || '<tr><td colspan="4" style="padding:6px;color:var(--text-muted)">Sem itens detalhados.</td></tr>';
+  openModal(`Pedido ${esc(p.numero)}`, `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">
+      Status: <b>${esc(p.status || '—')}</b> · Valor: <b>${m(p.valor_total)}</b>
+      ${p.condicao_pagamento ? ' · Pagamento: ' + esc(p.condicao_pagamento) : ''}
+      ${p.local_entrega ? ' · Entrega: ' + esc(p.local_entrega) : ''}
+    </div>
+    <table class="table" style="width:100%;font-size:12px;border-collapse:collapse">
+      <thead><tr style="color:var(--text-muted);text-align:left">
+        <th style="padding:4px 8px">Item</th><th style="padding:4px 8px;text-align:right">Qtd</th>
+        <th style="padding:4px 8px;text-align:right">Unitário</th><th style="padding:4px 8px;text-align:right">Total</th>
+      </tr></thead><tbody>${itens}</tbody>
+    </table>
+    ${p.entrega ? `<p style="font-size:12px;margin-top:8px">Entrega: <b>${esc(p.entrega.status_efetivo)}</b> — prometida ${esc(p.entrega.data_prometida || '—')}${p.entrega.data_confirmada ? ', confirmada ' + esc(p.entrega.data_confirmada) : ''}${p.entrega.data_entregue ? ', entregue ' + esc(p.entrega.data_entregue) : ''}</p>` : ''}
+    ${p.pagamento ? `<p style="font-size:12px">Pagamento: <b style="color:${p.pagamento.status === 'Pago' ? '#16a34a' : '#d97706'}">${esc(p.pagamento.status)}</b> — ${m(p.pagamento.valor)}${p.pagamento.data_pagamento ? ' em ' + esc(p.pagamento.data_pagamento) : (p.pagamento.data_vencimento ? ', vence ' + esc(p.pagamento.data_vencimento) : '')}</p>` : ''}
+  `, `<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>`);
+}
+window.portalVerPedido = portalVerPedido;
 
 window.renderPortal = renderPortal;
 window.portalEnviarNF = portalEnviarNF;
