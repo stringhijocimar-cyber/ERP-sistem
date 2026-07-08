@@ -30,6 +30,7 @@ import { montarFluxoProjetado } from './lib/fluxo_projetado.js'
 import { dreParaCSV, dashboardParaCSV } from './lib/csv_export.js'
 import { montarOrcamentoAnual } from './lib/orcamento.js'
 import { aplicarMovimento, itensParaRepor, valorizarEstoque } from './lib/estoque.js'
+import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo } from './lib/otif.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -273,6 +274,21 @@ db.exec(`CREATE TABLE IF NOT EXISTS apontamentos_hora (
   descricao TEXT,
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
+)`)
+
+// Programação de entregas: nasce na emissão do pedido (promessa original) e
+// acompanha confirmação/replanejamento pelo FORNECEDOR no portal e a entrega
+// real registrada internamente. Base do OTIF. Isolada por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS programacao_entregas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pc_id INTEGER, pc_numero TEXT, fornecedor_id INTEGER,
+  descricao TEXT, valor REAL DEFAULT 0,
+  data_prometida TEXT, data_confirmada TEXT, data_entregue TEXT,
+  status TEXT DEFAULT 'Programada',
+  justificativa TEXT, confirmado_em TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
 )`)
 
 // Orçamento anual (budget): metas mensais de receita/custo/despesa por tenant.
@@ -1686,12 +1702,60 @@ app.get('/api/portal/dashboard', requireAuth, requirePortal, (req, res) => {
       WHERE fornecedor_id = ? AND status NOT IN ('Pago','Cancelado')
         AND COALESCE(data_vencimento,'') BETWEEN ? AND ?`
   ).get(fid, hoje, em30) || {}
+  // Entregas: OTIF e críticas (atrasadas ou vencendo em 7 dias).
+  const entregas = db.prepare(`SELECT * FROM programacao_entregas WHERE fornecedor_id = ?`).all(fid)
+  const otif = calcularOTIF(entregas, hoje)
+  const em7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+  const criticas = entregas.filter(e => !e.data_entregue).filter(e => {
+    const prazo = String(e.data_confirmada || e.data_prometida || '').slice(0, 10)
+    return prazo && prazo <= em7
+  }).length
   res.json(ok({
     rfqs_aguardando: { qtd: rfqs.length, itens: rfqs.slice(0, 5) },
     pedidos_ativos: { qtd: pedAtivos.n || 0, valor: pedAtivos.v || 0 },
     pendencias: { nf_a_enviar: semNF },
     pagamentos_proximos: { qtd: pagProximos.n || 0, valor: pagProximos.v || 0, ate: em30 },
+    entregas: { otif_pct: otif.otif_pct, atrasadas: otif.atrasadas_abertas, criticas_7d: criticas, abertas: otif.abertas },
   }))
+})
+
+// ── Portal · Entregas & OTIF ──────────────────────────────────
+// O fornecedor vê sua programação, CONFIRMA o prazo ou REPLANEJA com
+// justificativa (o comprador é avisado). A entrega real é registrada pelo
+// recebimento interno — o portal não "se entrega" sozinho.
+app.get('/api/portal/entregas', requireAuth, requirePortal, (req, res) => {
+  const hoje = _hojeYMD()
+  const rows = db.prepare(
+    `SELECT * FROM programacao_entregas WHERE fornecedor_id = ? ORDER BY COALESCE(data_confirmada, data_prometida, '9999') ASC LIMIT 300`
+  ).all(req.user.fornecedor_id)
+  res.json(ok({
+    entregas: rows.map(e => ({ ...e, status_efetivo: statusEntrega(e, hoje) })),
+    resumo: calcularOTIF(rows, hoje),
+  }))
+})
+
+app.post('/api/portal/entregas/:id/confirmar', requireAuth, requirePortal, (req, res) => {
+  const e = db.prepare(`SELECT * FROM programacao_entregas WHERE id = ?`).get(req.params.id)
+  if (!e || e.fornecedor_id !== req.user.fornecedor_id) return res.status(404).json(err('Entrega não encontrada'))
+  if (e.data_entregue) return res.status(409).json(err('Entrega já realizada'))
+  const b = req.body || {}
+  const novaData = b.data_confirmada ? String(b.data_confirmada).slice(0, 10) : null
+  const replanejo = !!(novaData && e.data_prometida && novaData !== String(e.data_prometida).slice(0, 10))
+  if (replanejo && !String(b.justificativa || '').trim()) {
+    return res.status(400).json(err('Replanejamento exige justificativa'))
+  }
+  if (novaData && novaData < _hojeYMD()) return res.status(400).json(err('Data confirmada não pode estar no passado'))
+  db.prepare(`UPDATE programacao_entregas SET data_confirmada=?, status=?, justificativa=?, confirmado_em=datetime('now'), updated_at=datetime('now') WHERE id=?`)
+    .run(novaData || e.data_prometida, replanejo ? 'Replanejada' : 'Confirmada', replanejo ? String(b.justificativa).trim() : e.justificativa, e.id)
+  const fNome = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(e.fornecedor_id)?.nome || ''
+  if (replanejo) {
+    notificar({ perfil: 'comprador', titulo: `Entrega replanejada — ${e.pc_numero}`,
+      mensagem: `${fNome}: nova data ${novaData} (era ${e.data_prometida}). Motivo: ${String(b.justificativa).trim()}`,
+      tipo: 'entrega', ref_tipo: 'pedido', ref_id: String(e.pc_id), email: true, empresa: empresaDoReq(req) })
+  }
+  log(req.user.usuario_id, req.user.nome, replanejo ? 'portal_entrega_replanejada' : 'portal_entrega_confirmada', 'entregas',
+    `${e.pc_numero}: ${replanejo ? `replanejada para ${novaData}` : 'prazo confirmado'} por ${fNome}`)
+  res.json(ok(db.prepare(`SELECT * FROM programacao_entregas WHERE id = ?`).get(e.id)))
 })
 
 // Normalização de CNPJ em SQL (só dígitos) — usada na detecção de duplicatas.
@@ -2404,6 +2468,10 @@ async function criarPedidoCompra(emp, user, campos, itens = []) {
     VALUES(?,?,?,?,?,?,?,?,?,?)`)
     .run(cpNum, pcId, numero, fornecedor_id, f.nome, `${numero} – ${f.nome}`, valor_total || 0, prazo_entrega, 'Pendente', emp)
   log(user.usuario_id, user.nome, 'Criar', 'pedidos', `PC emitido: ${numero}`)
+  // Programação de entrega (base do OTIF): promessa original = prazo do pedido.
+  db.prepare(`INSERT INTO programacao_entregas(pc_id, pc_numero, fornecedor_id, descricao, valor, data_prometida, empresa_id)
+     VALUES(?,?,?,?,?,?,?)`)
+    .run(pcId, numero, fornecedor_id, `Entrega do pedido ${numero}`, valor_total || 0, dataPrometidaDoPrazo(prazo_entrega), emp)
   // Inteligência proativa: motor de anomalias no pedido recém-emitido.
   try {
     const histRows = db.prepare(
@@ -2464,6 +2532,9 @@ app.post('/api/pedidos/:id/entrega', requireAuth, (req, res) => {
   db.prepare(`INSERT INTO pc_historico(pc_id, usuario_nome, acao, descricao, status_de, status_para) VALUES(?,?,?,?,?,?)`)
     .run(req.params.id, req.user.nome, 'Entrega', `Entrega confirmada por ${recebedor}. ${observacao}`, 'Enviado', 'Entregue')
   db.prepare(`UPDATE contas_pagar SET status='Pendente' WHERE pc_id=?`).run(req.params.id)
+  // Data real de entrega na programação (fecha o ciclo do OTIF).
+  db.prepare(`UPDATE programacao_entregas SET data_entregue=?, status='Entregue', updated_at=datetime('now') WHERE pc_id=? AND data_entregue IS NULL`)
+    .run(new Date().toISOString().slice(0, 10), req.params.id)
   const pc = db.prepare(`SELECT * FROM pedidos_compra WHERE id = ?`).get(req.params.id)
   log(req.user.usuario_id, req.user.nome, 'Entrega', 'pedidos', `PC entregue: ${pc.numero}`)
   res.json(ok(pc))

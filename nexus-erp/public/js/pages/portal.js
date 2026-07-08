@@ -14,12 +14,14 @@ async function renderPortal() {
     <div id="portal_perfil" class="info-card" style="padding:16px;margin-bottom:16px"><i class="fas fa-spinner fa-spin"></i> Carregando...</div>
     <div id="portal_dashboard" style="margin-bottom:16px"></div>
     <div id="portal_rfq" class="info-card" style="padding:16px;margin-bottom:16px"></div>
+    <div id="portal_entregas" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_pedidos" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_financeiro" class="info-card" style="padding:16px"></div>`;
 
   // Módulos server-backed do portal; silenciosos se ausentes.
   if (typeof window._portalCarregarDashboard === 'function') window._portalCarregarDashboard();
   if (typeof window._portalCarregarRFQs === 'function') window._portalCarregarRFQs();
+  if (typeof window._portalCarregarEntregas === 'function') window._portalCarregarEntregas();
   if (typeof window._portalCarregarFinanceiro === 'function') window._portalCarregarFinanceiro();
 
   // Perfil

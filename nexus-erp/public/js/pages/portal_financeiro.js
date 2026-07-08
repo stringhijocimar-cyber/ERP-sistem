@@ -19,9 +19,15 @@ function _portalDashboardHTML(d) {
   const ped = d.pedidos_ativos || {}
   const pend = d.pendencias || {}
   const pag = d.pagamentos_proximos || {}
+  const ent = d.entregas || null
+  const otifCard = ent ? card('fa-truck', 'OTIF (prazo)',
+    ent.otif_pct == null ? '—' : ent.otif_pct + '%',
+    ent.atrasadas ? ent.atrasadas + ' atrasada(s)' : (ent.criticas_7d ? ent.criticas_7d + ' vencendo em 7d' : 'em dia'),
+    ent.atrasadas ? '#dc2626' : (ent.otif_pct != null && ent.otif_pct < 95 ? '#d97706' : '#16a34a')) : ''
   return `<div style="display:flex;gap:12px;flex-wrap:wrap">
     ${card('fa-file-signature', 'Cotações a responder', rfqs.qtd || 0, rfqs.qtd ? 'responda antes do prazo' : 'nenhuma pendente', rfqs.qtd ? '#d97706' : '#16a34a')}
     ${card('fa-file-invoice', 'Pedidos ativos', ped.qtd || 0, _pfmt(ped.valor))}
+    ${otifCard}
     ${card('fa-upload', 'NF a enviar', pend.nf_a_enviar || 0, pend.nf_a_enviar ? 'pedidos sem nota' : 'tudo enviado', pend.nf_a_enviar ? '#dc2626' : '#16a34a')}
     ${card('fa-hand-holding-usd', 'A receber (30 dias)', _pfmt(pag.valor), (pag.qtd || 0) + ' fatura(s)', '#16a34a')}
   </div>`
