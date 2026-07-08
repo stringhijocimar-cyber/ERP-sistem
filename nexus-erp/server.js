@@ -1630,6 +1630,70 @@ app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, (req, res) =
   }))
 })
 
+// ── Portal · Financeiro (somente leitura) ─────────────────────
+// O fornecedor acompanha as próprias faturas: NF, status pago/pendente e
+// datas. Nenhuma escrita — dados financeiros são read-only por regra.
+app.get('/api/portal/financeiro', requireAuth, requirePortal, (req, res) => {
+  const rows = db.prepare(
+    `SELECT id, numero, pc_numero, nota_fiscal, descricao, valor,
+            data_vencimento, data_pagamento, forma_pagamento, status
+       FROM contas_pagar WHERE fornecedor_id = ?
+      ORDER BY COALESCE(data_vencimento,'9999') DESC LIMIT 300`
+  ).all(req.user.fornecedor_id)
+  const one = (sql) => db.prepare(sql).get(req.user.fornecedor_id) || {}
+  const pago = one(`SELECT COALESCE(SUM(valor),0) v, COUNT(*) n FROM contas_pagar WHERE fornecedor_id = ? AND status = 'Pago'`)
+  const aberto = one(`SELECT COALESCE(SUM(valor),0) v, COUNT(*) n FROM contas_pagar WHERE fornecedor_id = ? AND status NOT IN ('Pago','Cancelado')`)
+  const proximo = db.prepare(
+    `SELECT valor, data_vencimento FROM contas_pagar
+      WHERE fornecedor_id = ? AND status NOT IN ('Pago','Cancelado') AND COALESCE(data_vencimento,'') >= ?
+      ORDER BY data_vencimento ASC LIMIT 1`
+  ).get(req.user.fornecedor_id, _hojeYMD())
+  res.json(ok({
+    faturas: rows,
+    resumo: {
+      recebido_total: pago.v || 0, recebido_qtd: pago.n || 0,
+      a_receber_total: aberto.v || 0, a_receber_qtd: aberto.n || 0,
+      proximo_pagamento: proximo || null,
+    },
+  }))
+})
+
+// ── Portal · Dashboard do fornecedor ──────────────────────────
+// A visão "abri o portal de manhã": o que preciso responder, o que está
+// ativo, o que vou receber. Tudo derivado das tabelas existentes.
+app.get('/api/portal/dashboard', requireAuth, requirePortal, (req, res) => {
+  const fid = req.user.fornecedor_id
+  const hoje = _hojeYMD()
+  // RFQs aguardando resposta (convidado, aberta, prazo não expirado).
+  const rfqs = db.prepare(
+    `SELECT r.id, r.numero, r.titulo, r.prazo_resposta
+       FROM rfq_fornecedores rf JOIN rfq r ON r.id = rf.rfq_id
+      WHERE rf.fornecedor_id = ? AND rf.status != 'Respondida' AND r.status = 'Aberta'`
+  ).all(fid).filter(r => !_rfqPrazoExpirado(r))
+  // Pedidos ativos e pendências de NF.
+  const pedAtivos = db.prepare(
+    `SELECT COUNT(*) n, COALESCE(SUM(valor_total),0) v FROM pedidos_compra
+      WHERE fornecedor_id = ? AND status NOT IN ('Cancelado','Entregue')`
+  ).get(fid) || {}
+  const semNF = db.prepare(
+    `SELECT COUNT(*) n FROM pedidos_compra
+      WHERE fornecedor_id = ? AND status NOT IN ('Cancelado') AND (nf_numero IS NULL OR nf_numero = '')`
+  ).get(fid).n
+  // Pagamentos próximos (30 dias).
+  const em30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)
+  const pagProximos = db.prepare(
+    `SELECT COUNT(*) n, COALESCE(SUM(valor),0) v FROM contas_pagar
+      WHERE fornecedor_id = ? AND status NOT IN ('Pago','Cancelado')
+        AND COALESCE(data_vencimento,'') BETWEEN ? AND ?`
+  ).get(fid, hoje, em30) || {}
+  res.json(ok({
+    rfqs_aguardando: { qtd: rfqs.length, itens: rfqs.slice(0, 5) },
+    pedidos_ativos: { qtd: pedAtivos.n || 0, valor: pedAtivos.v || 0 },
+    pendencias: { nf_a_enviar: semNF },
+    pagamentos_proximos: { qtd: pagProximos.n || 0, valor: pagProximos.v || 0, ate: em30 },
+  }))
+})
+
 // Normalização de CNPJ em SQL (só dígitos) — usada na detecção de duplicatas.
 const CNPJ_NORM = `REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(cnpj,''),'.',''),'/',''),'-',''),' ','')`
 
