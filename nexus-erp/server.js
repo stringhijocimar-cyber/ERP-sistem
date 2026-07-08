@@ -1532,6 +1532,104 @@ app.put('/api/portal/perfil', requireAuth, requirePortal, (req, res) => {
   res.json(ok(db.prepare(`SELECT id, nome, contato, email, telefone, banco, agencia, conta, banco_solicitado_por FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)))
 })
 
+// ── Portal · RFQ (cotação self-service) ───────────────────────
+// O fornecedor vê SOMENTE as RFQs onde foi convidado (rfq_fornecedores) e
+// SOMENTE a própria cotação — nunca a dos concorrentes (dado competitivo).
+// Prazo de resposta é trava dura: expirado → 409.
+
+const _hojeYMD = () => new Date().toISOString().slice(0, 10)
+function _rfqPrazoExpirado(rfq) {
+  const p = String(rfq.prazo_resposta || '').slice(0, 10)
+  return !!p && p < _hojeYMD() // permite responder ATÉ o dia do prazo, inclusive
+}
+// Convite do fornecedor para a RFQ (ou null) — é o gate de acesso do portal.
+function _conviteRFQ(rfqId, fornecedorId) {
+  return db.prepare(`SELECT * FROM rfq_fornecedores WHERE rfq_id = ? AND fornecedor_id = ?`).get(rfqId, fornecedorId)
+}
+
+app.get('/api/portal/rfq', requireAuth, requirePortal, (req, res) => {
+  const rows = db.prepare(
+    `SELECT r.id, r.numero, r.titulo, r.descricao, r.status, r.prazo_resposta, r.created_at,
+            rf.status AS convite_status, rf.respondido_em
+       FROM rfq_fornecedores rf JOIN rfq r ON r.id = rf.rfq_id
+      WHERE rf.fornecedor_id = ? ORDER BY r.created_at DESC LIMIT 200`
+  ).all(req.user.fornecedor_id)
+  res.json(ok(rows.map(r => ({
+    ...r,
+    prazo_expirado: _rfqPrazoExpirado(r),
+    pode_responder: r.status === 'Aberta' && !_rfqPrazoExpirado(r),
+  }))))
+})
+
+app.get('/api/portal/rfq/:id', requireAuth, requirePortal, (req, res) => {
+  const convite = _conviteRFQ(req.params.id, req.user.fornecedor_id)
+  if (!convite) return res.status(404).json(err('RFQ não encontrada')) // sem convite = não existe para este fornecedor
+  const rfq = db.prepare(`SELECT id, numero, titulo, descricao, status, prazo_resposta, created_at FROM rfq WHERE id = ?`).get(req.params.id)
+  // Só a PRÓPRIA cotação — as dos concorrentes nunca saem por aqui.
+  const minha = db.prepare(`SELECT * FROM cotacoes WHERE rfq_id = ? AND fornecedor_id = ?`).get(req.params.id, req.user.fornecedor_id)
+  const itens = minha ? db.prepare(`SELECT * FROM cotacao_itens WHERE cotacao_id = ?`).all(minha.id) : []
+  res.json(ok({
+    ...rfq, convite_status: convite.status,
+    prazo_expirado: _rfqPrazoExpirado(rfq),
+    pode_responder: rfq.status === 'Aberta' && !_rfqPrazoExpirado(rfq),
+    minha_cotacao: minha ? { ...minha, itens } : null,
+  }))
+})
+
+// Responder (ou revisar, enquanto o prazo está aberto) a cotação.
+app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, (req, res) => {
+  const convite = _conviteRFQ(req.params.id, req.user.fornecedor_id)
+  if (!convite) return res.status(404).json(err('RFQ não encontrada'))
+  const rfq = db.prepare(`SELECT * FROM rfq WHERE id = ?`).get(req.params.id)
+  if (!rfq || rfq.status !== 'Aberta') return res.status(409).json(err('RFQ não está aberta para cotação'))
+  if (_rfqPrazoExpirado(rfq)) return res.status(409).json(err(`Prazo de resposta expirado em ${rfq.prazo_resposta}`))
+  const b = req.body || {}
+  const itens = Array.isArray(b.itens) ? b.itens : []
+  // Valor: soma dos itens quando enviados; senão o total informado. Precisa ser > 0.
+  const valorItens = itens.reduce((s, i) => s + ((Number(i.quantidade) || 1) * (Number(i.valor_unitario) || 0)), 0)
+  const valorTotal = itens.length ? Math.round(valorItens * 100) / 100 : Number(b.valor_total) || 0
+  if (!(valorTotal > 0)) return res.status(400).json(err('Valor da cotação deve ser maior que zero'))
+  const fNome = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)?.nome || ''
+
+  const existente = db.prepare(`SELECT * FROM cotacoes WHERE rfq_id = ? AND fornecedor_id = ?`).get(rfq.id, req.user.fornecedor_id)
+  let cotId
+  const tx = db.transaction(() => {
+    if (existente) {
+      // Revisão dentro do prazo: substitui valores e itens (sem duplicar cotação).
+      db.prepare(`UPDATE cotacoes SET valor_total=?, prazo_entrega=?, condicao_pagamento=?, observacoes=?, status='Recebida', updated_at=datetime('now') WHERE id=?`)
+        .run(valorTotal, Number(b.prazo_entrega) || existente.prazo_entrega || 7, b.condicao_pagamento ?? existente.condicao_pagamento, b.observacoes ?? existente.observacoes, existente.id)
+      db.prepare(`DELETE FROM cotacao_itens WHERE cotacao_id = ?`).run(existente.id)
+      cotId = existente.id
+    } else {
+      const r = db.prepare(
+        `INSERT INTO cotacoes(rfq_id, fornecedor_id, fornecedor_nome, status, valor_total, prazo_entrega, condicao_pagamento, observacoes)
+         VALUES(?,?,?,?,?,?,?,?)`
+      ).run(rfq.id, req.user.fornecedor_id, fNome, 'Recebida', valorTotal, Number(b.prazo_entrega) || 7, b.condicao_pagamento || null, b.observacoes || null)
+      cotId = r.lastInsertRowid
+    }
+    for (const item of itens) {
+      const vt = (Number(item.quantidade) || 1) * (Number(item.valor_unitario) || 0)
+      db.prepare(`INSERT INTO cotacao_itens(cotacao_id, descricao, quantidade, unidade, valor_unitario, valor_total) VALUES(?,?,?,?,?,?)`)
+        .run(cotId, item.descricao || '', Number(item.quantidade) || 1, item.unidade || 'UN', Number(item.valor_unitario) || 0, vt)
+    }
+    db.prepare(`UPDATE rfq_fornecedores SET status='Respondida', respondido_em=datetime('now') WHERE rfq_id = ? AND fornecedor_id = ?`)
+      .run(rfq.id, req.user.fornecedor_id)
+  })
+  tx()
+  // Avisa o comprador da RFQ (in-app) que chegou/foi revisada uma cotação.
+  notificar({ usuario_id: rfq.comprador_id || null, perfil: rfq.comprador_id ? null : 'comprador',
+    titulo: `Cotação ${existente ? 'revisada' : 'recebida'} — ${rfq.numero}`,
+    mensagem: `${fNome}: R$ ${valorTotal.toFixed(2)} (prazo ${Number(b.prazo_entrega) || 7} dias)`,
+    tipo: 'rfq', ref_tipo: 'rfq', ref_id: String(rfq.id), empresa: empresaDoReq(req) })
+  log(req.user.usuario_id, req.user.nome, existente ? 'portal_cotacao_revisada' : 'portal_cotacao', 'rfq',
+    `Cotação de ${fNome} na ${rfq.numero}: R$ ${valorTotal.toFixed(2)}`)
+  res.status(existente ? 200 : 201).json(ok({
+    ...db.prepare(`SELECT * FROM cotacoes WHERE id = ?`).get(cotId),
+    itens: db.prepare(`SELECT * FROM cotacao_itens WHERE cotacao_id = ?`).all(cotId),
+    revisada: !!existente,
+  }))
+})
+
 // Normalização de CNPJ em SQL (só dígitos) — usada na detecção de duplicatas.
 const CNPJ_NORM = `REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(cnpj,''),'.',''),'/',''),'-',''),' ','')`
 
