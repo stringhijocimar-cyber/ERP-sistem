@@ -12,7 +12,11 @@ async function renderPortal() {
     <div class="page-header"><h2><i class="fas fa-store" style="color:var(--fa-teal);margin-right:10px"></i>Portal do Fornecedor</h2>
       <p>Acompanhe seus pedidos, envie a nota fiscal e mantenha seu cadastro atualizado.</p></div>
     <div id="portal_perfil" class="info-card" style="padding:16px;margin-bottom:16px"><i class="fas fa-spinner fa-spin"></i> Carregando...</div>
+    <div id="portal_rfq" class="info-card" style="padding:16px;margin-bottom:16px"></div>
     <div id="portal_pedidos" class="info-card" style="padding:16px"></div>`;
+
+  // Cotações (RFQ) — módulo portal_rfq.js; silencioso se ausente.
+  if (typeof window._portalCarregarRFQs === 'function') window._portalCarregarRFQs();
 
   // Perfil
   try {
