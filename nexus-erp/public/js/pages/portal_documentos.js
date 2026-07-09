@@ -19,7 +19,7 @@ function _portalDocsHTML(d) {
       : `<span style="color:#16a34a;font-size:12px">documentação em dia</span>`)
   const linhas = lista.length ? lista.map(x => `<tr style="${x.vigente ? '' : 'opacity:.55'}">
       <td style="padding:6px 8px">${esc(x.tipo)}${x.vigente ? '' : ' <span style="font-size:10px;color:var(--text-muted)">(substituído)</span>'}</td>
-      <td style="padding:6px 8px">${esc(x.arquivo_nome || '—')}</td>
+      <td style="padding:6px 8px">${x.arquivo_id ? `<a href="#" onclick="portalBaixarArquivo(${x.arquivo_id},'${esc(x.arquivo_nome || 'arquivo').replace(/'/g, '')}');return false" style="color:var(--fa-teal);text-decoration:underline"><i class="fas fa-download"></i> ${esc(x.arquivo_nome || 'arquivo')}</a>` : esc(x.arquivo_nome || '—')}</td>
       <td style="padding:6px 8px">${esc(x.validade || 'sem validade')}</td>
       <td style="padding:6px 8px">${x.vigente ? chip(x.situacao) : '—'}</td>
     </tr>`).join('') : `<tr><td colspan="4" style="padding:8px;color:var(--text-muted)">Nenhum documento enviado.</td></tr>`
@@ -58,7 +58,7 @@ function portalNovoDocumento() {
       <div class="form-group"><label>Validade</label><input class="form-control" id="pdoc_val" type="date"></div>
       <div class="form-group"><label>Número</label><input class="form-control" id="pdoc_num"></div>
     </div>
-    <div class="form-group"><label>Arquivo (nome/referência)</label><input class="form-control" id="pdoc_arq" placeholder="cnd-federal-2026.pdf"></div>
+    <div class="form-group"><label>Arquivo (PDF/imagem/office)</label><input class="form-control" id="pdoc_file" type="file" accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx,.xml,.zip"></div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
     <button class="btn btn-primary" onclick="portalEnviarDocumento()"><i class="fas fa-upload"></i> Enviar</button>
@@ -69,11 +69,19 @@ async function portalEnviarDocumento() {
   const tipo = ((document.getElementById('pdoc_tipo') || {}).value || '').trim()
   if (!tipo) { showToast('Informe o tipo do documento', 'warning'); return }
   try {
+    // Upload real do arquivo escolhido (se houver) → arquivo_id.
+    let arquivo_id = null, arquivo_nome = null
+    const fileEl = document.getElementById('pdoc_file')
+    const file = fileEl && fileEl.files && fileEl.files[0]
+    if (file && typeof portalUploadArquivo === 'function') {
+      const arq = await portalUploadArquivo(file)
+      arquivo_id = arq && arq.id; arquivo_nome = arq && arq.nome
+    }
     await apiAuth('/api/portal/documentos', { method: 'POST', body: JSON.stringify({
       tipo,
       validade: (document.getElementById('pdoc_val') || {}).value || '',
       numero: (document.getElementById('pdoc_num') || {}).value || '',
-      arquivo_nome: (document.getElementById('pdoc_arq') || {}).value || '',
+      arquivo_id, arquivo_nome,
     }) })
     if (typeof closeModal === 'function') closeModal()
     showToast('Documento enviado — o compliance foi avisado', 'success')

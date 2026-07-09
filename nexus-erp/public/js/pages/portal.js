@@ -133,6 +133,38 @@ async function portalSalvarPerfil() {
   } catch (e) { showToast('Falha ao salvar: ' + e.message, 'error'); }
 }
 
+// Upload de arquivo real: lê um <input type=file> como base64, POSTa em
+// /api/portal/arquivos e devolve os metadados { id, nome, mime, tamanho }.
+// Compartilhado por documentos e anexos de cotação.
+function _lerArquivoBase64(file) {
+  return new Promise((resolve, reject) => {
+    const rd = new FileReader()
+    rd.onload = () => resolve(String(rd.result || ''))
+    rd.onerror = () => reject(new Error('Falha ao ler o arquivo'))
+    rd.readAsDataURL(file) // data:...;base64,XXXX — o servidor remove o prefixo
+  })
+}
+async function portalUploadArquivo(file) {
+  if (!file) return null
+  const conteudo_base64 = await _lerArquivoBase64(file)
+  return apiAuth('/api/portal/arquivos', { method: 'POST', body: JSON.stringify({ nome: file.name, conteudo_base64 }) })
+}
+window.portalUploadArquivo = portalUploadArquivo
+
+// Link de download de um arquivo binário (fetch autenticado + blob).
+async function portalBaixarArquivo(id, nome, base) {
+  try {
+    const token = (function () { try { return sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '' } catch { return '' } })()
+    const resp = await fetch(`${base || '/api/portal/arquivos'}/${id}`, { headers: { 'Authorization': `Bearer ${token}` } })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = nome || 'arquivo'
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+  } catch (e) { if (typeof showToast === 'function') showToast('Falha ao baixar o arquivo', 'error') }
+}
+window.portalBaixarArquivo = portalBaixarArquivo
+
 // Detalhe do pedido: itens, entrega e pagamento (read-only).
 async function portalVerPedido(id) {
   if (typeof openModal !== 'function' || typeof apiAuth !== 'function') return;
