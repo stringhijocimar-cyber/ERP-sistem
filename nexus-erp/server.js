@@ -504,7 +504,19 @@ app.use(cors({
   },
   credentials: true,
 }))
-app.use(express.json())
+// Upload de arquivo (base64) precisa de corpo grande: parser dedicado ANTES
+// do global (o global vê req.body já preenchido e não re-parseia). O cap de
+// bytes real fica em lib/storage.js; aqui só o teto de transporte (base64
+// infla ~33%, então STORAGE_MAX_MB × 1.4 + folga). Sem isto, o padrão de
+// 100 KB do express.json rejeitaria qualquer arquivo real com 413.
+// Folga generosa (cap × 2) para que arquivos pouco acima do cap cheguem ao
+// validador e recebam o 400 amigável ("excede o limite"); só corpos
+// realmente absurdos batem no 413 de transporte.
+const _uploadJsonLimit = `${((parseInt(process.env.STORAGE_MAX_MB) || 5) * 2) + 1}mb`
+app.use('/api/portal/arquivos', express.json({ limit: _uploadJsonLimit }))
+// Global: 1 MB cobre snapshots de /sync e payloads normais (era 100 KB — risco
+// de falha silenciosa em corpos maiores).
+app.use(express.json({ limit: '1mb' }))
 
 // ─── Headers de segurança (hardening de API/SPA) ─────────────
 // Sem dependência extra: o essencial do helmet aplicado à mão.
