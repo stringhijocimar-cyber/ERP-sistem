@@ -19,27 +19,33 @@ export function statusEntrega(e, hoje) {
 }
 
 // Consolida a lista de programações em indicadores.
+// Integridade: OTIF só é medível contra um COMPROMISSO de data. Entrega sem
+// data prometida sai do cálculo (reportada em `sem_prazo`) — senão bastaria
+// emitir o pedido com prazo textual ("30 dias" → sem data) para o fornecedor
+// exibir 100% sem nunca ter um prazo real a cumprir.
 export function calcularOTIF(entregas = [], hoje) {
   const lista = Array.isArray(entregas) ? entregas : []
-  let entregues = 0, noPrazo = 0, noPrazoRevisado = 0, atrasadasAbertas = 0, abertas = 0
+  let entregues = 0, comPrazo = 0, semPrazo = 0, noPrazo = 0, noPrazoRevisado = 0, atrasadasAbertas = 0, abertas = 0
   for (const e of lista) {
     if (e.data_entregue) {
       entregues++
       const d = String(e.data_entregue).slice(0, 10)
       const original = String(e.data_prometida || '').slice(0, 10)
+      if (!original) { semPrazo++; continue } // não mensurável — fora do OTIF
+      comPrazo++
       const revisado = String(e.data_confirmada || e.data_prometida || '').slice(0, 10)
-      if (!original || d <= original) noPrazo++
-      if (!revisado || d <= revisado) noPrazoRevisado++
+      if (d <= original) noPrazo++
+      if (d <= revisado) noPrazoRevisado++
     } else {
       abertas++
       if (statusEntrega(e, hoje) === 'Atrasada') atrasadasAbertas++
     }
   }
   return {
-    total: lista.length, entregues, abertas,
+    total: lista.length, entregues, abertas, sem_prazo: semPrazo,
     no_prazo: noPrazo, atrasadas_abertas: atrasadasAbertas,
-    otif_pct: entregues > 0 ? _r1((noPrazo / entregues) * 100) : null, // null = sem histórico ainda
-    otif_revisado_pct: entregues > 0 ? _r1((noPrazoRevisado / entregues) * 100) : null,
+    otif_pct: comPrazo > 0 ? _r1((noPrazo / comPrazo) * 100) : null, // null = sem base mensurável
+    otif_revisado_pct: comPrazo > 0 ? _r1((noPrazoRevisado / comPrazo) * 100) : null,
   }
 }
 
@@ -63,7 +69,7 @@ export function tendenciaOTIF(entregas = [], meses = 6, hoje) {
     let y = by, m = bm - i
     while (m <= 0) { m += 12; y -= 1 }
     const chave = `${y}-${String(m).padStart(2, '0')}`
-    const b = { mes: chave, entregues: 0, no_prazo: 0, otif_pct: null }
+    const b = { mes: chave, entregues: 0, com_prazo: 0, sem_prazo: 0, no_prazo: 0, otif_pct: null }
     idx.set(chave, b)
     buckets.push(b)
   }
@@ -74,9 +80,11 @@ export function tendenciaOTIF(entregas = [], meses = 6, hoje) {
     if (!b) continue
     b.entregues++
     const original = String(e.data_prometida || '').slice(0, 10)
+    if (!original) { b.sem_prazo++; continue } // não mensurável — fora do OTIF
+    b.com_prazo++
     const d = String(e.data_entregue).slice(0, 10)
-    if (!original || d <= original) b.no_prazo++
+    if (d <= original) b.no_prazo++
   }
-  for (const b of buckets) b.otif_pct = b.entregues > 0 ? Math.round((b.no_prazo / b.entregues) * 1000) / 10 : null
+  for (const b of buckets) b.otif_pct = b.com_prazo > 0 ? Math.round((b.no_prazo / b.com_prazo) * 1000) / 10 : null
   return buckets
 }
