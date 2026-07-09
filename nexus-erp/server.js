@@ -1662,9 +1662,17 @@ app.post('/api/convites/:token/aceitar', aceiteLimiter, (req, res) => {
   const tx = db.transaction(() => {
     let fornecedorId = c.fornecedor_id
     if (!fornecedorId) {
-      // Fornecedor novo entra 'Em Análise' — segue a homologação normal.
-      fornecedorId = db.prepare(`INSERT INTO fornecedores(nome, cnpj, email, status, empresa_id) VALUES(?,?,?,?,?)`)
-        .run(c.fornecedor_nome || nome, c.cnpj || null, c.email, 'Em Análise', c.empresa_id).lastInsertRowid
+      // Se o CNPJ já existe no tenant, REAPROVEITA o fornecedor (não duplica —
+      // o onboarding respeita a mesma deduplicação do cadastro normal).
+      const cnpjDig = String(c.cnpj || '').replace(/\D/g, '')
+      const existente = cnpjDig ? db.prepare(`SELECT id FROM fornecedores WHERE ${CNPJ_NORM} = ? AND empresa_id = ?`).get(cnpjDig, c.empresa_id) : null
+      if (existente) {
+        fornecedorId = existente.id
+      } else {
+        // Fornecedor novo entra 'Em Análise' — segue a homologação normal.
+        fornecedorId = db.prepare(`INSERT INTO fornecedores(nome, cnpj, email, status, empresa_id) VALUES(?,?,?,?,?)`)
+          .run(c.fornecedor_nome || nome, c.cnpj || null, c.email, 'Em Análise', c.empresa_id).lastInsertRowid
+      }
     }
     const senhaHash = bcrypt.hashSync(String(b.senha), BCRYPT_ROUNDS)
     const ur = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, fornecedor_id, empresa_id) VALUES(?,?,?,?,?,?)`)
