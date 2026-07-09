@@ -49,3 +49,34 @@ export function dataPrometidaDoPrazo(prazoEntrega) {
   const s = String(prazoEntrega || '').trim()
   return _ISO_DATA.test(s) ? s.slice(0, 10) : null
 }
+
+// Tendência de OTIF por mês (competência = data_entregue). Devolve os últimos
+// `meses` buckets terminando no mês de `hoje` (YYYY-MM-DD), do mais antigo ao
+// mais recente — pronto para um gráfico de barras.
+export function tendenciaOTIF(entregas = [], meses = 6, hoje) {
+  const base = String(hoje || '').slice(0, 7) || '0000-00' // YYYY-MM
+  const [by, bm] = base.split('-').map(Number)
+  const buckets = []
+  const idx = new Map()
+  for (let i = meses - 1; i >= 0; i--) {
+    // Subtrai i meses do mês base sem usar Date (determinístico e sem TZ).
+    let y = by, m = bm - i
+    while (m <= 0) { m += 12; y -= 1 }
+    const chave = `${y}-${String(m).padStart(2, '0')}`
+    const b = { mes: chave, entregues: 0, no_prazo: 0, otif_pct: null }
+    idx.set(chave, b)
+    buckets.push(b)
+  }
+  for (const e of entregas || []) {
+    if (!e.data_entregue) continue
+    const chave = String(e.data_entregue).slice(0, 7)
+    const b = idx.get(chave)
+    if (!b) continue
+    b.entregues++
+    const original = String(e.data_prometida || '').slice(0, 10)
+    const d = String(e.data_entregue).slice(0, 10)
+    if (!original || d <= original) b.no_prazo++
+  }
+  for (const b of buckets) b.otif_pct = b.entregues > 0 ? Math.round((b.no_prazo / b.entregues) * 1000) / 10 : null
+  return buckets
+}

@@ -44,11 +44,34 @@ function _portalEntregasHTML(d) {
     </table>`
 }
 
+// Gráfico de barras puro (testável) da tendência mensal de OTIF.
+function _portalOtifTendenciaHTML(buckets) {
+  const lista = Array.isArray(buckets) ? buckets : []
+  if (!lista.length) return ''
+  const cor = p => p == null ? 'var(--border)' : (p >= 95 ? '#16a34a' : (p >= 80 ? '#d97706' : '#dc2626'))
+  const barras = lista.map(b => {
+    const h = b.otif_pct == null ? 3 : Math.max(3, Math.round(b.otif_pct * 0.6)) // 100% → 60px
+    const rot = String(b.mes || '').slice(5) // MM
+    return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-end;flex:1;gap:3px">
+      <div style="font-size:10px;color:var(--text-muted)">${b.otif_pct == null ? '—' : b.otif_pct + '%'}</div>
+      <div title="${b.entregues} entrega(s)" style="width:60%;height:${h}px;background:${cor(b.otif_pct)};border-radius:2px 2px 0 0"></div>
+      <div style="font-size:10px;color:var(--text-muted)">${rot}</div>
+    </div>`
+  }).join('')
+  return `<div style="margin-top:12px">
+    <div style="font-size:12px;font-weight:700;margin-bottom:4px">Tendência de OTIF (6 meses)</div>
+    <div style="display:flex;align-items:flex-end;gap:6px;height:80px;padding:4px 0">${barras}</div>
+  </div>`
+}
+
 async function _portalCarregarEntregas() {
   const box = document.getElementById('portal_entregas')
   if (!box || typeof apiAuth !== 'function') return
-  try { box.innerHTML = _portalEntregasHTML(await apiAuth('/api/portal/entregas')) }
-  catch (e) { box.style.display = 'none' }
+  try {
+    let html = _portalEntregasHTML(await apiAuth('/api/portal/entregas'))
+    try { html += _portalOtifTendenciaHTML(await apiAuth('/api/portal/otif-tendencia?meses=6')) } catch (e) { /* tendência é opcional */ }
+    box.innerHTML = html
+  } catch (e) { box.style.display = 'none' }
 }
 
 async function portalConfirmarEntrega(id) {
@@ -83,6 +106,7 @@ async function portalEnviarReplanejamento(id) {
 }
 
 window._portalEntregasHTML = _portalEntregasHTML
+window._portalOtifTendenciaHTML = _portalOtifTendenciaHTML
 window._portalCarregarEntregas = _portalCarregarEntregas
 window.portalConfirmarEntrega = portalConfirmarEntrega
 window.portalReplanejarEntrega = portalReplanejarEntrega
