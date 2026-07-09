@@ -608,6 +608,7 @@ function navigate(page) {
     fluxo_compras:         function() { if(typeof renderFluxoAprovacaoRC === 'function') renderFluxoAprovacaoRC(); else renderFluxoCompras(); },
     fluxo_aprovacao_rc:    function() { if(typeof renderFluxoAprovacaoRC === 'function') renderFluxoAprovacaoRC(); else renderFluxoCompras(); },
     fornecedores:          renderFornecedores,
+    onboarding_fornecedor: function() { if(typeof renderConvitesFornecedor === 'function') renderConvitesFornecedor(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Onboarding...</p>'; },
     requisicoes:           function() { if(typeof renderRequisicoes === 'function') renderRequisicoes(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Requisições...</p>'; },
     mapa_cotacao: renderMapaCotacao,
     pedidos: renderPedidos,
