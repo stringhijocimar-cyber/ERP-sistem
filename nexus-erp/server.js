@@ -10,6 +10,7 @@ import cors from 'cors'
 import rateLimit from 'express-rate-limit'
 import bcrypt from 'bcryptjs'
 import Database from 'better-sqlite3'
+import { randomBytes } from 'crypto'
 import { readFileSync, existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -335,6 +336,21 @@ db.exec(`CREATE TABLE IF NOT EXISTS portal_acessos (
   usuario_id INTEGER, fornecedor_id INTEGER,
   ip TEXT, quando TEXT DEFAULT (datetime('now'))
 )`)
+// Onboarding self-service: convite por token. O comprador convida um
+// fornecedor (novo ou existente sem acesso); o fornecedor aceita por um link
+// com token e cria o próprio usuário de portal. Isolado por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS fornecedor_convites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token TEXT UNIQUE NOT NULL,
+  email TEXT NOT NULL,
+  fornecedor_id INTEGER,
+  fornecedor_nome TEXT, cnpj TEXT,
+  status TEXT DEFAULT 'pendente',
+  expira_em TEXT, usado_em TEXT,
+  criado_por TEXT, empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+
 // Anexos e documentos apontam para o arquivo binário real (opcional — o
 // registro por nome continua funcionando quando não há upload).
 ensureColumns('cotacao_anexos', [['arquivo_id', 'arquivo_id INTEGER']])
@@ -1581,6 +1597,90 @@ function requirePapelPortal(area) {
     return res.status(403).json(err(`Seu papel (${papel}) não tem acesso a esta área (${area}). Fale com o responsável da sua conta.`, 403))
   }
 }
+
+// ── Onboarding · convite de fornecedor ────────────────────────
+const CONVITE_VALIDADE_DIAS = parseInt(process.env.CONVITE_VALIDADE_DIAS) || 7
+// Situação efetiva do convite na data de hoje (pendente pode ter expirado).
+function _statusConvite(c) {
+  if (!c) return null
+  if (c.status === 'aceito') return 'aceito'
+  if (c.usado_em) return 'aceito'
+  if (c.expira_em && String(c.expira_em) < new Date().toISOString()) return 'expirado'
+  return 'pendente'
+}
+
+// Comprador convida um fornecedor (novo → informa nome/cnpj; existente →
+// fornecedor_id). Gera token e o "link" (o e-mail sai pelo adaptador/mock).
+app.post('/api/fornecedor-convites', requireAuth, requireRole('admin', 'diretor', 'comprador'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const b = req.body || {}
+  const email = String(b.email || '').toLowerCase().trim()
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json(err('E-mail do fornecedor inválido'))
+  let fornecedorId = null, fornecedorNome = String(b.nome || '').trim(), cnpj = b.cnpj || null
+  if (b.fornecedor_id) {
+    const f = db.prepare(`SELECT id, nome, cnpj FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(b.fornecedor_id, emp)
+    if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
+    fornecedorId = f.id; fornecedorNome = f.nome; cnpj = f.cnpj
+  } else if (!fornecedorNome) {
+    return res.status(400).json(err('Informe o fornecedor_id (existente) ou o nome (novo)'))
+  }
+  const token = randomBytes(24).toString('hex') // 48 hex = inadivinhável
+  const expira = new Date(Date.now() + CONVITE_VALIDADE_DIAS * 86400000).toISOString()
+  const r = db.prepare(`INSERT INTO fornecedor_convites(token, email, fornecedor_id, fornecedor_nome, cnpj, expira_em, criado_por, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?)`).run(token, email, fornecedorId, fornecedorNome, cnpj, expira, req.user.nome, emp)
+  // O fornecedor recebe o convite por e-mail (adaptador; mock nos testes).
+  notificar({ perfil: null, titulo: `Convite para o portal — ${fornecedorNome}`, mensagem: `Acesse o portal com o link do convite (token ${token.slice(0, 8)}…).`, tipo: 'convite', email: true, empresa: emp })
+  log(req.user.usuario_id, req.user.nome, 'convite_fornecedor', 'fornecedores', `Convite para ${fornecedorNome} (${email})`)
+  res.status(201).json(ok({ id: r.lastInsertRowid, token, email, fornecedor_nome: fornecedorNome, expira_em: expira, link: `/portal/convite?token=${token}` }))
+})
+
+app.get('/api/fornecedor-convites', requireAuth, requireRole('admin', 'diretor', 'comprador'), (req, res) => {
+  const rows = db.prepare(`SELECT id, email, fornecedor_nome, cnpj, status, expira_em, usado_em, created_at FROM fornecedor_convites WHERE empresa_id = ? ORDER BY id DESC LIMIT 200`).all(empresaDoReq(req))
+  res.json(ok(rows.map(c => ({ ...c, situacao: _statusConvite(c) }))))
+})
+
+// PÚBLICO (sem auth): valida o token e mostra os dados para o aceite.
+app.get('/api/convites/:token', (req, res) => {
+  const c = db.prepare(`SELECT c.*, e.razao_social AS empresa_nome FROM fornecedor_convites c LEFT JOIN empresas e ON e.id = c.empresa_id WHERE c.token = ?`).get(req.params.token)
+  if (!c) return res.status(404).json(err('Convite não encontrado'))
+  const situacao = _statusConvite(c)
+  res.json(ok({ valido: situacao === 'pendente', situacao, email: c.email, fornecedor_nome: c.fornecedor_nome, empresa: c.empresa_nome || 'Empresa contratante' }))
+})
+
+// PÚBLICO: aceita o convite — cria o fornecedor (se novo) e o usuário de
+// portal, marca o convite como aceito e devolve um token de sessão (auto-login).
+const aceiteLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false })
+app.post('/api/convites/:token/aceitar', aceiteLimiter, (req, res) => {
+  const c = db.prepare(`SELECT * FROM fornecedor_convites WHERE token = ?`).get(req.params.token)
+  if (!c) return res.status(404).json(err('Convite não encontrado'))
+  if (_statusConvite(c) !== 'pendente') return res.status(409).json(err('Convite já utilizado ou expirado'))
+  const b = req.body || {}
+  const nome = String(b.nome || '').trim()
+  if (!nome) return res.status(400).json(err('Informe seu nome'))
+  const pol = validarSenhaForte(b.senha)
+  if (!pol.ok) return res.status(400).json(err(pol.motivo))
+  const tx = db.transaction(() => {
+    let fornecedorId = c.fornecedor_id
+    if (!fornecedorId) {
+      // Fornecedor novo entra 'Em Análise' — segue a homologação normal.
+      fornecedorId = db.prepare(`INSERT INTO fornecedores(nome, cnpj, email, status, empresa_id) VALUES(?,?,?,?,?)`)
+        .run(c.fornecedor_nome || nome, c.cnpj || null, c.email, 'Em Análise', c.empresa_id).lastInsertRowid
+    }
+    const senhaHash = bcrypt.hashSync(String(b.senha), BCRYPT_ROUNDS)
+    const ur = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, fornecedor_id, empresa_id) VALUES(?,?,?,?,?,?)`)
+      .run(nome, c.email, senhaHash, 'fornecedor', fornecedorId, c.empresa_id)
+    db.prepare(`UPDATE fornecedor_convites SET status='aceito', usado_em=datetime('now') WHERE id=?`).run(c.id)
+    return { usuarioId: ur.lastInsertRowid, fornecedorId }
+  })
+  let r
+  try { r = tx() } catch (e) { return res.status(409).json(err('Este e-mail já possui acesso — faça login')) }
+  // Auto-login: cria a sessão e devolve o token.
+  const token = uid('tok')
+  const expira = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
+  db.prepare(`INSERT INTO sessoes(token, usuario_id, expira_em, ip) VALUES(?,?,?,?)`).run(token, r.usuarioId, expira, req.ip || '')
+  log(r.usuarioId, nome, 'convite_aceito', 'fornecedores', `Onboarding self-service concluído (${c.email})`)
+  res.status(201).json(ok({ token, user: { id: r.usuarioId, nome, email: c.email, perfil: 'fornecedor' } }))
+})
 
 app.get('/api/portal/pedidos', requireAuth, requirePortal, (req, res) => {
   const rows = db.prepare(
