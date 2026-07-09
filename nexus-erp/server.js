@@ -30,7 +30,7 @@ import { montarFluxoProjetado } from './lib/fluxo_projetado.js'
 import { dreParaCSV, dashboardParaCSV } from './lib/csv_export.js'
 import { montarOrcamentoAnual } from './lib/orcamento.js'
 import { aplicarMovimento, itensParaRepor, valorizarEstoque } from './lib/estoque.js'
-import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo } from './lib/otif.js'
+import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo, tendenciaOTIF } from './lib/otif.js'
 import { statusDocumento, vigentesPorTipo, resumoDocumentos } from './lib/documentos.js'
 
 const Auditoria = globalThis.Auditoria
@@ -193,8 +193,11 @@ try {
   }
 } catch (e) { if (!IS_TEST) console.warn(`seed empresa padrão: ${e.message}`) }
 // Todo usuário pertence a uma empresa (legado → empresa 1).
+// papel_fornecedor: papel do usuário DENTRO do portal do fornecedor
+// (comercial|financeiro|logistica; NULL = acesso completo ao portal).
 ensureColumns('usuarios', [
   ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
+  ['papel_fornecedor', 'papel_fornecedor TEXT'],
 ])
 
 // Recebimento por item (alimenta o 3-way automaticamente).
@@ -538,7 +541,7 @@ function getUser(req) {
   if (!token) return null
   try {
     const row = db.prepare(
-      `SELECT s.usuario_id, s.expira_em, u.nome, u.email, u.perfil, u.ativo, u.fornecedor_id, u.empresa_id
+      `SELECT s.usuario_id, s.expira_em, u.nome, u.email, u.perfil, u.ativo, u.fornecedor_id, u.papel_fornecedor, u.empresa_id
        FROM sessoes s JOIN usuarios u ON u.id = s.usuario_id
        WHERE s.token = ? AND u.ativo = 1`
     ).get(token)
@@ -1537,6 +1540,20 @@ function requirePortal(req, res, next) {
   next()
 }
 
+// Papéis DENTRO do portal (multiusuário do fornecedor): comercial cota,
+// financeiro vê faturas, logística cuida das entregas. papel_fornecedor
+// vazio/NULL = acesso completo (dono da conta). Áreas comuns (dashboard,
+// perfil, documentos, qualidade, pedidos, acessos, senha) ficam livres.
+const PAPEIS_FORNECEDOR = new Set(['comercial', 'financeiro', 'logistica'])
+function requirePapelPortal(area) {
+  return (req, res, next) => {
+    const papel = String(req.user?.papel_fornecedor || '').trim().toLowerCase()
+    if (!papel) return next() // sem papel = completo
+    if (papel === area) return next()
+    return res.status(403).json(err(`Seu papel (${papel}) não tem acesso a esta área (${area}). Fale com o responsável da sua conta.`, 403))
+  }
+}
+
 app.get('/api/portal/pedidos', requireAuth, requirePortal, (req, res) => {
   const rows = db.prepare(
     `SELECT id, numero, status, valor_total, prazo_entrega, created_at, nf_numero, nf_valor
@@ -1623,7 +1640,7 @@ function _conviteRFQ(rfqId, fornecedorId) {
   return db.prepare(`SELECT * FROM rfq_fornecedores WHERE rfq_id = ? AND fornecedor_id = ?`).get(rfqId, fornecedorId)
 }
 
-app.get('/api/portal/rfq', requireAuth, requirePortal, (req, res) => {
+app.get('/api/portal/rfq', requireAuth, requirePortal, requirePapelPortal('comercial'), (req, res) => {
   const rows = db.prepare(
     `SELECT r.id, r.numero, r.titulo, r.descricao, r.status, r.prazo_resposta, r.created_at,
             rf.status AS convite_status, rf.respondido_em
@@ -1637,7 +1654,7 @@ app.get('/api/portal/rfq', requireAuth, requirePortal, (req, res) => {
   }))))
 })
 
-app.get('/api/portal/rfq/:id', requireAuth, requirePortal, (req, res) => {
+app.get('/api/portal/rfq/:id', requireAuth, requirePortal, requirePapelPortal('comercial'), (req, res) => {
   const convite = _conviteRFQ(req.params.id, req.user.fornecedor_id)
   if (!convite) return res.status(404).json(err('RFQ não encontrada')) // sem convite = não existe para este fornecedor
   const rfq = db.prepare(`SELECT id, numero, titulo, descricao, status, prazo_resposta, created_at FROM rfq WHERE id = ?`).get(req.params.id)
@@ -1654,7 +1671,7 @@ app.get('/api/portal/rfq/:id', requireAuth, requirePortal, (req, res) => {
 })
 
 // Responder (ou revisar, enquanto o prazo está aberto) a cotação.
-app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, (req, res) => {
+app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, requirePapelPortal('comercial'), (req, res) => {
   const convite = _conviteRFQ(req.params.id, req.user.fornecedor_id)
   if (!convite) return res.status(404).json(err('RFQ não encontrada'))
   const rfq = db.prepare(`SELECT * FROM rfq WHERE id = ?`).get(req.params.id)
@@ -1734,7 +1751,7 @@ app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, (req, res) =
 // ── Portal · Financeiro (somente leitura) ─────────────────────
 // O fornecedor acompanha as próprias faturas: NF, status pago/pendente e
 // datas. Nenhuma escrita — dados financeiros são read-only por regra.
-app.get('/api/portal/financeiro', requireAuth, requirePortal, (req, res) => {
+app.get('/api/portal/financeiro', requireAuth, requirePortal, requirePapelPortal('financeiro'), (req, res) => {
   const rows = db.prepare(
     `SELECT id, numero, pc_numero, nota_fiscal, descricao, valor,
             data_vencimento, data_pagamento, forma_pagamento, status
@@ -1810,7 +1827,7 @@ app.get('/api/portal/dashboard', requireAuth, requirePortal, (req, res) => {
 // O fornecedor vê sua programação, CONFIRMA o prazo ou REPLANEJA com
 // justificativa (o comprador é avisado). A entrega real é registrada pelo
 // recebimento interno — o portal não "se entrega" sozinho.
-app.get('/api/portal/entregas', requireAuth, requirePortal, (req, res) => {
+app.get('/api/portal/entregas', requireAuth, requirePortal, requirePapelPortal('logistica'), (req, res) => {
   const hoje = _hojeYMD()
   const rows = db.prepare(
     `SELECT * FROM programacao_entregas WHERE fornecedor_id = ? ORDER BY COALESCE(data_confirmada, data_prometida, '9999') ASC LIMIT 300`
@@ -1821,7 +1838,14 @@ app.get('/api/portal/entregas', requireAuth, requirePortal, (req, res) => {
   }))
 })
 
-app.post('/api/portal/entregas/:id/confirmar', requireAuth, requirePortal, (req, res) => {
+// Tendência de OTIF por mês (últimos 6) — para o gráfico do fornecedor.
+app.get('/api/portal/otif-tendencia', requireAuth, requirePortal, requirePapelPortal('logistica'), (req, res) => {
+  const meses = Math.max(1, Math.min(parseInt(req.query.meses) || 6, 24))
+  const entregas = db.prepare(`SELECT data_prometida, data_entregue FROM programacao_entregas WHERE fornecedor_id = ?`).all(req.user.fornecedor_id)
+  res.json(ok(tendenciaOTIF(entregas, meses, _hojeYMD())))
+})
+
+app.post('/api/portal/entregas/:id/confirmar', requireAuth, requirePortal, requirePapelPortal('logistica'), (req, res) => {
   const e = db.prepare(`SELECT * FROM programacao_entregas WHERE id = ?`).get(req.params.id)
   if (!e || e.fornecedor_id !== req.user.fornecedor_id) return res.status(404).json(err('Entrega não encontrada'))
   if (e.data_entregue) return res.status(409).json(err('Entrega já realizada'))
@@ -3617,10 +3641,13 @@ app.get('/api/usuarios', requireAuth, (req, res) => {
 })
 
 app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
-  const { nome, email, senha, perfil, fornecedor_id } = req.body
+  const { nome, email, senha, perfil, fornecedor_id, papel_fornecedor } = req.body
   if (!nome || !email) return res.status(400).json(err('Nome e email obrigatórios'))
   // Usuário de portal (perfil 'fornecedor') exige vínculo com um fornecedor.
   if (perfil === 'fornecedor' && !fornecedor_id) return res.status(400).json(err('Usuário fornecedor exige fornecedor_id'))
+  // Papel do portal (opcional): comercial|financeiro|logistica; vazio = completo.
+  const papel = String(papel_fornecedor || '').trim().toLowerCase() || null
+  if (papel && !PAPEIS_FORNECEDOR.has(papel)) return res.status(400).json(err('papel_fornecedor inválido (comercial|financeiro|logistica)'))
   // Política de senha forte quando informada (omitida → SEED_PASSWORD do env).
   if (senha !== undefined) {
     const pol = validarSenhaForte(senha)
@@ -3633,9 +3660,9 @@ app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
   const criador = Number(req.user.empresa_id) || 1
   const empresaId = (criador === 1 && req.body.empresa_id) ? Number(req.body.empresa_id) : criador
   try {
-    const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, fornecedor_id, empresa_id) VALUES(?,?,?,?,?,?)`)
-      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao', fornecedor_id || null, empresaId)
-    const u = db.prepare(`SELECT id, nome, email, perfil, ativo FROM usuarios WHERE id = ?`).get(r.lastInsertRowid)
+    const r = db.prepare(`INSERT INTO usuarios(nome, email, senha_hash, perfil, fornecedor_id, papel_fornecedor, empresa_id) VALUES(?,?,?,?,?,?,?)`)
+      .run(nome, email.toLowerCase().trim(), senhaHash, perfil || 'operacao', fornecedor_id || null, papel, empresaId)
+    const u = db.prepare(`SELECT id, nome, email, perfil, papel_fornecedor, ativo FROM usuarios WHERE id = ?`).get(r.lastInsertRowid)
     log(req.user.usuario_id, req.user.nome, 'Criar', 'usuarios', `Usuário criado: ${nome}`)
     res.status(201).json(ok(u))
   } catch (e) {
@@ -3644,7 +3671,7 @@ app.post('/api/usuarios', requireAuth, requireRole('admin'), (req, res) => {
 })
 
 app.put('/api/usuarios/:id', requireAuth, requireRole('admin'), (req, res) => {
-  const { nome, email, perfil, ativo, senha } = req.body
+  const { nome, email, perfil, ativo, senha, papel_fornecedor } = req.body
   // Troca de senha respeita a política de senha forte.
   if (senha) {
     const pol = validarSenhaForte(senha)
@@ -3652,12 +3679,18 @@ app.put('/api/usuarios/:id', requireAuth, requireRole('admin'), (req, res) => {
   }
   db.prepare(`UPDATE usuarios SET nome=?,email=?,perfil=?,ativo=?,updated_at=datetime('now') WHERE id=?`)
     .run(nome, email, perfil, ativo ?? 1, req.params.id)
+  // Papel do portal, quando enviado (vazio limpa → acesso completo).
+  if (papel_fornecedor !== undefined) {
+    const papel = String(papel_fornecedor || '').trim().toLowerCase() || null
+    if (papel && !PAPEIS_FORNECEDOR.has(papel)) return res.status(400).json(err('papel_fornecedor inválido (comercial|financeiro|logistica)'))
+    db.prepare(`UPDATE usuarios SET papel_fornecedor = ? WHERE id = ?`).run(papel, req.params.id)
+  }
   // Troca de senha opcional (sempre com hash bcrypt).
   if (senha) {
     db.prepare(`UPDATE usuarios SET senha_hash = ? WHERE id = ?`)
       .run(bcrypt.hashSync(String(senha), BCRYPT_ROUNDS), req.params.id)
   }
-  res.json(ok(db.prepare(`SELECT id, nome, email, perfil, ativo FROM usuarios WHERE id = ?`).get(req.params.id)))
+  res.json(ok(db.prepare(`SELECT id, nome, email, perfil, papel_fornecedor, ativo FROM usuarios WHERE id = ?`).get(req.params.id)))
 })
 
 // ════════════════════════════════════════════════════════════
