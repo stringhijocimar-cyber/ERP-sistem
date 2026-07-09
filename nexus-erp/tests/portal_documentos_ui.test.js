@@ -43,11 +43,11 @@ describe('_portalDocsHTML (puro)', () => {
 })
 
 describe('ações', () => {
-  it('enviar documento POSTa tipo/validade/arquivo', async () => {
-    document.body.innerHTML += `<input id="pdoc_tipo" value="CND Federal"><input id="pdoc_val" value="2027-01-01"><input id="pdoc_num" value="123"><input id="pdoc_arq" value="cnd.pdf">`
+  it('enviar documento POSTa tipo/validade (sem arquivo anexado)', async () => {
+    document.body.innerHTML += `<input id="pdoc_tipo" value="CND Federal"><input id="pdoc_val" value="2027-01-01"><input id="pdoc_num" value="123">`
     await window.portalEnviarDocumento()
     const post = chamadas.find(c => c.method === 'POST' && c.path === '/api/portal/documentos')
-    expect(post.body).toMatchObject({ tipo: 'CND Federal', validade: '2027-01-01', arquivo_nome: 'cnd.pdf' })
+    expect(post.body).toMatchObject({ tipo: 'CND Federal', validade: '2027-01-01', arquivo_id: null })
     expect(window.showToast).toHaveBeenCalledWith(expect.stringMatching(/compliance/), 'success')
   })
   it('sem tipo não POSTa', async () => {

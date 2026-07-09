@@ -32,6 +32,7 @@ import { montarOrcamentoAnual } from './lib/orcamento.js'
 import { aplicarMovimento, itensParaRepor, valorizarEstoque } from './lib/estoque.js'
 import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo, tendenciaOTIF } from './lib/otif.js'
 import { statusDocumento, vigentesPorTipo, resumoDocumentos } from './lib/documentos.js'
+import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
 const conciliarTresVias = globalThis.conciliarTresVias
@@ -295,6 +296,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS programacao_entregas (
   updated_at TEXT DEFAULT (datetime('now'))
 )`)
 
+// Arquivos binários (bytes REAIS, não ponteiro): certidões, datasheets,
+// desenhos. BLOB no banco por padrão (provider-agnóstico: STORAGE_PROVIDER
+// pode migrar para S3/R2 sem mudar o modelo). Isolado por tenant + fornecedor.
+db.exec(`CREATE TABLE IF NOT EXISTS arquivos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nome TEXT NOT NULL, mime TEXT, tamanho INTEGER DEFAULT 0,
+  conteudo BLOB,
+  fornecedor_id INTEGER, empresa_id INTEGER DEFAULT 1, enviado_por TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+
 // Anexos técnicos da cotação (datasheet, desenho, certificado de usina).
 // Registro/ponteiro como fornecedor_documentos — binário fica no storage do
 // deploy (S3/R2), fora do banco.
@@ -323,6 +335,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS portal_acessos (
   usuario_id INTEGER, fornecedor_id INTEGER,
   ip TEXT, quando TEXT DEFAULT (datetime('now'))
 )`)
+// Anexos e documentos apontam para o arquivo binário real (opcional — o
+// registro por nome continua funcionando quando não há upload).
+ensureColumns('cotacao_anexos', [['arquivo_id', 'arquivo_id INTEGER']])
+ensureColumns('fornecedor_documentos', [['arquivo_id', 'arquivo_id INTEGER']])
 
 // Orçamento anual (budget): metas mensais de receita/custo/despesa por tenant.
 // Uma linha por (empresa, ano, mês); comparado com o realizado da DRE.
@@ -1726,8 +1742,9 @@ app.post('/api/portal/rfq/:id/cotacao', requireAuth, requirePortal, requirePapel
     const anexos = Array.isArray(b.anexos) ? b.anexos.filter(a => a && String(a.arquivo_nome || '').trim()) : []
     if (existente) db.prepare(`DELETE FROM cotacao_anexos WHERE cotacao_id = ?`).run(cotId)
     for (const a of anexos.slice(0, 10)) {
-      db.prepare(`INSERT INTO cotacao_anexos(cotacao_id, arquivo_nome, descricao, enviado_por) VALUES(?,?,?,?)`)
-        .run(cotId, String(a.arquivo_nome).trim(), a.descricao || null, req.user.nome)
+      const aid = _arquivoDoFornecedor(a.arquivo_id, req.user.fornecedor_id) // só arquivo do próprio fornecedor
+      db.prepare(`INSERT INTO cotacao_anexos(cotacao_id, arquivo_nome, arquivo_id, descricao, enviado_por) VALUES(?,?,?,?,?)`)
+        .run(cotId, String(a.arquivo_nome).trim(), aid, a.descricao || null, req.user.nome)
     }
     db.prepare(`UPDATE rfq_fornecedores SET status='Respondida', respondido_em=datetime('now') WHERE rfq_id = ? AND fornecedor_id = ?`)
       .run(rfq.id, req.user.fornecedor_id)
@@ -1892,13 +1909,58 @@ app.get('/api/portal/documentos', requireAuth, requirePortal, (req, res) => {
   }))
 })
 
+// ── Arquivos binários (upload/download real) ──────────────────
+// Retorna o arquivo_id se ele existe e pertence ao fornecedor (senão null).
+function _arquivoDoFornecedor(arquivoId, fornecedorId) {
+  if (arquivoId == null) return null
+  const a = db.prepare(`SELECT id FROM arquivos WHERE id = ? AND fornecedor_id = ?`).get(arquivoId, fornecedorId)
+  return a ? a.id : null
+}
+const STORAGE_MAX_MB = parseInt(process.env.STORAGE_MAX_MB) || 5
+
+// Upload: o fornecedor envia o arquivo (base64) e recebe o id para referenciar
+// em documentos/anexos. Os BYTES são gravados de verdade (BLOB).
+app.post('/api/portal/arquivos', requireAuth, requirePortal, (req, res) => {
+  const v = validarUpload(req.body || {}, { maxBytes: STORAGE_MAX_MB * 1024 * 1024 })
+  if (!v.ok) return res.status(400).json(err(v.erro))
+  const r = db.prepare(`INSERT INTO arquivos(nome, mime, tamanho, conteudo, fornecedor_id, empresa_id, enviado_por) VALUES(?,?,?,?,?,?,?)`)
+    .run(v.nome, mimeDe(v.nome), v.tamanho, v.bytes, req.user.fornecedor_id, empresaDoReq(req), req.user.nome)
+  log(req.user.usuario_id, req.user.nome, 'portal_upload', 'arquivos', `Upload ${v.nome} (${v.tamanho} bytes)`)
+  // Devolve só os metadados — nunca o binário aqui.
+  res.status(201).json(ok({ id: r.lastInsertRowid, nome: v.nome, mime: mimeDe(v.nome), tamanho: v.tamanho }))
+})
+
+// Download pelo próprio fornecedor (o dono dos bytes).
+app.get('/api/portal/arquivos/:id', requireAuth, requirePortal, (req, res) => {
+  const a = db.prepare(`SELECT * FROM arquivos WHERE id = ? AND fornecedor_id = ?`).get(req.params.id, req.user.fornecedor_id)
+  if (!a) return res.status(404).json(err('Arquivo não encontrado'))
+  _enviarArquivo(res, a)
+})
+
+// Download interno (comprador/compliance do MESMO tenant).
+app.get('/api/arquivos/:id', requireAuth, (req, res) => {
+  const a = db.prepare(`SELECT * FROM arquivos WHERE id = ? AND empresa_id = ?`).get(req.params.id, empresaDoReq(req))
+  if (!a) return res.status(404).json(err('Arquivo não encontrado'))
+  _enviarArquivo(res, a)
+})
+
+function _enviarArquivo(res, a) {
+  res.setHeader('Content-Type', a.mime || 'application/octet-stream')
+  res.setHeader('Content-Disposition', `attachment; filename="${String(a.nome || 'arquivo').replace(/["\r\n]/g, '')}"`)
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.send(a.conteudo)
+}
+
 app.post('/api/portal/documentos', requireAuth, requirePortal, (req, res) => {
   const b = req.body || {}
   if (!String(b.tipo || '').trim()) return res.status(400).json(err('Tipo do documento obrigatório (ex.: CND Federal, FGTS, Contrato Social)'))
   if (b.validade && !/^\d{4}-\d{2}-\d{2}/.test(String(b.validade))) return res.status(400).json(err('Validade deve ser uma data (AAAA-MM-DD)'))
-  const r = db.prepare(`INSERT INTO fornecedor_documentos(fornecedor_id, tipo, numero, arquivo_nome, validade, observacoes, enviado_por, empresa_id)
-     VALUES(?,?,?,?,?,?,?,?)`)
-    .run(req.user.fornecedor_id, String(b.tipo).trim(), b.numero || null, b.arquivo_nome || null,
+  // arquivo_id (opcional) precisa ser um arquivo DESTE fornecedor.
+  const arqId = _arquivoDoFornecedor(b.arquivo_id, req.user.fornecedor_id)
+  const arqNome = arqId ? db.prepare(`SELECT nome FROM arquivos WHERE id = ?`).get(arqId).nome : (b.arquivo_nome || null)
+  const r = db.prepare(`INSERT INTO fornecedor_documentos(fornecedor_id, tipo, numero, arquivo_nome, arquivo_id, validade, observacoes, enviado_por, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(req.user.fornecedor_id, String(b.tipo).trim(), b.numero || null, arqNome, arqId,
       b.validade ? String(b.validade).slice(0, 10) : null, b.observacoes || null, req.user.nome, empresaDoReq(req))
   // Compliance é avisado para conferir o documento novo.
   const fNome = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(req.user.fornecedor_id)?.nome || ''
