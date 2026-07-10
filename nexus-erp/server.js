@@ -30,6 +30,7 @@ import { montarFluxoCaixa } from './lib/fluxo_caixa.js'
 import { montarFluxoProjetado } from './lib/fluxo_projetado.js'
 import { dreParaCSV, dashboardParaCSV } from './lib/csv_export.js'
 import { montarOrcamentoAnual } from './lib/orcamento.js'
+import { calcularIndicadoresSSMA } from './lib/ssma_indicadores.js'
 import { aplicarMovimento, itensParaRepor, valorizarEstoque } from './lib/estoque.js'
 import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo, tendenciaOTIF } from './lib/otif.js'
 import { statusDocumento, vigentesPorTipo, resumoDocumentos } from './lib/documentos.js'
@@ -138,10 +139,16 @@ ensureColumns('ordens_servico', [
   ['tipo_recurso', 'tipo_recurso TEXT'],
   ['wbs_linha_id', 'wbs_linha_id INTEGER'],
 ])
-// SSMA: encerrar incidente exige RCA (causa raiz + plano de ação).
+// SSMA: encerrar incidente exige RCA (causa raiz + plano de ação). Campos HSE
+// (afastamento/dias perdidos/colaborador) alimentam os indicadores TF/TG.
+// empresa_id fecha o vazamento cross-tenant (as rotas não filtravam por tenant).
 ensureColumns('ssma_ocorrencias', [
   ['causa_raiz', 'causa_raiz TEXT'],
   ['plano_acao', 'plano_acao TEXT'],
+  ['com_afastamento', 'com_afastamento INTEGER DEFAULT 0'],
+  ['dias_perdidos', 'dias_perdidos INTEGER DEFAULT 0'],
+  ['colaborador_id', 'colaborador_id INTEGER'],
+  ['empresa_id', 'empresa_id INTEGER DEFAULT 1'],
 ])
 // CRM → Orçamentação (C1): ao passar de Qualificação, o lead precisa de
 // estimativa de custos (WBS) e o orçamentista é alertado.
@@ -448,7 +455,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS sequences (
 // propostas/wbs_linhas), senão a coluna não é adicionada e o INSERT falha.
 // Legado → empresa 1. Retrofit incremental.
 for (const t of ['fornecedores', 'requisicoes_compra', 'rfq', 'mapas_comparativos', 'pedidos_compra', 'contas_pagar', 'ordens_servico',
-                 'contratos', 'crm_oportunidades', 'propostas', 'projetos', 'wbs_linhas', 'almoxarifado_itens', 'logs_sistema', 'notificacoes']) {
+                 'contratos', 'crm_oportunidades', 'propostas', 'projetos', 'wbs_linhas', 'almoxarifado_itens', 'logs_sistema', 'notificacoes', 'ssma_ocorrencias']) {
   ensureColumns(t, [['empresa_id', 'empresa_id INTEGER DEFAULT 1']])
 }
 // Estoque: ponto de reposição por máximo + trilha de movimentos por tenant,
@@ -3826,19 +3833,38 @@ app.put('/api/projetos/:id', requireAuth, (req, res) => {
 // SSMA
 // ════════════════════════════════════════════════════════════
 app.get('/api/ssma', requireAuth, (req, res) => {
-  res.json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias ORDER BY created_at DESC`).all()))
+  res.json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE empresa_id = ? ORDER BY created_at DESC`).all(empresaDoReq(req))))
 })
 
 app.post('/api/ssma', requireAuth, (req, res) => {
-  const { tipo, descricao, local, gravidade, data_ocorrencia, acoes_corretivas } = req.body
+  const { tipo, descricao, local, gravidade, data_ocorrencia, acoes_corretivas, com_afastamento, dias_perdidos, colaborador_id } = req.body
+  const emp = empresaDoReq(req)
   const year = new Date().getFullYear()
-  const count = db.prepare(`SELECT COUNT(*) as n FROM ssma_ocorrencias WHERE numero LIKE ?`).get(`SSMA-${year}-%`).n
+  const count = db.prepare(`SELECT COUNT(*) as n FROM ssma_ocorrencias WHERE empresa_id = ? AND numero LIKE ?`).get(emp, `SSMA-${year}-%`).n
   const numero = `SSMA-${year}-${String(count + 1).padStart(3, '0')}`
+  const afast = com_afastamento ? 1 : 0
   const r = db.prepare(
-    `INSERT INTO ssma_ocorrencias(numero, tipo, descricao, local, gravidade, status, responsavel_id, responsavel_nome, data_ocorrencia, acoes_corretivas)
-     VALUES(?,?,?,?,?,?,?,?,?,?)`
-  ).run(numero, tipo, descricao, local, gravidade || 'Baixa', 'Aberta', req.user.usuario_id, req.user.nome, data_ocorrencia, acoes_corretivas)
+    `INSERT INTO ssma_ocorrencias(numero, tipo, descricao, local, gravidade, status, responsavel_id, responsavel_nome, data_ocorrencia, acoes_corretivas, com_afastamento, dias_perdidos, colaborador_id, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(numero, tipo, descricao, local, gravidade || 'Baixa', 'Aberta', req.user.usuario_id, req.user.nome, data_ocorrencia, acoes_corretivas,
+    afast, afast ? (Number(dias_perdidos) || 0) : 0, colaborador_id || null, emp)
+  log(req.user.usuario_id, req.user.nome, 'Criar', 'ssma', `Ocorrência ${numero} (${gravidade || 'Baixa'}${afast ? ', c/ afastamento' : ''})`)
   res.status(201).json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+// Indicadores HSE (NBR 14280): TF/TG normalizados por horas-homem trabalhadas.
+// HHT vem do parâmetro `hht`; sem ele, deriva das horas apontadas no RH (proxy).
+app.get('/api/ssma/indicadores', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const ano = req.query.ano ? parseInt(req.query.ano) : new Date().getFullYear()
+  const like = String(ano) + '%'
+  const ocorr = db.prepare(`SELECT gravidade, com_afastamento, dias_perdidos, data_ocorrencia, status FROM ssma_ocorrencias WHERE empresa_id = ? AND COALESCE(data_ocorrencia,'') LIKE ?`).all(emp, like)
+  let hht = req.query.hht != null ? Number(req.query.hht) || 0 : 0
+  if (!hht) {
+    // Proxy: horas apontadas no RH no ano (se o módulo RH estiver em uso).
+    hht = db.prepare(`SELECT COALESCE(SUM(horas),0) h FROM apontamentos_hora WHERE empresa_id = ? AND COALESCE(data,'') LIKE ?`).get(emp, like).h || 0
+  }
+  res.json(ok(calcularIndicadoresSSMA(ocorr, hht, _hojeYMD())))
 })
 
 // RCA completo = causa raiz + plano de ação preenchidos. Pura (espelhada no Worker).
@@ -3848,19 +3874,22 @@ function rcaCompleto({ causa_raiz, plano_acao } = {}) {
 
 // Atualiza a ocorrência (inclui preencher a RCA antes do encerramento).
 app.put('/api/ssma/:id', requireAuth, (req, res) => {
-  const oc = db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)
+  const oc = rowScoped('ssma_ocorrencias', req)
   if (!oc) return res.status(404).json(err('Ocorrência não encontrada'))
   const b = req.body || {}
-  db.prepare(`UPDATE ssma_ocorrencias SET tipo=?, descricao=?, local=?, gravidade=?, data_ocorrencia=?, acoes_corretivas=?, causa_raiz=?, plano_acao=? WHERE id=?`)
+  const afast = b.com_afastamento != null ? (b.com_afastamento ? 1 : 0) : oc.com_afastamento
+  db.prepare(`UPDATE ssma_ocorrencias SET tipo=?, descricao=?, local=?, gravidade=?, data_ocorrencia=?, acoes_corretivas=?, causa_raiz=?, plano_acao=?, com_afastamento=?, dias_perdidos=?, colaborador_id=? WHERE id=?`)
     .run(b.tipo ?? oc.tipo, b.descricao ?? oc.descricao, b.local ?? oc.local, b.gravidade ?? oc.gravidade,
       b.data_ocorrencia ?? oc.data_ocorrencia, b.acoes_corretivas ?? oc.acoes_corretivas,
-      b.causa_raiz ?? oc.causa_raiz, b.plano_acao ?? oc.plano_acao, req.params.id)
+      b.causa_raiz ?? oc.causa_raiz, b.plano_acao ?? oc.plano_acao,
+      afast, afast ? (b.dias_perdidos != null ? Number(b.dias_perdidos) || 0 : oc.dias_perdidos) : 0,
+      b.colaborador_id ?? oc.colaborador_id, req.params.id)
   res.json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)))
 })
 
 // Encerramento bloqueado sem RCA (causa raiz + plano de ação) → reduz reincidência.
 app.post('/api/ssma/:id/encerrar', requireAuth, (req, res) => {
-  const oc = db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)
+  const oc = rowScoped('ssma_ocorrencias', req)
   if (!oc) return res.status(404).json(err('Ocorrência não encontrada'))
   if (oc.status === 'Encerrada') return res.status(409).json(err('Ocorrência já encerrada', 409))
   const causa_raiz = req.body?.causa_raiz ?? oc.causa_raiz
