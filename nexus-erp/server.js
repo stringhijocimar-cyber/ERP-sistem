@@ -39,6 +39,7 @@ import { classificarTreinamentos, aptidaoColaborador, alertasTreinamentos } from
 import { prazoCAT, statusPrazoCAT, montarS2210, validarCAT } from './lib/cat.js'
 import { explodirBOM, filhosDiretos, gateCompra, podeLiberarEngenharia } from './lib/mm_bom.js'
 import { statusSourcing, itensParaCotar, resumoSourcing, montarRFQdeMaterial } from './lib/mm_sourcing.js'
+import { avaliarPPAP, resolverStatusPPAP, ppapLibera, gateProducao, bloqueiosProducao, statusQualidade } from './lib/mm_ppap.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -353,6 +354,32 @@ db.exec(`CREATE TABLE IF NOT EXISTS mm_materiais (
   eng_desenho TEXT, eng_revisao TEXT, eng_status TEXT DEFAULT 'Em Elaboração',
   eng_liberado_compras INTEGER DEFAULT 0, eng_data_liberacao TEXT, eng_responsavel TEXT,
   ativo INTEGER DEFAULT 1,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`)
+// MM fase 3 — Amostras/APQP: protótipo → teste → aprovação (habilita o PPAP).
+db.exec(`CREATE TABLE IF NOT EXISTS mm_amostras (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  material_id INTEGER REFERENCES mm_materiais(id) ON DELETE CASCADE,
+  fornecedor_id INTEGER,
+  data_pedido TEXT, data_prevista TEXT, data_recebimento TEXT,
+  quantidade INTEGER DEFAULT 1, tipo_teste TEXT,
+  status TEXT DEFAULT 'Solicitada', resultado TEXT, observacao TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`)
+// MM fase 3 — PPAP/PSW: aprovação de peça de produção (gate de produção).
+db.exec(`CREATE TABLE IF NOT EXISTS mm_ppap (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  material_id INTEGER REFERENCES mm_materiais(id) ON DELETE CASCADE,
+  fornecedor_id INTEGER, nivel INTEGER DEFAULT 3,
+  data_submissao TEXT, data_analise TEXT, data_aprovacao TEXT,
+  dimensional_ok INTEGER DEFAULT 0, material_ok INTEGER DEFAULT 0,
+  funcional_ok INTEGER DEFAULT 0, documentacao_ok INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'Em Análise', psw_assinado INTEGER DEFAULT 0,
+  responsavel_qa TEXT, observacao TEXT,
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -4351,6 +4378,126 @@ app.post('/api/mm/bom/gerar-rfqs', requireAuth, requireRole('admin', 'diretor', 
     criadas.push({ material_id: m.id, part_number: m.part_number, rfq_numero: rfq.numero, quantidade: qtdTotal })
   }
   res.status(201).json(ok({ criadas: criadas.length, puladas: puladas.length, rfqs: criadas, ignorados: puladas }))
+})
+
+// ── MM fase 3: Amostras/APQP + PPAP (gate de produção) ──────────────────────
+// PPAP vigente (mais recente) por material do tenant.
+function _ppapVigente(emp) {
+  const map = new Map()
+  for (const p of db.prepare(`SELECT * FROM mm_ppap WHERE empresa_id = ? ORDER BY id ASC`).all(emp)) map.set(p.material_id, p)
+  return map
+}
+const _asBool = v => (v ? 1 : 0)
+
+// Solicitar amostra (APQP) de um material. Valida material do tenant.
+app.post('/api/mm/materiais/:id/amostra', requireAuth, requireRole('admin', 'diretor', 'engenharia', 'comprador', 'qualidade'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const m = db.prepare(`SELECT * FROM mm_materiais WHERE id = ? AND empresa_id = ?`).get(req.params.id, emp)
+  if (!m) return res.status(404).json(err('Material não encontrado'))
+  const b = req.body || {}
+  const fid = b.fornecedor_id || m.fornecedor_id || null
+  const r = db.prepare(`INSERT INTO mm_amostras(material_id, fornecedor_id, data_pedido, data_prevista, quantidade, tipo_teste, status, observacao, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(m.id, fid, b.data_pedido || _hojeYMD(), b.data_prevista || null, b.quantidade != null ? parseInt(b.quantidade) : 1,
+      b.tipo_teste || null, 'Solicitada', b.observacao || null, emp)
+  log(req.user.usuario_id, req.user.nome, 'mm_amostra', 'mm_amostras', `Amostra de ${m.part_number} (${b.tipo_teste || 'teste'})`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM mm_amostras WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+app.get('/api/mm/amostras', requireAuth, (req, res) => {
+  const where = ['a.empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (req.query.material_id) { where.push('a.material_id = ?'); params.push(req.query.material_id) }
+  if (req.query.status) { where.push('a.status = ?'); params.push(req.query.status) }
+  res.json(ok(db.prepare(`SELECT a.*, m.part_number, m.descricao FROM mm_amostras a LEFT JOIN mm_materiais m ON m.id = a.material_id WHERE ${where.join(' AND ')} ORDER BY a.created_at DESC`).all(...params)))
+})
+
+// Atualizar amostra (recebimento, status Em teste/Aprovada/Reprovada, resultado).
+app.put('/api/mm/amostras/:id', requireAuth, requireRole('admin', 'diretor', 'engenharia', 'comprador', 'qualidade'), (req, res) => {
+  const cur = rowScoped('mm_amostras', req)
+  if (!cur) return res.status(404).json(err('Amostra não encontrada'))
+  const b = req.body || {}
+  db.prepare(`UPDATE mm_amostras SET data_recebimento=?, quantidade=?, tipo_teste=?, status=?, resultado=?, observacao=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.data_recebimento ?? cur.data_recebimento, b.quantidade != null ? parseInt(b.quantidade) : cur.quantidade,
+      b.tipo_teste ?? cur.tipo_teste, b.status ?? cur.status, b.resultado ?? cur.resultado, b.observacao ?? cur.observacao, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM mm_amostras WHERE id = ?`).get(req.params.id)))
+})
+
+// Submeter PPAP de um material BUY. Valida material do tenant e que é comprável.
+app.post('/api/mm/materiais/:id/ppap', requireAuth, requireRole('admin', 'diretor', 'qualidade'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const m = db.prepare(`SELECT * FROM mm_materiais WHERE id = ? AND empresa_id = ?`).get(req.params.id, emp)
+  if (!m) return res.status(404).json(err('Material não encontrado'))
+  if (String(m.make_buy || '').toUpperCase() === 'MAKE') return res.status(400).json(err('Item MAKE não exige PPAP de fornecedor'))
+  const b = req.body || {}
+  const r = db.prepare(`INSERT INTO mm_ppap(material_id, fornecedor_id, nivel, data_submissao, dimensional_ok, material_ok, funcional_ok, documentacao_ok, status, psw_assinado, responsavel_qa, observacao, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(m.id, b.fornecedor_id || m.fornecedor_id || null, b.nivel != null ? parseInt(b.nivel) : 3, b.data_submissao || _hojeYMD(),
+      _asBool(b.dimensional_ok), _asBool(b.material_ok), _asBool(b.funcional_ok), _asBool(b.documentacao_ok),
+      'Em Análise', _asBool(b.psw_assinado), b.responsavel_qa || req.user.nome, b.observacao || null, emp)
+  log(req.user.usuario_id, req.user.nome, 'mm_ppap_submeter', 'mm_ppap', `PPAP nível ${b.nivel || 3} de ${m.part_number}`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM mm_ppap WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+app.get('/api/mm/ppap', requireAuth, (req, res) => {
+  const where = ['p.empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (req.query.material_id) { where.push('p.material_id = ?'); params.push(req.query.material_id) }
+  if (req.query.status) { where.push('p.status = ?'); params.push(req.query.status) }
+  res.json(ok(db.prepare(`SELECT p.*, m.part_number, m.descricao FROM mm_ppap p LEFT JOIN mm_materiais m ON m.id = p.material_id WHERE ${where.join(' AND ')} ORDER BY p.created_at DESC`).all(...params)))
+})
+
+// Atualiza os 4 pilares do PPAP (dimensional/material/funcional/documentação).
+app.put('/api/mm/ppap/:id', requireAuth, requireRole('admin', 'diretor', 'qualidade'), (req, res) => {
+  const cur = rowScoped('mm_ppap', req)
+  if (!cur) return res.status(404).json(err('PPAP não encontrado'))
+  const b = req.body || {}
+  db.prepare(`UPDATE mm_ppap SET nivel=?, dimensional_ok=?, material_ok=?, funcional_ok=?, documentacao_ok=?, psw_assinado=?, responsavel_qa=?, data_analise=?, observacao=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.nivel != null ? parseInt(b.nivel) : cur.nivel,
+      b.dimensional_ok != null ? _asBool(b.dimensional_ok) : cur.dimensional_ok,
+      b.material_ok != null ? _asBool(b.material_ok) : cur.material_ok,
+      b.funcional_ok != null ? _asBool(b.funcional_ok) : cur.funcional_ok,
+      b.documentacao_ok != null ? _asBool(b.documentacao_ok) : cur.documentacao_ok,
+      b.psw_assinado != null ? _asBool(b.psw_assinado) : cur.psw_assinado,
+      b.responsavel_qa ?? cur.responsavel_qa, b.data_analise ?? _hojeYMD(), b.observacao ?? cur.observacao, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM mm_ppap WHERE id = ?`).get(req.params.id)))
+})
+
+// Decide o PPAP: Aprovado (todos OK), Condicional (interina c/ PSW) ou Rejeitado.
+app.post('/api/mm/ppap/:id/decidir', requireAuth, requireRole('admin', 'diretor', 'qualidade'), (req, res) => {
+  const p = rowScoped('mm_ppap', req)
+  if (!p) return res.status(404).json(err('PPAP não encontrado'))
+  const b = req.body || {}
+  const checks = { dimensional_ok: p.dimensional_ok, material_ok: p.material_ok, funcional_ok: p.funcional_ok, documentacao_ok: p.documentacao_ok }
+  const status = resolverStatusPPAP(checks, { condicional: !!b.condicional, psw_assinado: !!p.psw_assinado || !!b.psw_assinado })
+  if (status === 'Rejeitado' && b.condicional && !p.psw_assinado && !b.psw_assinado) {
+    return res.status(400).json(err('Aprovação condicional exige PSW assinado'))
+  }
+  const dataAprov = (status === 'Aprovado' || status === 'Condicional') ? _hojeYMD() : null
+  db.prepare(`UPDATE mm_ppap SET status=?, data_aprovacao=?, data_analise=?, psw_assinado=?, updated_at=datetime('now') WHERE id=?`)
+    .run(status, dataAprov, _hojeYMD(), b.psw_assinado != null ? _asBool(b.psw_assinado) : p.psw_assinado, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'mm_ppap_decidir', 'mm_ppap', `PPAP #${p.id} → ${status}`)
+  res.json(ok(db.prepare(`SELECT * FROM mm_ppap WHERE id = ?`).get(req.params.id)))
+})
+
+// Gate de produção de um material (usa o PPAP vigente).
+app.get('/api/mm/materiais/:id/gate-producao', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const m = db.prepare(`SELECT * FROM mm_materiais WHERE id = ? AND empresa_id = ?`).get(req.params.id, emp)
+  if (!m) return res.status(404).json(err('Material não encontrado'))
+  const p = db.prepare(`SELECT * FROM mm_ppap WHERE material_id = ? AND empresa_id = ? ORDER BY id DESC`).get(m.id, emp) || null
+  res.json(ok(gateProducao(m, p)))
+})
+
+// Itens BUY que BLOQUEIAM a produção (sem PPAP que libere) + resumo de qualidade.
+app.get('/api/mm/producao/bloqueios', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const materiais = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const ppapMap = _ppapVigente(emp)
+  const bloqueios = bloqueiosProducao(materiais, ppapMap).map(m => ({
+    id: m.id, part_number: m.part_number, descricao: m.descricao, sistema: m.sistema, criticidade: m.criticidade,
+    status_qualidade: statusQualidade(m, ppapMap.get(m.id) || null),
+  }))
+  const buy = materiais.filter(m => String(m.make_buy || '').toUpperCase() === 'BUY')
+  res.json(ok({ total_buy: buy.length, bloqueados: bloqueios.length, liberados: buy.length - bloqueios.length, itens: bloqueios }))
 })
 
 // ════════════════════════════════════════════════════════════

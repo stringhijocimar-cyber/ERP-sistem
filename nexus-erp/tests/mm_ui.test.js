@@ -72,3 +72,21 @@ describe('_mmSourcingHTML (puro)', () => {
   })
   it('vazio não quebra', () => expect(window._mmSourcingHTML(null)).toBe(''))
 })
+
+describe('_mmQualidadeHTML (puro)', () => {
+  it('mostra bloqueios e gate de produção', () => {
+    const html = window._mmQualidadeHTML({ total_buy: 3, liberados: 1, bloqueados: 2, itens: [
+      { id: 2, part_number: 'MEC-100-001', descricao: 'Motor', sistema: 'Mecânica', status_qualidade: 'Sem PPAP' },
+    ] })
+    expect(html).toContain('gate de produção')
+    expect(html).toContain('bloqueando a produção')
+    expect(html).toContain('Submeter PPAP')
+    expect(html).toContain('MEC-100-001')
+  })
+  it('sem bloqueios mostra liberado', () => {
+    const html = window._mmQualidadeHTML({ total_buy: 2, liberados: 2, bloqueados: 0, itens: [] })
+    expect(html).toContain('liberados para produção')
+    expect(html).not.toContain('bloqueando a produção')
+  })
+  it('nulo não quebra', () => expect(window._mmQualidadeHTML(null)).toBe(''))
+})
