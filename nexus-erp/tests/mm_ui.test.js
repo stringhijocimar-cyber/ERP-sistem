@@ -109,3 +109,31 @@ describe('_mmMrpHTML (puro)', () => {
   })
   it('nulo não quebra', () => expect(window._mmMrpHTML(null)).toBe(''))
 })
+
+describe('_mmDashboardHTML + _mmScoreHTML (puro)', () => {
+  it('dashboard mostra gaps e sugestão de compra', () => {
+    const html = window._mmDashboardHTML({
+      gaps: { resumo: { total: 4, buy: 3, sem_engenharia: 1, sem_cotacao: 1, sem_ppap: 2, criticos: 2 } },
+      mrp: { veiculos_possiveis: 20, disponibilidade_pct: 50, itens_faltantes: 1 },
+      sugestao_compra: [{ part_number: 'MEC-1', descricao: 'Motor', faltante: 60, pronto_para_compra: false, acao: 'Liberar engenharia' }],
+    })
+    expect(html).toContain('Painel executivo MM')
+    expect(html).toContain('Sem engenharia')
+    expect(html).toContain('Liberar engenharia')
+    expect(html).toContain('MEC-1')
+  })
+  it('score classifica e ordena fornecedores', () => {
+    const html = window._mmScoreHTML([
+      { nome: 'MetalFor', score: 82, classificacao: 'A — Preferencial', otif_pct: 95, ppap_total: 3 },
+      { nome: 'Novo', score: null, classificacao: 'Sem histórico', otif_pct: null, ppap_total: 0 },
+    ])
+    expect(html).toContain('Score de fornecedor')
+    expect(html).toContain('MetalFor')
+    expect(html).toContain('A — Preferencial')
+    expect(html).toContain('82')
+  })
+  it('vazios não quebram', () => {
+    expect(window._mmDashboardHTML(null)).toBe('')
+    expect(window._mmScoreHTML([])).toBe('')
+  })
+})
