@@ -74,9 +74,77 @@ function renderMM() {
     </div>
     <div id="mmMateriais"></div>
     <div id="mmSourcingBox" style="margin-top:16px"></div>
+    <div id="mmQualidadeBox" style="margin-top:16px"></div>
     <div id="mmExplosaoBox" style="margin-top:16px"></div>`
   _carregarMM()
   _carregarMMSourcing()
+  _carregarMMQualidade()
+}
+
+// Render puro do painel de qualidade/produção (PPAP → gate de produção).
+function _mmQualidadeHTML(d) {
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s))
+  if (!d) return ''
+  const kpi = (t, v, c) => `<div class="stat-card" style="flex:1;min-width:120px"><div class="stat-label">${t}</div><div class="stat-value" style="color:${c}">${v}</div></div>`
+  const rows = (d.itens || []).map(m => `<tr>
+    <td style="font-size:12px;color:var(--fa-teal);font-weight:600">${esc(m.part_number)}</td>
+    <td style="font-size:12px">${esc(m.descricao || '—')}</td>
+    <td style="font-size:12px">${esc(m.sistema || '—')}</td>
+    <td><span style="font-size:10px;font-weight:700;color:#dc2626">${esc(m.status_qualidade)}</span></td>
+    <td><button class="btn btn-sm" style="font-size:11px;padding:3px 8px;background:rgba(124,58,237,.1);color:#7c3aed" onclick="mmSubmeterPPAP(${Number(m.id)})"><i class="fas fa-clipboard-check"></i> Submeter PPAP</button></td>
+  </tr>`).join('')
+  return `<div class="ss-card"><div class="ss-card-head">
+      <div class="ss-card-title"><i class="fas fa-clipboard-check" style="color:#7c3aed"></i>Qualidade — PPAP · gate de produção</div>
+    </div>
+    <div style="padding:10px 14px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        ${kpi('Itens BUY', d.total_buy || 0, '#0ea5e9')}
+        ${kpi('Liberados p/ produção', d.liberados || 0, '#16a34a')}
+        ${kpi('Bloqueados (sem PPAP)', d.bloqueados || 0, (d.bloqueados ? '#dc2626' : '#16a34a'))}
+      </div>
+      ${(d.bloqueados || 0) > 0 ? `<div class="ss-alert danger" style="margin-bottom:12px"><i class="fas fa-ban" style="color:#dc2626;margin-top:2px"></i>
+        <div><div style="font-weight:700;color:#dc2626">${d.bloqueados} item(ns) BUY bloqueando a produção</div>
+        <div style="font-size:12px;color:var(--text-secondary)">Regra MM: sem PPAP aprovado (dimensional/material/funcional/documentação), a peça não entra na produção seriada.</div></div></div>` : ''}
+      ${(d.itens || []).length ? `<div class="ss-table-wrap"><table class="ss-table">
+        <thead><tr><th>Part Number</th><th>Descrição</th><th>Sistema</th><th>Qualidade</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+        : `<div style="text-align:center;padding:20px;color:var(--text-muted)"><i class="fas fa-check-circle" style="font-size:22px;color:#16a34a;display:block;margin-bottom:6px"></i>Todos os itens BUY liberados para produção</div>`}
+    </div></div>`
+}
+
+async function _carregarMMQualidade() {
+  const box = document.getElementById('mmQualidadeBox')
+  if (!box || typeof apiAuth !== 'function') return
+  try { box.innerHTML = _mmQualidadeHTML(await apiAuth('/api/mm/producao/bloqueios')) }
+  catch (e) { box.innerHTML = '' }
+}
+
+// Submete PPAP com os 4 pilares e decide na hora (Aprovado/Rejeitado).
+async function mmSubmeterPPAP(materialId) {
+  if (typeof openModal !== 'function') return
+  openModal('Submeter PPAP (aprovação de peça)', `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Marque os pilares aprovados. Com os 4 OK, o PPAP é aprovado e libera a produção.</div>
+    <div class="form-group"><label>Nível PPAP</label><select class="form-control" id="ppap-nivel"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin:8px 0">
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ppap-dim"> Dimensional OK</label>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ppap-mat"> Material OK</label>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ppap-fun"> Funcional OK</label>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ppap-doc"> Documentação OK</label>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ppap-psw"> PSW assinado</label>
+    </div>`, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button class="btn btn-primary" onclick="mmConfirmarPPAP(${Number(materialId)})"><i class="fas fa-save"></i> Submeter e decidir</button>`)
+}
+async function mmConfirmarPPAP(materialId) {
+  const g = id => document.getElementById(id)
+  const checks = { nivel: parseInt(g('ppap-nivel')?.value) || 3, dimensional_ok: !!g('ppap-dim')?.checked, material_ok: !!g('ppap-mat')?.checked, funcional_ok: !!g('ppap-fun')?.checked, documentacao_ok: !!g('ppap-doc')?.checked, psw_assinado: !!g('ppap-psw')?.checked }
+  try {
+    const ppap = await apiAuth(`/api/mm/materiais/${materialId}/ppap`, { method: 'POST', body: checks })
+    const dec = await apiAuth(`/api/mm/ppap/${ppap.id}/decidir`, { method: 'POST', body: { condicional: false, psw_assinado: checks.psw_assinado } })
+    if (typeof showToast === 'function') showToast(`PPAP ${dec.status}`, dec.status === 'Aprovado' ? 'success' : 'warning')
+    if (typeof closeModal === 'function') closeModal()
+    _carregarMMQualidade()
+  } catch (e) { if (typeof showToast === 'function') showToast(e && e.message ? e.message : 'Falha no PPAP', 'error') }
 }
 
 const _MM_SRC_COR = { 'MAKE': '#6366f1', 'Bloqueado': '#dc2626', 'A cotar': '#d97706', 'Em cotação': '#16a34a' }
@@ -253,3 +321,7 @@ window._mmSourcingHTML = _mmSourcingHTML
 window._carregarMMSourcing = _carregarMMSourcing
 window.mmGerarRFQ = mmGerarRFQ
 window.mmGerarRFQsLote = mmGerarRFQsLote
+window._mmQualidadeHTML = _mmQualidadeHTML
+window._carregarMMQualidade = _carregarMMQualidade
+window.mmSubmeterPPAP = mmSubmeterPPAP
+window.mmConfirmarPPAP = mmConfirmarPPAP
