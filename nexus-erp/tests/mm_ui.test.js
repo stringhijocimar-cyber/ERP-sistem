@@ -51,3 +51,24 @@ describe('_carregarMM', () => {
     expect(document.getElementById('mmMateriais').innerHTML).toContain('Part Number')
   })
 })
+
+describe('_mmSourcingHTML (puro)', () => {
+  const D = {
+    resumo: { make: 1, bloqueado: 1, a_cotar: 1, em_cotacao: 1 },
+    materiais: [
+      { id: 1, part_number: 'MEC-000-001', make_buy: 'MAKE', status_sourcing: 'MAKE' },
+      { id: 2, part_number: 'MEC-100-001', descricao: 'Motor', status_sourcing: 'A cotar', rfq_numero: null },
+      { id: 3, part_number: 'MEC-100-002', descricao: 'Filtro', status_sourcing: 'Em cotação', rfq_numero: 'RFQ-2026-001' },
+    ],
+  }
+  it('mostra status, esconde MAKE da tabela e traz botão de lote', () => {
+    const html = window._mmSourcingHTML(D)
+    expect(html).toContain('RFQ automática')
+    expect(html).toContain('A cotar')
+    expect(html).toContain('RFQ-2026-001')
+    expect(html).toContain('Gerar RFQs em lote (1)')
+    // MAKE não aparece como linha de sourcing
+    expect(html).not.toContain('MEC-000-001')
+  })
+  it('vazio não quebra', () => expect(window._mmSourcingHTML(null)).toBe(''))
+})
