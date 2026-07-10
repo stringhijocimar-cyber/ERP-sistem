@@ -40,6 +40,7 @@ import { prazoCAT, statusPrazoCAT, montarS2210, validarCAT } from './lib/cat.js'
 import { explodirBOM, filhosDiretos, gateCompra, podeLiberarEngenharia } from './lib/mm_bom.js'
 import { statusSourcing, itensParaCotar, resumoSourcing, montarRFQdeMaterial } from './lib/mm_sourcing.js'
 import { avaliarPPAP, resolverStatusPPAP, ppapLibera, gateProducao, bloqueiosProducao, statusQualidade } from './lib/mm_ppap.js'
+import { indexarEstoque, calcularMRP } from './lib/mm_mrp.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -4498,6 +4499,16 @@ app.get('/api/mm/producao/bloqueios', requireAuth, (req, res) => {
   }))
   const buy = materiais.filter(m => String(m.make_buy || '').toUpperCase() === 'BUY')
   res.json(ok({ total_buy: buy.length, bloqueados: bloqueios.length, liberados: buy.length - bloqueios.length, itens: bloqueios }))
+})
+
+// ── MM fase 4: MRP (necessidade explodida × saldo do almoxarifado) ──────────
+app.get('/api/mm/mrp', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const veiculos = req.query.veiculos ? Number(req.query.veiculos) : 1
+  const materiais = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const explosao = explodirBOM(materiais, null, veiculos)
+  const estoque = db.prepare(`SELECT codigo, quantidade_atual FROM almoxarifado_itens WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  res.json(ok(calcularMRP(explosao, indexarEstoque(estoque), veiculos)))
 })
 
 // ════════════════════════════════════════════════════════════

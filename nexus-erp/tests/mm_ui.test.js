@@ -90,3 +90,22 @@ describe('_mmQualidadeHTML (puro)', () => {
   })
   it('nulo não quebra', () => expect(window._mmQualidadeHTML(null)).toBe(''))
 })
+
+describe('_mmMrpHTML (puro)', () => {
+  it('mostra disponibilidade, faltantes e gargalo de veículos', () => {
+    const html = window._mmMrpHTML({
+      veiculos_alvo: 50, veiculos_possiveis: 20, itens_buy: 2, itens_faltantes: 1, disponibilidade_pct: 50,
+      itens: [], faltantes: [{ part_number: 'FILTRO', descricao: 'Filtro', necessidade: 100, disponivel: 40, faltante: 60, cobertura_pct: 40, veiculos_cobertos: 20 }],
+    })
+    expect(html).toContain('MRP')
+    expect(html).toContain('cobre só 20 de 50')
+    expect(html).toContain('FILTRO')
+    expect(html).toContain('60')
+  })
+  it('sem faltantes mostra cobertura total', () => {
+    const html = window._mmMrpHTML({ veiculos_alvo: 10, veiculos_possiveis: 10, itens_buy: 2, itens_faltantes: 0, disponibilidade_pct: 100, itens: [], faltantes: [] })
+    expect(html).toContain('cobre toda a necessidade')
+    expect(html).not.toContain('cobre só')
+  })
+  it('nulo não quebra', () => expect(window._mmMrpHTML(null)).toBe(''))
+})
