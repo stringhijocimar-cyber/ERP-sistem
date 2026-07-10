@@ -145,6 +145,9 @@ function renderSSMA() {
   <!-- Indicadores HSE reais do servidor (TF/TG/dias sem acidente) -->
   <div id="ssmaIndicadores"></div>
 
+  <!-- EPIs por colaborador (NR-6) reais do servidor -->
+  <div id="ssmaEpis"></div>
+
   <!-- KPIs Gerais -->
   <div class="ss-kpi-grid">
     <div class="ss-kpi" style="border-left:4px solid ${abertos.length > 0 ? '#ef4444' : '#22c55e'}">
@@ -324,6 +327,8 @@ function renderSSMA() {
   window._ssIncidentesData = _ssGetIncidentes();
   // Indicadores HSE reais do servidor (TF/TG/dias sem acidente).
   if (typeof window._carregarSsmaIndicadores === 'function') window._carregarSsmaIndicadores();
+  // EPIs por colaborador (NR-6) reais do servidor.
+  if (typeof window._carregarSsmaEpis === 'function') window._carregarSsmaEpis();
 }
 
 /* ── Tabela de Incidentes ──────────────────────────── */
