@@ -34,6 +34,7 @@ import { calcularIndicadoresSSMA } from './lib/ssma_indicadores.js'
 import { aplicarMovimento, itensParaRepor, valorizarEstoque } from './lib/estoque.js'
 import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo, tendenciaOTIF } from './lib/otif.js'
 import { statusDocumento, vigentesPorTipo, resumoDocumentos } from './lib/documentos.js'
+import { classificarEpis, alertasEpi } from './lib/epi.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -285,6 +286,19 @@ db.exec(`CREATE TABLE IF NOT EXISTS apontamentos_hora (
   contrato_id TEXT, data TEXT, horas REAL DEFAULT 0,
   custo_hora REAL DEFAULT 0, custo REAL DEFAULT 0,
   descricao TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+// SSMA/NR-6 — EPIs entregues ao colaborador com controle de validade (CA/vida
+// útil). EPI vencido é passivo de segurança e legal; a validade vira alerta.
+// Ligado ao RH (colaborador) e isolado por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS epi_entregas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  colaborador_id INTEGER REFERENCES colaboradores(id) ON DELETE CASCADE,
+  epi TEXT NOT NULL, ca TEXT,
+  data_entrega TEXT, validade TEXT, quantidade INTEGER DEFAULT 1,
+  entregue_por_id INTEGER, entregue_por_nome TEXT,
+  observacao TEXT,
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 )`)
@@ -3901,6 +3915,54 @@ app.post('/api/ssma/:id/encerrar', requireAuth, (req, res) => {
     .run(causa_raiz, plano_acao, req.params.id)
   log(req.user.usuario_id, req.user.nome, 'ssma_encerrar', 'ssma_ocorrencias', `Ocorrência ${oc.numero} encerrada com RCA`)
   res.json(ok(db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ?`).get(req.params.id)))
+})
+
+// ── EPIs (NR-6): entrega ao colaborador com controle de validade (CA) ──────
+// Registrar entrega: valida que o colaborador é do próprio tenant (ligação RH).
+app.post('/api/ssma/epis', requireAuth, requireRole('admin', 'diretor', 'rh', 'ssma'), (req, res) => {
+  const b = req.body || {}
+  const emp = empresaDoReq(req)
+  const colab = db.prepare(`SELECT * FROM colaboradores WHERE id = ? AND empresa_id = ?`).get(b.colaborador_id, emp)
+  if (!colab) return res.status(404).json(err('Colaborador não encontrado'))
+  if (!String(b.epi || '').trim()) return res.status(400).json(err('EPI (descrição) é obrigatório'))
+  const qtd = b.quantidade != null ? parseInt(b.quantidade) : 1
+  if (!(qtd > 0)) return res.status(400).json(err('Quantidade deve ser maior que zero'))
+  const r = db.prepare(`INSERT INTO epi_entregas(colaborador_id, epi, ca, data_entrega, validade, quantidade, entregue_por_id, entregue_por_nome, observacao, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(colab.id, String(b.epi).trim(), b.ca || null, b.data_entrega || _hojeYMD(), b.validade || null, qtd,
+      req.user.usuario_id, req.user.nome, b.observacao || null, emp)
+  log(req.user.usuario_id, req.user.nome, 'epi_entrega', 'epi_entregas', `EPI "${String(b.epi).trim()}" (${qtd}x) para ${colab.nome}${b.validade ? ' — vence ' + b.validade : ''}`)
+  res.status(201).json(ok(_epiComColab(r.lastInsertRowid, emp)))
+})
+
+// Busca a entrega com o nome do colaborador e a situação de validade calculada.
+function _epiComColab(id, emp) {
+  const e = db.prepare(`SELECT e.*, c.nome AS colaborador_nome, c.cargo AS colaborador_cargo
+     FROM epi_entregas e LEFT JOIN colaboradores c ON c.id = e.colaborador_id
+     WHERE e.id = ? AND e.empresa_id = ?`).get(id, emp)
+  return e ? classificarEpis([e], _hojeYMD())[0] : null
+}
+
+// Listar entregas (com situação); filtros opcionais por colaborador e situação.
+app.get('/api/ssma/epis', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const where = ['e.empresa_id = ?']; const params = [emp]
+  if (req.query.colaborador_id) { where.push('e.colaborador_id = ?'); params.push(req.query.colaborador_id) }
+  const rows = db.prepare(`SELECT e.*, c.nome AS colaborador_nome, c.cargo AS colaborador_cargo
+     FROM epi_entregas e LEFT JOIN colaboradores c ON c.id = e.colaborador_id
+     WHERE ${where.join(' AND ')} ORDER BY COALESCE(e.validade,'9999') ASC, e.created_at DESC`).all(...params)
+  let lista = classificarEpis(rows, _hojeYMD())
+  if (req.query.situacao) lista = lista.filter(e => e.situacao === req.query.situacao)
+  res.json(ok(lista))
+})
+
+// Painel de alertas: EPIs vencidos (troca imediata) e a vencer (programar).
+app.get('/api/ssma/epis/alertas', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const rows = db.prepare(`SELECT e.*, c.nome AS colaborador_nome, c.cargo AS colaborador_cargo
+     FROM epi_entregas e LEFT JOIN colaboradores c ON c.id = e.colaborador_id
+     WHERE e.empresa_id = ?`).all(emp)
+  res.json(ok(alertasEpi(rows, _hojeYMD())))
 })
 
 // ════════════════════════════════════════════════════════════
