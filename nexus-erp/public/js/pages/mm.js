@@ -73,8 +73,66 @@ function renderMM() {
       <button class="btn btn-secondary btn-sm" onclick="mmExplodirTudo()"><i class="fas fa-calculator"></i> Necessidade total</button></label>
     </div>
     <div id="mmMateriais"></div>
+    <div id="mmSourcingBox" style="margin-top:16px"></div>
     <div id="mmExplosaoBox" style="margin-top:16px"></div>`
   _carregarMM()
+  _carregarMMSourcing()
+}
+
+const _MM_SRC_COR = { 'MAKE': '#6366f1', 'Bloqueado': '#dc2626', 'A cotar': '#d97706', 'Em cotação': '#16a34a' }
+
+// Render puro do painel de sourcing (status por material + RFQ ligada).
+function _mmSourcingHTML(d) {
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s))
+  if (!d || !d.resumo) return ''
+  const r = d.resumo
+  const kpi = (t, v, c) => `<div class="stat-card" style="flex:1;min-width:110px"><div class="stat-label">${t}</div><div class="stat-value" style="color:${c}">${v}</div></div>`
+  const rows = (d.materiais || []).filter(m => m.status_sourcing !== 'MAKE').map(m => `<tr>
+    <td style="font-size:12px;color:var(--fa-teal);font-weight:600">${esc(m.part_number)}</td>
+    <td style="font-size:12px">${esc(m.descricao || '—')}</td>
+    <td><span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;background:${_MM_SRC_COR[m.status_sourcing] || '#64748b'}22;color:${_MM_SRC_COR[m.status_sourcing] || '#64748b'}">${esc(m.status_sourcing)}</span></td>
+    <td style="font-size:12px">${m.rfq_numero ? esc(m.rfq_numero) : '—'}</td>
+    <td>${m.status_sourcing === 'A cotar' ? `<button class="btn btn-sm" style="font-size:11px;padding:3px 8px;background:rgba(14,165,233,.1);color:#0ea5e9" onclick="mmGerarRFQ(${Number(m.id)})"><i class="fas fa-paper-plane"></i> Gerar RFQ</button>` : ''}</td>
+  </tr>`).join('')
+  return `<div class="ss-card"><div class="ss-card-head">
+      <div class="ss-card-title"><i class="fas fa-paper-plane" style="color:#0ea5e9"></i>Sourcing — explosão → RFQ automática</div>
+      <button class="btn btn-primary btn-sm" onclick="mmGerarRFQsLote()"${r.a_cotar ? '' : ' disabled'}><i class="fas fa-bolt"></i> Gerar RFQs em lote (${r.a_cotar})</button>
+    </div>
+    <div style="padding:10px 14px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        ${kpi('A cotar', r.a_cotar, (r.a_cotar ? '#d97706' : '#16a34a'))}
+        ${kpi('Em cotação', r.em_cotacao, '#16a34a')}
+        ${kpi('Bloqueados (s/ eng.)', r.bloqueado, (r.bloqueado ? '#dc2626' : '#16a34a'))}
+        ${kpi('MAKE (interno)', r.make, '#6366f1')}
+      </div>
+      <div class="ss-table-wrap"><table class="ss-table">
+        <thead><tr><th>Part Number</th><th>Descrição</th><th>Status</th><th>RFQ</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-muted)">Sem itens de compra</td></tr>'}</tbody>
+      </table></div>
+    </div></div>`
+}
+
+async function _carregarMMSourcing() {
+  const box = document.getElementById('mmSourcingBox')
+  if (!box || typeof apiAuth !== 'function') return
+  try { box.innerHTML = _mmSourcingHTML(await apiAuth('/api/mm/sourcing')) }
+  catch (e) { box.innerHTML = '' }
+}
+
+async function mmGerarRFQ(id) {
+  try {
+    const rfq = await apiAuth(`/api/mm/materiais/${id}/gerar-rfq`, { method: 'POST', body: { veiculos: _mmVeiculos() } })
+    if (typeof showToast === 'function') showToast(`${rfq.numero} gerada`, 'success')
+    _carregarMM(); _carregarMMSourcing()
+  } catch (e) { if (typeof showToast === 'function') showToast(e && e.message ? e.message : 'Falha ao gerar RFQ', 'error') }
+}
+async function mmGerarRFQsLote() {
+  try {
+    const r = await apiAuth('/api/mm/bom/gerar-rfqs', { method: 'POST', body: { veiculos: _mmVeiculos() } })
+    const msg = `${r.criadas} RFQ(s) gerada(s)` + (r.puladas ? `, ${r.puladas} ignorada(s)` : '')
+    if (typeof showToast === 'function') showToast(msg, r.criadas ? 'success' : 'warning')
+    _carregarMM(); _carregarMMSourcing()
+  } catch (e) { if (typeof showToast === 'function') showToast(e && e.message ? e.message : 'Falha ao gerar RFQs', 'error') }
 }
 
 async function _carregarMM() {
@@ -191,3 +249,7 @@ window.mmLiberarEng = mmLiberarEng
 window.mmConfirmarLiberacao = mmConfirmarLiberacao
 window.mmNovoMaterial = mmNovoMaterial
 window.mmSalvarMaterial = mmSalvarMaterial
+window._mmSourcingHTML = _mmSourcingHTML
+window._carregarMMSourcing = _carregarMMSourcing
+window.mmGerarRFQ = mmGerarRFQ
+window.mmGerarRFQsLote = mmGerarRFQsLote

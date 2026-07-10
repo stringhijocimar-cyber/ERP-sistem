@@ -38,6 +38,7 @@ import { classificarEpis, alertasEpi } from './lib/epi.js'
 import { classificarTreinamentos, aptidaoColaborador, alertasTreinamentos } from './lib/treinamentos.js'
 import { prazoCAT, statusPrazoCAT, montarS2210, validarCAT } from './lib/cat.js'
 import { explodirBOM, filhosDiretos, gateCompra, podeLiberarEngenharia } from './lib/mm_bom.js'
+import { statusSourcing, itensParaCotar, resumoSourcing, montarRFQdeMaterial } from './lib/mm_sourcing.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -119,6 +120,10 @@ ensureColumns('logs_sistema', [
 // Portal do fornecedor: usuário pode ser vinculado a um fornecedor (escopo).
 ensureColumns('usuarios', [
   ['fornecedor_id', 'fornecedor_id INTEGER'],
+])
+// MM fase 2: RFQ pode nascer de um material do MM (explosão → RFQ automática).
+ensureColumns('rfq', [
+  ['mm_material_id', 'mm_material_id INTEGER'],
 ])
 // NF enviada pelo fornecedor no pedido.
 ensureColumns('pedidos_compra', [
@@ -4254,6 +4259,98 @@ app.get('/api/mm/materiais/:id/gate-compra', requireAuth, (req, res) => {
   const m = rowScoped('mm_materiais', req)
   if (!m) return res.status(404).json(err('Material não encontrado'))
   res.json(ok(gateCompra(m)))
+})
+
+// ── MM fase 2: explosão → RFQ automática (usa o Sourcing existente) ─────────
+// Necessidade total (qtd_total) de cada material segundo a BOM explodida.
+function _mmQtdPorMaterial(emp, veiculos) {
+  const todos = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const map = new Map()
+  for (const e of explodirBOM(todos, null, veiculos)) map.set(e.id, e.qtd_total)
+  return { todos, map }
+}
+// material_id que já têm RFQ ligada (para status "Em cotação").
+function _mmMateriaisComRfq(emp) {
+  return db.prepare(`SELECT DISTINCT mm_material_id FROM rfq WHERE empresa_id = ? AND mm_material_id IS NOT NULL`)
+    .all(emp).map(r => r.mm_material_id)
+}
+// Cria a RFQ (numero, convites, notificação) ligada a um material do MM.
+function _mmCriarRFQ(req, emp, material, fornecedorIds, qtdTotal, veiculos, prazo) {
+  const { titulo, descricao } = montarRFQdeMaterial(material, qtdTotal, veiculos)
+  const numero = nextRFQ()
+  const r = db.prepare(`INSERT INTO rfq(numero, titulo, descricao, status, prazo_resposta, comprador_id, comprador_nome, valor_estimado, mm_material_id, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(numero, titulo, descricao, 'Aberta', prazo || null, req.user.usuario_id, req.user.nome, 0, material.id, emp)
+  const rfqId = r.lastInsertRowid
+  for (const fid of fornecedorIds) {
+    const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fid)
+    db.prepare(`INSERT INTO rfq_fornecedores(rfq_id, fornecedor_id, fornecedor_nome) VALUES(?,?,?)`).run(rfqId, fid, f?.nome || '')
+    notificarFornecedor(fid, { titulo: `Nova cotação: ${numero}`, mensagem: `${titulo}. Acesse o portal para cotar.`,
+      tipo: 'rfq', ref_tipo: 'rfq', ref_id: String(rfqId), email: true, empresa: emp })
+  }
+  log(req.user.usuario_id, req.user.nome, 'mm_rfq_auto', 'rfq', `${numero} gerada do material ${material.part_number} (${qtdTotal} un)`)
+  return db.prepare(`SELECT * FROM rfq WHERE id = ?`).get(rfqId)
+}
+
+// Painel de sourcing do MM: cada material com seu status (MAKE/Bloqueado/A cotar/Em cotação).
+app.get('/api/mm/sourcing', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const materiais = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1 ORDER BY nivel ASC, part_number ASC`).all(emp)
+  const comRfq = new Set(_mmMateriaisComRfq(emp).map(Number))
+  const rfqPorMat = new Map()
+  for (const r of db.prepare(`SELECT mm_material_id, numero FROM rfq WHERE empresa_id = ? AND mm_material_id IS NOT NULL ORDER BY id DESC`).all(emp)) {
+    if (!rfqPorMat.has(r.mm_material_id)) rfqPorMat.set(r.mm_material_id, r.numero)
+  }
+  const lista = materiais.map(m => ({
+    id: m.id, part_number: m.part_number, descricao: m.descricao, sistema: m.sistema, make_buy: m.make_buy,
+    criticidade: m.criticidade, fornecedor_id: m.fornecedor_id,
+    status_sourcing: statusSourcing(m, comRfq.has(m.id)), rfq_numero: rfqPorMat.get(m.id) || null,
+  }))
+  res.json(ok({ resumo: resumoSourcing(materiais, [...comRfq]), materiais: lista }))
+})
+
+// Gera RFQ de UM material (BUY liberado). Convida fornecedor(es) do tenant.
+app.post('/api/mm/materiais/:id/gerar-rfq', requireAuth, requireRole('admin', 'diretor', 'comprador'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const m = db.prepare(`SELECT * FROM mm_materiais WHERE id = ? AND empresa_id = ?`).get(req.params.id, emp)
+  if (!m) return res.status(404).json(err('Material não encontrado'))
+  const gate = gateCompra(m)
+  if (!gate.ok) return res.status(409).json(err('Sourcing bloqueado: ' + gate.motivo, 409))
+  const b = req.body || {}
+  const veiculos = b.veiculos ? Number(b.veiculos) : 1
+  // Fornecedores: do corpo, ou o homologado do material. Todos precisam ser do tenant.
+  let fornecedorIds = Array.isArray(b.fornecedor_ids) && b.fornecedor_ids.length ? b.fornecedor_ids
+    : (m.fornecedor_id ? [m.fornecedor_id] : [])
+  if (!fornecedorIds.length) return res.status(400).json(err('Informe ao menos um fornecedor (ou defina o fornecedor homologado do material)'))
+  for (const fid of fornecedorIds) {
+    if (!db.prepare(`SELECT 1 FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(fid, emp))
+      return res.status(400).json(err(`Fornecedor ${fid} não pertence a esta empresa`))
+  }
+  const { map } = _mmQtdPorMaterial(emp, veiculos)
+  const qtdTotal = map.has(m.id) ? map.get(m.id) : (Number(m.qtd_veiculo) || 0) * (veiculos > 0 ? veiculos : 1)
+  const rfq = _mmCriarRFQ(req, emp, m, fornecedorIds, qtdTotal, veiculos, b.prazo_resposta)
+  res.status(201).json(ok(rfq))
+})
+
+// Gera RFQs em LOTE para todos os itens BUY liberados sem RFQ (com fornecedor homologado).
+app.post('/api/mm/bom/gerar-rfqs', requireAuth, requireRole('admin', 'diretor', 'comprador'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const b = req.body || {}
+  const veiculos = b.veiculos ? Number(b.veiculos) : 1
+  const { todos, map } = _mmQtdPorMaterial(emp, veiculos)
+  const comRfq = _mmMateriaisComRfq(emp)
+  const candidatos = itensParaCotar(todos, comRfq)
+  const criadas = [], puladas = []
+  for (const m of candidatos) {
+    if (!m.fornecedor_id) { puladas.push({ id: m.id, part_number: m.part_number, motivo: 'Sem fornecedor homologado' }); continue }
+    if (!db.prepare(`SELECT 1 FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(m.fornecedor_id, emp)) {
+      puladas.push({ id: m.id, part_number: m.part_number, motivo: 'Fornecedor homologado inválido' }); continue
+    }
+    const qtdTotal = map.has(m.id) ? map.get(m.id) : (Number(m.qtd_veiculo) || 0) * (veiculos > 0 ? veiculos : 1)
+    const rfq = _mmCriarRFQ(req, emp, m, [m.fornecedor_id], qtdTotal, veiculos, b.prazo_resposta)
+    criadas.push({ material_id: m.id, part_number: m.part_number, rfq_numero: rfq.numero, quantidade: qtdTotal })
+  }
+  res.status(201).json(ok({ criadas: criadas.length, puladas: puladas.length, rfqs: criadas, ignorados: puladas }))
 })
 
 // ════════════════════════════════════════════════════════════
