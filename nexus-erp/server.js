@@ -36,6 +36,7 @@ import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo, tendenciaOTIF } from
 import { statusDocumento, vigentesPorTipo, resumoDocumentos } from './lib/documentos.js'
 import { classificarEpis, alertasEpi } from './lib/epi.js'
 import { classificarTreinamentos, aptidaoColaborador, alertasTreinamentos } from './lib/treinamentos.js'
+import { prazoCAT, statusPrazoCAT, montarS2210, validarCAT } from './lib/cat.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -313,6 +314,22 @@ db.exec(`CREATE TABLE IF NOT EXISTS treinamentos_colaborador (
   data_realizacao TEXT, validade TEXT,
   carga_horaria REAL, instrutor TEXT,
   registrado_por_id INTEGER, registrado_por_nome TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+// CAT — Comunicação de Acidente de Trabalho (Lei 8.213/91 art. 22) gerada a
+// partir do incidente de SSMA com afastamento. Guarda os campos do evento
+// eSocial S-2210 e o prazo legal. Isolada por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS cat_comunicacoes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  numero TEXT, ssma_id INTEGER, colaborador_id INTEGER,
+  tipo TEXT DEFAULT 'Inicial', data_acidente TEXT, hora_acidente TEXT,
+  data_emissao TEXT, prazo_legal TEXT,
+  local TEXT, tipo_local INTEGER DEFAULT 1,
+  parte_atingida TEXT, agente_causador TEXT, cid TEXT,
+  descricao TEXT, com_afastamento INTEGER DEFAULT 0, dias_afastamento INTEGER DEFAULT 0,
+  obito INTEGER DEFAULT 0, data_obito TEXT,
+  emitida_por_id INTEGER, emitida_por_nome TEXT,
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 )`)
@@ -4032,6 +4049,96 @@ app.get('/api/ssma/colaboradores/:id/aptidao', requireAuth, (req, res) => {
   if (!colab) return res.status(404).json(err('Colaborador não encontrado'))
   const rows = db.prepare(`SELECT * FROM treinamentos_colaborador WHERE colaborador_id = ? AND empresa_id = ?`).all(colab.id, emp)
   res.json(ok({ colaborador_id: colab.id, colaborador_nome: colab.nome, ...aptidaoColaborador(rows, _hojeYMD()) }))
+})
+
+// ── CAT / eSocial S-2210 (Lei 8.213/91): fecha incidente → obrigação legal ──
+// Enriquece a linha da CAT com colaborador, status de prazo e payload S-2210.
+function _catCompleta(id, emp) {
+  const c = db.prepare(`SELECT ca.*, c.nome AS colaborador_nome, c.cpf AS colaborador_cpf, c.cargo AS colaborador_cargo, s.numero AS ssma_numero
+     FROM cat_comunicacoes ca
+     LEFT JOIN colaboradores c ON c.id = ca.colaborador_id
+     LEFT JOIN ssma_ocorrencias s ON s.id = ca.ssma_id
+     WHERE ca.id = ? AND ca.empresa_id = ?`).get(id, emp)
+  if (!c) return null
+  const empresa = db.prepare(`SELECT razao_social, cnpj FROM empresas WHERE id = ?`).get(emp) || {}
+  return {
+    ...c,
+    situacao: statusPrazoCAT(c, _hojeYMD()),
+    s2210: montarS2210(c, { id: c.colaborador_id, cpf: c.colaborador_cpf }, empresa),
+  }
+}
+
+// Gera a CAT a partir de um incidente COM AFASTAMENTO (pré-preenche do incidente).
+app.post('/api/ssma/:id/gerar-cat', requireAuth, requireRole('admin', 'diretor', 'rh', 'ssma'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const oc = db.prepare(`SELECT * FROM ssma_ocorrencias WHERE id = ? AND empresa_id = ?`).get(req.params.id, emp)
+  if (!oc) return res.status(404).json(err('Ocorrência não encontrada'))
+  const b = req.body || {}
+  const obito = b.obito ? 1 : 0
+  if (!oc.com_afastamento && !obito) return res.status(400).json(err('CAT é exigida para acidente com afastamento ou óbito'))
+  const colaborador_id = b.colaborador_id || oc.colaborador_id
+  if (!colaborador_id) return res.status(400).json(err('Informe o colaborador acidentado'))
+  const colab = db.prepare(`SELECT * FROM colaboradores WHERE id = ? AND empresa_id = ?`).get(colaborador_id, emp)
+  if (!colab) return res.status(404).json(err('Colaborador não encontrado'))
+  const jaTem = db.prepare(`SELECT id FROM cat_comunicacoes WHERE ssma_id = ? AND empresa_id = ? AND tipo = 'Inicial'`).get(oc.id, emp)
+  if (jaTem) return res.status(409).json(err('Este incidente já possui CAT inicial', 409))
+  const cat = {
+    data_acidente: b.data_acidente || oc.data_ocorrencia,
+    descricao: b.descricao || oc.descricao,
+    colaborador_id,
+  }
+  const v = validarCAT(cat)
+  if (!v.ok) return res.status(400).json(err('CAT incompleta: ' + v.faltando.join(', ')))
+  const year = new Date().getFullYear()
+  const count = db.prepare(`SELECT COUNT(*) n FROM cat_comunicacoes WHERE empresa_id = ? AND numero LIKE ?`).get(emp, `CAT-${year}-%`).n
+  const numero = `CAT-${year}-${String(count + 1).padStart(3, '0')}`
+  const dataAcid = cat.data_acidente
+  const prazo = prazoCAT(dataAcid, !!obito)
+  const diasAfast = b.dias_afastamento != null ? Number(b.dias_afastamento) || 0 : (oc.dias_perdidos || 0)
+  const r = db.prepare(`INSERT INTO cat_comunicacoes(numero, ssma_id, colaborador_id, tipo, data_acidente, hora_acidente, data_emissao, prazo_legal, local, tipo_local, parte_atingida, agente_causador, cid, descricao, com_afastamento, dias_afastamento, obito, data_obito, emitida_por_id, emitida_por_nome, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(numero, oc.id, colaborador_id, obito ? 'Óbito' : (b.tipo || 'Inicial'), dataAcid, b.hora_acidente || null,
+      _hojeYMD(), prazo, b.local || oc.local, b.tipo_local || 1, b.parte_atingida || null, b.agente_causador || null,
+      b.cid || null, cat.descricao, oc.com_afastamento ? 1 : 0, diasAfast, obito, obito ? (b.data_obito || dataAcid) : null,
+      req.user.usuario_id, req.user.nome, emp)
+  log(req.user.usuario_id, req.user.nome, 'cat_emitir', 'cat_comunicacoes', `${numero} do incidente ${oc.numero} (prazo legal ${prazo})`)
+  res.status(201).json(ok(_catCompleta(r.lastInsertRowid, emp)))
+})
+
+// Lista de CATs com status de prazo.
+app.get('/api/ssma/cat', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const rows = db.prepare(`SELECT ca.*, c.nome AS colaborador_nome, s.numero AS ssma_numero
+     FROM cat_comunicacoes ca
+     LEFT JOIN colaboradores c ON c.id = ca.colaborador_id
+     LEFT JOIN ssma_ocorrencias s ON s.id = ca.ssma_id
+     WHERE ca.empresa_id = ? ORDER BY ca.created_at DESC`).all(emp)
+  res.json(ok(rows.map(c => ({ ...c, situacao: statusPrazoCAT(c, _hojeYMD()) }))))
+})
+
+// Detalhe de uma CAT + payload eSocial S-2210 pronto para integração.
+app.get('/api/ssma/cat/:id', requireAuth, (req, res) => {
+  const c = _catCompleta(req.params.id, empresaDoReq(req))
+  if (!c) return res.status(404).json(err('CAT não encontrada'))
+  res.json(ok(c))
+})
+
+// Alertas de compliance: incidentes com afastamento SEM CAT (pendentes/atrasados).
+app.get('/api/ssma/cat/pendentes/alertas', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const hoje = _hojeYMD()
+  // Incidentes com afastamento que ainda não têm CAT inicial emitida.
+  const semCat = db.prepare(`SELECT s.id, s.numero, s.data_ocorrencia, s.descricao, s.colaborador_id, c.nome AS colaborador_nome
+     FROM ssma_ocorrencias s LEFT JOIN colaboradores c ON c.id = s.colaborador_id
+     WHERE s.empresa_id = ? AND s.com_afastamento = 1
+       AND NOT EXISTS (SELECT 1 FROM cat_comunicacoes ca WHERE ca.ssma_id = s.id AND ca.tipo = 'Inicial' AND ca.empresa_id = ?)`)
+    .all(emp, emp)
+  const pendentes = semCat.map(s => {
+    const prazo = prazoCAT(s.data_ocorrencia, false)
+    return { ...s, prazo_legal: prazo, situacao: statusPrazoCAT({ prazo_legal: prazo }, hoje) }
+  })
+  const atrasadas = pendentes.filter(p => p.situacao === 'Atrasada').length
+  res.json(ok({ total: pendentes.length, atrasadas, pendentes }))
 })
 
 // ════════════════════════════════════════════════════════════

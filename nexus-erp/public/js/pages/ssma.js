@@ -151,6 +151,9 @@ function renderSSMA() {
   <!-- Treinamentos/matriz NR (NR-1 §1.7) reais do servidor -->
   <div id="ssmaTreinamentos"></div>
 
+  <!-- CAT / eSocial S-2210 (Lei 8.213/91) reais do servidor -->
+  <div id="ssmaCat"></div>
+
   <!-- KPIs Gerais -->
   <div class="ss-kpi-grid">
     <div class="ss-kpi" style="border-left:4px solid ${abertos.length > 0 ? '#ef4444' : '#22c55e'}">
@@ -334,6 +337,8 @@ function renderSSMA() {
   if (typeof window._carregarSsmaEpis === 'function') window._carregarSsmaEpis();
   // Treinamentos/matriz NR (NR-1 §1.7) reais do servidor.
   if (typeof window._carregarSsmaTreinamentos === 'function') window._carregarSsmaTreinamentos();
+  // CAT / eSocial S-2210 (Lei 8.213/91) reais do servidor.
+  if (typeof window._carregarSsmaCat === 'function') window._carregarSsmaCat();
 }
 
 /* ── Tabela de Incidentes ──────────────────────────── */
