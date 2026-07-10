@@ -35,6 +35,7 @@ import { aplicarMovimento, itensParaRepor, valorizarEstoque } from './lib/estoqu
 import { calcularOTIF, statusEntrega, dataPrometidaDoPrazo, tendenciaOTIF } from './lib/otif.js'
 import { statusDocumento, vigentesPorTipo, resumoDocumentos } from './lib/documentos.js'
 import { classificarEpis, alertasEpi } from './lib/epi.js'
+import { classificarTreinamentos, aptidaoColaborador, alertasTreinamentos } from './lib/treinamentos.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -299,6 +300,19 @@ db.exec(`CREATE TABLE IF NOT EXISTS epi_entregas (
   data_entrega TEXT, validade TEXT, quantidade INTEGER DEFAULT 1,
   entregue_por_id INTEGER, entregue_por_nome TEXT,
   observacao TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+// SSMA — matriz de treinamentos/certificações NR por colaborador com validade.
+// Treinamento de risco vencido (NR-10/35/33/ASO…) BLOQUEIA a atividade (NR-1
+// §1.7, NR-7). Ligado ao RH e isolado por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS treinamentos_colaborador (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  colaborador_id INTEGER REFERENCES colaboradores(id) ON DELETE CASCADE,
+  tipo TEXT NOT NULL, descricao TEXT,
+  data_realizacao TEXT, validade TEXT,
+  carga_horaria REAL, instrutor TEXT,
+  registrado_por_id INTEGER, registrado_por_nome TEXT,
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 )`)
@@ -3963,6 +3977,61 @@ app.get('/api/ssma/epis/alertas', requireAuth, (req, res) => {
      FROM epi_entregas e LEFT JOIN colaboradores c ON c.id = e.colaborador_id
      WHERE e.empresa_id = ?`).all(emp)
   res.json(ok(alertasEpi(rows, _hojeYMD())))
+})
+
+// ── Treinamentos/matriz NR (NR-1 §1.7): habilitação com bloqueio de risco ──
+// Registrar treinamento: valida que o colaborador é do próprio tenant.
+app.post('/api/ssma/treinamentos', requireAuth, requireRole('admin', 'diretor', 'rh', 'ssma'), (req, res) => {
+  const b = req.body || {}
+  const emp = empresaDoReq(req)
+  const colab = db.prepare(`SELECT * FROM colaboradores WHERE id = ? AND empresa_id = ?`).get(b.colaborador_id, emp)
+  if (!colab) return res.status(404).json(err('Colaborador não encontrado'))
+  if (!String(b.tipo || '').trim()) return res.status(400).json(err('Tipo do treinamento (ex.: NR-35) é obrigatório'))
+  const r = db.prepare(`INSERT INTO treinamentos_colaborador(colaborador_id, tipo, descricao, data_realizacao, validade, carga_horaria, instrutor, registrado_por_id, registrado_por_nome, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(colab.id, String(b.tipo).trim(), b.descricao || null, b.data_realizacao || _hojeYMD(), b.validade || null,
+      b.carga_horaria != null ? Number(b.carga_horaria) || 0 : null, b.instrutor || null,
+      req.user.usuario_id, req.user.nome, emp)
+  log(req.user.usuario_id, req.user.nome, 'treinamento_registrar', 'treinamentos_colaborador', `${String(b.tipo).trim()} de ${colab.nome}${b.validade ? ' — vence ' + b.validade : ''}`)
+  res.status(201).json(ok(_treinamentoComColab(r.lastInsertRowid, emp)))
+})
+
+function _treinamentoComColab(id, emp) {
+  const t = db.prepare(`SELECT t.*, c.nome AS colaborador_nome, c.cargo AS colaborador_cargo
+     FROM treinamentos_colaborador t LEFT JOIN colaboradores c ON c.id = t.colaborador_id
+     WHERE t.id = ? AND t.empresa_id = ?`).get(id, emp)
+  return t ? classificarTreinamentos([t], _hojeYMD())[0] : null
+}
+
+// Listar treinamentos (com situação + bloqueio); filtros por colaborador/situação.
+app.get('/api/ssma/treinamentos', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const where = ['t.empresa_id = ?']; const params = [emp]
+  if (req.query.colaborador_id) { where.push('t.colaborador_id = ?'); params.push(req.query.colaborador_id) }
+  const rows = db.prepare(`SELECT t.*, c.nome AS colaborador_nome, c.cargo AS colaborador_cargo
+     FROM treinamentos_colaborador t LEFT JOIN colaboradores c ON c.id = t.colaborador_id
+     WHERE ${where.join(' AND ')} ORDER BY COALESCE(t.validade,'9999') ASC, t.created_at DESC`).all(...params)
+  let lista = classificarTreinamentos(rows, _hojeYMD())
+  if (req.query.situacao) lista = lista.filter(t => t.situacao === req.query.situacao)
+  res.json(ok(lista))
+})
+
+// Alertas: treinamentos vencidos (com destaque para os que bloqueiam risco) e a vencer.
+app.get('/api/ssma/treinamentos/alertas', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const rows = db.prepare(`SELECT t.*, c.nome AS colaborador_nome, c.cargo AS colaborador_cargo
+     FROM treinamentos_colaborador t LEFT JOIN colaboradores c ON c.id = t.colaborador_id
+     WHERE t.empresa_id = ?`).all(emp)
+  res.json(ok(alertasTreinamentos(rows, _hojeYMD())))
+})
+
+// Aptidão de um colaborador (apto/bloqueado para atividade de risco).
+app.get('/api/ssma/colaboradores/:id/aptidao', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const colab = db.prepare(`SELECT * FROM colaboradores WHERE id = ? AND empresa_id = ?`).get(req.params.id, emp)
+  if (!colab) return res.status(404).json(err('Colaborador não encontrado'))
+  const rows = db.prepare(`SELECT * FROM treinamentos_colaborador WHERE colaborador_id = ? AND empresa_id = ?`).all(colab.id, emp)
+  res.json(ok({ colaborador_id: colab.id, colaborador_nome: colab.nome, ...aptidaoColaborador(rows, _hojeYMD()) }))
 })
 
 // ════════════════════════════════════════════════════════════
