@@ -142,6 +142,9 @@ function renderSSMA() {
     </div>
   </div>
 
+  <!-- Indicadores HSE reais do servidor (TF/TG/dias sem acidente) -->
+  <div id="ssmaIndicadores"></div>
+
   <!-- KPIs Gerais -->
   <div class="ss-kpi-grid">
     <div class="ss-kpi" style="border-left:4px solid ${abertos.length > 0 ? '#ef4444' : '#22c55e'}">
@@ -319,6 +322,8 @@ function renderSSMA() {
 
   // Carrega Chart.js e renderiza gráficos quando clicar na aba
   window._ssIncidentesData = _ssGetIncidentes();
+  // Indicadores HSE reais do servidor (TF/TG/dias sem acidente).
+  if (typeof window._carregarSsmaIndicadores === 'function') window._carregarSsmaIndicadores();
 }
 
 /* ── Tabela de Incidentes ──────────────────────────── */
