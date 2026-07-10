@@ -41,6 +41,7 @@ import { explodirBOM, filhosDiretos, gateCompra, podeLiberarEngenharia } from '.
 import { statusSourcing, itensParaCotar, resumoSourcing, montarRFQdeMaterial } from './lib/mm_sourcing.js'
 import { avaliarPPAP, resolverStatusPPAP, ppapLibera, gateProducao, bloqueiosProducao, statusQualidade } from './lib/mm_ppap.js'
 import { indexarEstoque, calcularMRP } from './lib/mm_mrp.js'
+import { consolidarMM, scoreFornecedor, classificarFornecedor, sugestaoCompra } from './lib/mm_dashboard.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -4509,6 +4510,47 @@ app.get('/api/mm/mrp', requireAuth, (req, res) => {
   const explosao = explodirBOM(materiais, null, veiculos)
   const estoque = db.prepare(`SELECT codigo, quantidade_atual FROM almoxarifado_itens WHERE empresa_id = ? AND ativo = 1`).all(emp)
   res.json(ok(calcularMRP(explosao, indexarEstoque(estoque), veiculos)))
+})
+
+// ── MM fase 5: dashboard executivo + score de fornecedor + sugestão de compra ─
+// Dashboard consolidado do MM: gaps do pipeline + resumo do MRP + sugestão.
+app.get('/api/mm/dashboard', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Acesso restrito', 403))
+  const emp = empresaDoReq(req)
+  const veiculos = req.query.veiculos ? Number(req.query.veiculos) : 1
+  const materiais = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const rfqIds = db.prepare(`SELECT DISTINCT mm_material_id FROM rfq WHERE empresa_id = ? AND mm_material_id IS NOT NULL`).all(emp).map(r => r.mm_material_id)
+  const ppapMap = _ppapVigente(emp)
+  const gaps = consolidarMM({ materiais, rfqMaterialIds: rfqIds, ppapMap })
+  const explosao = explodirBOM(materiais, null, veiculos)
+  const estoque = db.prepare(`SELECT codigo, quantidade_atual FROM almoxarifado_itens WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const mrp = calcularMRP(explosao, indexarEstoque(estoque), veiculos)
+  const matById = new Map(materiais.map(m => [m.id, m]))
+  const sugestao = sugestaoCompra(mrp.faltantes, matById)
+  res.json(ok({
+    gaps,
+    mrp: { veiculos_alvo: mrp.veiculos_alvo, veiculos_possiveis: mrp.veiculos_possiveis, disponibilidade_pct: mrp.disponibilidade_pct, itens_faltantes: mrp.itens_faltantes },
+    sugestao_compra: sugestao,
+  }))
+})
+
+// Score de fornecedor a partir de OTIF (entregas), PPAP e avaliações.
+app.get('/api/mm/fornecedores/score', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const fornecedores = db.prepare(`SELECT id, nome FROM fornecedores WHERE empresa_id = ?`).all(emp)
+  const hoje = _hojeYMD()
+  const lista = fornecedores.map(f => {
+    const entregas = db.prepare(`SELECT * FROM programacao_entregas WHERE fornecedor_id = ? AND empresa_id = ?`).all(f.id, emp)
+    const otif = calcularOTIF(entregas, hoje)
+    const ppap = db.prepare(`SELECT COUNT(*) total, SUM(CASE WHEN status IN ('Aprovado','Condicional') THEN 1 ELSE 0 END) aprovados FROM mm_ppap WHERE fornecedor_id = ? AND empresa_id = ?`).get(f.id, emp)
+    const av = db.prepare(`SELECT ROUND(AVG(nota_qualidade),2) q, ROUND(AVG(nota_prazo),2) p, ROUND(AVG(nota_preco),2) pr, ROUND(AVG(nota_atendimento),2) a FROM avaliacoes_fornecedor WHERE fornecedor_id = ?`).get(f.id) || {}
+    const sc = scoreFornecedor({
+      otif_pct: otif.otif_pct, ppap_total: ppap.total || 0, ppap_aprovados: ppap.aprovados || 0,
+      nota_qualidade: av.q || 0, nota_prazo: av.p || 0, nota_preco: av.pr || 0, nota_atendimento: av.a || 0,
+    })
+    return { fornecedor_id: f.id, nome: f.nome, otif_pct: otif.otif_pct, entregas: otif.entregues, ppap_total: ppap.total || 0, ...sc }
+  }).sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
+  res.json(ok(lista))
 })
 
 // ════════════════════════════════════════════════════════════

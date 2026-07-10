@@ -72,15 +72,85 @@ function renderMM() {
       <label style="font-size:12px;color:var(--text-muted)">Explodir por <input type="number" id="mm-veiculos" value="50" min="1" style="width:70px" class="form-control" style="display:inline-block"> veículo(s)
       <button class="btn btn-secondary btn-sm" onclick="mmExplodirTudo()"><i class="fas fa-calculator"></i> Necessidade total</button></label>
     </div>
-    <div id="mmMateriais"></div>
+    <div id="mmDashboardBox"></div>
+    <div id="mmMateriais" style="margin-top:16px"></div>
     <div id="mmSourcingBox" style="margin-top:16px"></div>
     <div id="mmQualidadeBox" style="margin-top:16px"></div>
     <div id="mmMrpBox" style="margin-top:16px"></div>
+    <div id="mmScoreBox" style="margin-top:16px"></div>
     <div id="mmExplosaoBox" style="margin-top:16px"></div>`
+  _carregarMMDashboard()
   _carregarMM()
   _carregarMMSourcing()
   _carregarMMQualidade()
   _carregarMMMrp()
+  _carregarMMScore()
+}
+
+// Render puro do dashboard executivo do MM (gaps do pipeline + sugestão).
+function _mmDashboardHTML(d) {
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s))
+  if (!d || !d.gaps) return ''
+  const g = d.gaps.resumo, mrp = d.mrp || {}
+  const card = (t, v, c, ic) => `<div class="stat-card" style="flex:1;min-width:130px;border-left:4px solid ${c}">
+    <div class="stat-label"><i class="fas fa-${ic}" style="color:${c};margin-right:5px"></i>${t}</div>
+    <div class="stat-value" style="color:${c}">${v}</div></div>`
+  const sug = (d.sugestao_compra || []).slice(0, 8).map(s => `<tr>
+    <td style="font-size:12px;color:var(--fa-teal);font-weight:600">${esc(s.part_number)}</td>
+    <td style="font-size:12px">${esc(s.descricao || '—')}</td>
+    <td style="font-size:12px;text-align:right;color:#dc2626;font-weight:700">${esc(s.faltante)}</td>
+    <td><span style="font-size:10px;font-weight:700;color:${s.pronto_para_compra ? '#16a34a' : '#d97706'}">${esc(s.acao)}</span></td>
+  </tr>`).join('')
+  return `<div class="ss-card"><div class="ss-card-head"><div class="ss-card-title"><i class="fas fa-gauge-high" style="color:#0891b2"></i>Painel executivo MM</div></div>
+    <div style="padding:12px 14px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        ${card('Sem engenharia', g.sem_engenharia, (g.sem_engenharia ? '#dc2626' : '#16a34a'), 'drafting-compass')}
+        ${card('Sem cotação', g.sem_cotacao, (g.sem_cotacao ? '#d97706' : '#16a34a'), 'paper-plane')}
+        ${card('Sem PPAP', g.sem_ppap, (g.sem_ppap ? '#dc2626' : '#16a34a'), 'clipboard-check')}
+        ${card('Faltantes (MRP)', mrp.itens_faltantes || 0, (mrp.itens_faltantes ? '#dc2626' : '#16a34a'), 'boxes-stacked')}
+        ${card('Críticos', g.criticos, '#d97706', 'triangle-exclamation')}
+        ${card('Veículos possíveis', (mrp.veiculos_possiveis != null ? mrp.veiculos_possiveis : '—'), '#0891b2', 'industry')}
+      </div>
+      ${(d.sugestao_compra || []).length ? `<div style="font-size:12px;font-weight:700;color:var(--text-muted);margin-bottom:6px"><i class="fas fa-lightbulb"></i> Sugestão de compra (faltantes)</div>
+        <div class="ss-table-wrap"><table class="ss-table"><thead><tr><th>Part Number</th><th>Descrição</th><th style="text-align:right">Faltante</th><th>Ação sugerida</th></tr></thead>
+        <tbody>${sug}</tbody></table></div>` : '<div style="font-size:12px;color:#16a34a"><i class="fas fa-check-circle"></i> Sem faltantes — plano coberto pelo estoque.</div>'}
+    </div></div>`
+}
+
+async function _carregarMMDashboard() {
+  const box = document.getElementById('mmDashboardBox')
+  if (!box || typeof apiAuth !== 'function') return
+  try { box.innerHTML = _mmDashboardHTML(await apiAuth(`/api/mm/dashboard?veiculos=${_mmVeiculos()}`)) }
+  catch (e) { box.innerHTML = '' }
+}
+
+const _MM_SCORE_COR = { 'A': '#16a34a', 'B': '#0ea5e9', 'C': '#d97706', 'D': '#dc2626' }
+// Render puro do ranking de score de fornecedor.
+function _mmScoreHTML(lista) {
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s))
+  if (!Array.isArray(lista) || !lista.length) return ''
+  const rows = lista.map(f => {
+    const letra = String(f.classificacao || '?').charAt(0)
+    const cor = _MM_SCORE_COR[letra] || '#64748b'
+    return `<tr>
+      <td style="font-size:12px;font-weight:600">${esc(f.nome)}</td>
+      <td style="font-size:14px;font-weight:800;text-align:right;color:${cor}">${f.score == null ? '—' : esc(f.score)}</td>
+      <td><span style="font-size:10px;font-weight:700;color:${cor}">${esc(f.classificacao)}</span></td>
+      <td style="font-size:12px;text-align:right">${f.otif_pct == null ? '—' : esc(f.otif_pct) + '%'}</td>
+      <td style="font-size:12px;text-align:right">${esc(f.ppap_total || 0)}</td>
+    </tr>`
+  }).join('')
+  return `<div class="ss-card"><div class="ss-card-head"><div class="ss-card-title"><i class="fas fa-ranking-star" style="color:#7c3aed"></i>Score de fornecedor (prazo · qualidade · comercial)</div></div>
+    <div class="ss-table-wrap" style="padding:8px"><table class="ss-table">
+      <thead><tr><th>Fornecedor</th><th style="text-align:right">Score</th><th>Classificação</th><th style="text-align:right">OTIF</th><th style="text-align:right">PPAP</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`
+}
+
+async function _carregarMMScore() {
+  const box = document.getElementById('mmScoreBox')
+  if (!box || typeof apiAuth !== 'function') return
+  try { box.innerHTML = _mmScoreHTML(await apiAuth('/api/mm/fornecedores/score')) }
+  catch (e) { box.innerHTML = '' }
 }
 
 // Render puro do painel de MRP (necessidade × saldo → faltantes + gargalo).
@@ -372,3 +442,7 @@ window.mmSubmeterPPAP = mmSubmeterPPAP
 window.mmConfirmarPPAP = mmConfirmarPPAP
 window._mmMrpHTML = _mmMrpHTML
 window._carregarMMMrp = _carregarMMMrp
+window._mmDashboardHTML = _mmDashboardHTML
+window._carregarMMDashboard = _carregarMMDashboard
+window._mmScoreHTML = _mmScoreHTML
+window._carregarMMScore = _carregarMMScore
