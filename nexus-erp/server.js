@@ -37,6 +37,7 @@ import { statusDocumento, vigentesPorTipo, resumoDocumentos } from './lib/docume
 import { classificarEpis, alertasEpi } from './lib/epi.js'
 import { classificarTreinamentos, aptidaoColaborador, alertasTreinamentos } from './lib/treinamentos.js'
 import { prazoCAT, statusPrazoCAT, montarS2210, validarCAT } from './lib/cat.js'
+import { explodirBOM, filhosDiretos, gateCompra, podeLiberarEngenharia } from './lib/mm_bom.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -332,6 +333,24 @@ db.exec(`CREATE TABLE IF NOT EXISTS cat_comunicacoes (
   emitida_por_id INTEGER, emitida_por_nome TEXT,
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
+)`)
+// MM (Materials Management, inspirado em SAP) — MATERIAL MASTER + estrutura de
+// produto (BOM). Cada material aponta o pai e a qtd/veículo (a árvore é a BOM).
+// Campos de engenharia embutidos (desenho/revisão/liberação) implementam o
+// gate "sem liberação não compra". Isolado por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS mm_materiais (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  part_number TEXT NOT NULL, descricao TEXT,
+  sistema TEXT, subsistema TEXT, nivel INTEGER DEFAULT 1,
+  peca_pai_id INTEGER, qtd_veiculo REAL DEFAULT 1, unidade TEXT DEFAULT 'PC',
+  make_buy TEXT DEFAULT 'BUY', material_tipo TEXT, peso REAL, criticidade TEXT DEFAULT 'Média',
+  fornecedor_id INTEGER, projeto TEXT,
+  eng_desenho TEXT, eng_revisao TEXT, eng_status TEXT DEFAULT 'Em Elaboração',
+  eng_liberado_compras INTEGER DEFAULT 0, eng_data_liberacao TEXT, eng_responsavel TEXT,
+  ativo INTEGER DEFAULT 1,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
 )`)
 
 // Programação de entregas: nasce na emissão do pedido (promessa original) e
@@ -4139,6 +4158,102 @@ app.get('/api/ssma/cat/pendentes/alertas', requireAuth, (req, res) => {
   })
   const atrasadas = pendentes.filter(p => p.situacao === 'Atrasada').length
   res.json(ok({ total: pendentes.length, atrasadas, pendentes }))
+})
+
+// ════════════════════════════════════════════════════════════
+// MM — MATERIALS MANAGEMENT (material master, BOM, gate de engenharia)
+// ════════════════════════════════════════════════════════════
+// Cadastro de material. part_number único por tenant. Valida o pai (mesmo tenant).
+app.post('/api/mm/materiais', requireAuth, requireRole('admin', 'diretor', 'engenharia', 'comprador', 'pcp'), (req, res) => {
+  const b = req.body || {}
+  const emp = empresaDoReq(req)
+  const pn = String(b.part_number || '').trim()
+  if (!pn) return res.status(400).json(err('Part Number é obrigatório'))
+  const dup = db.prepare(`SELECT id FROM mm_materiais WHERE empresa_id = ? AND UPPER(part_number) = UPPER(?)`).get(emp, pn)
+  if (dup) return res.status(409).json(err('Já existe material com este Part Number', 409))
+  if (b.peca_pai_id != null) {
+    const pai = db.prepare(`SELECT id FROM mm_materiais WHERE id = ? AND empresa_id = ?`).get(b.peca_pai_id, emp)
+    if (!pai) return res.status(404).json(err('Peça pai não encontrada'))
+  }
+  const mb = String(b.make_buy || 'BUY').toUpperCase() === 'MAKE' ? 'MAKE' : 'BUY'
+  const r = db.prepare(`INSERT INTO mm_materiais(part_number, descricao, sistema, subsistema, nivel, peca_pai_id, qtd_veiculo, unidade, make_buy, material_tipo, peso, criticidade, fornecedor_id, projeto, eng_desenho, eng_revisao, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(pn, b.descricao || null, b.sistema || null, b.subsistema || null, Number(b.nivel) || 1,
+      b.peca_pai_id || null, Number(b.qtd_veiculo) || 1, b.unidade || 'PC', mb, b.material_tipo || null,
+      b.peso != null ? Number(b.peso) : null, b.criticidade || 'Média', b.fornecedor_id || null, b.projeto || null,
+      b.eng_desenho || null, b.eng_revisao || null, emp)
+  log(req.user.usuario_id, req.user.nome, 'mm_material_criar', 'mm_materiais', `${pn} (${mb}) ${b.descricao || ''}`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM mm_materiais WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+// Lista de materiais com filtros (sistema, make_buy, criticidade, projeto, pai).
+app.get('/api/mm/materiais', requireAuth, (req, res) => {
+  const where = ['empresa_id = ?', 'ativo = 1']; const params = [empresaDoReq(req)]
+  for (const [q, col] of [['sistema', 'sistema'], ['make_buy', 'make_buy'], ['criticidade', 'criticidade'], ['projeto', 'projeto']]) {
+    if (req.query[q]) { where.push(`${col} = ?`); params.push(req.query[q]) }
+  }
+  if (req.query.peca_pai_id) { where.push('peca_pai_id = ?'); params.push(req.query.peca_pai_id) }
+  res.json(ok(db.prepare(`SELECT * FROM mm_materiais WHERE ${where.join(' AND ')} ORDER BY nivel ASC, part_number ASC`).all(...params)))
+})
+
+app.get('/api/mm/materiais/:id', requireAuth, (req, res) => {
+  const m = rowScoped('mm_materiais', req)
+  if (!m) return res.status(404).json(err('Material não encontrado'))
+  res.json(ok({ ...m, filhos: filhosDiretos(db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(empresaDoReq(req)), m.id), gate_compra: gateCompra(m) }))
+})
+
+app.put('/api/mm/materiais/:id', requireAuth, requireRole('admin', 'diretor', 'engenharia', 'comprador', 'pcp'), (req, res) => {
+  const cur = rowScoped('mm_materiais', req)
+  if (!cur) return res.status(404).json(err('Material não encontrado'))
+  const b = req.body || {}
+  const mb = b.make_buy != null ? (String(b.make_buy).toUpperCase() === 'MAKE' ? 'MAKE' : 'BUY') : cur.make_buy
+  db.prepare(`UPDATE mm_materiais SET descricao=?, sistema=?, subsistema=?, nivel=?, qtd_veiculo=?, unidade=?, make_buy=?, material_tipo=?, peso=?, criticidade=?, fornecedor_id=?, projeto=?, updated_at=datetime('now') WHERE id=?`)
+    .run(b.descricao ?? cur.descricao, b.sistema ?? cur.sistema, b.subsistema ?? cur.subsistema, Number(b.nivel ?? cur.nivel) || 1,
+      Number(b.qtd_veiculo ?? cur.qtd_veiculo) || 1, b.unidade ?? cur.unidade, mb, b.material_tipo ?? cur.material_tipo,
+      b.peso != null ? Number(b.peso) : cur.peso, b.criticidade ?? cur.criticidade, b.fornecedor_id ?? cur.fornecedor_id,
+      b.projeto ?? cur.projeto, req.params.id)
+  res.json(ok(db.prepare(`SELECT * FROM mm_materiais WHERE id = ?`).get(req.params.id)))
+})
+
+// Explosão de BOM: multiplica qtd pelo caminho e pelo volume de veículos (MRP base).
+app.get('/api/mm/materiais/:id/explosao', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const root = db.prepare(`SELECT id FROM mm_materiais WHERE id = ? AND empresa_id = ?`).get(req.params.id, emp)
+  if (!root) return res.status(404).json(err('Material não encontrado'))
+  const todos = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const veiculos = req.query.veiculos ? Number(req.query.veiculos) : 1
+  res.json(ok(explodirBOM(todos, root.id, veiculos)))
+})
+
+// BOM completa do tenant (todas as raízes), explodida por N veículos.
+app.get('/api/mm/bom/explosao', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const todos = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const veiculos = req.query.veiculos ? Number(req.query.veiculos) : 1
+  res.json(ok(explodirBOM(todos, null, veiculos)))
+})
+
+// GATE DE ENGENHARIA: libera o desenho para compras. Exige desenho + revisão.
+app.post('/api/mm/materiais/:id/liberar-engenharia', requireAuth, requireRole('admin', 'diretor', 'engenharia'), (req, res) => {
+  const m = rowScoped('mm_materiais', req)
+  if (!m) return res.status(404).json(err('Material não encontrado'))
+  const b = req.body || {}
+  const desenho = b.eng_desenho ?? m.eng_desenho
+  const revisao = b.eng_revisao ?? m.eng_revisao
+  if (!podeLiberarEngenharia({ eng_desenho: desenho, eng_revisao: revisao })) {
+    return res.status(400).json(err('Liberação exige nº do desenho e revisão'))
+  }
+  db.prepare(`UPDATE mm_materiais SET eng_desenho=?, eng_revisao=?, eng_status='Liberado', eng_liberado_compras=1, eng_data_liberacao=?, eng_responsavel=?, updated_at=datetime('now') WHERE id=?`)
+    .run(desenho, revisao, _hojeYMD(), req.user.nome, req.params.id)
+  log(req.user.usuario_id, req.user.nome, 'mm_eng_liberar', 'mm_materiais', `${m.part_number} liberado p/ compras (${desenho} rev ${revisao})`)
+  res.json(ok(db.prepare(`SELECT * FROM mm_materiais WHERE id = ?`).get(req.params.id)))
+})
+
+// Verifica o gate de compra de um item (usado pelo sourcing antes da RFQ/pedido).
+app.get('/api/mm/materiais/:id/gate-compra', requireAuth, (req, res) => {
+  const m = rowScoped('mm_materiais', req)
+  if (!m) return res.status(404).json(err('Material não encontrado'))
+  res.json(ok(gateCompra(m)))
 })
 
 // ════════════════════════════════════════════════════════════
