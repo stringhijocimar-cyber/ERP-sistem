@@ -567,6 +567,7 @@ const PAGE_META = {
   benchmark_ia:             { label: 'Benchmark Público de Mercado — IA',           icon: 'trophy' },
   inteligencia_adaptativa:  { label: 'Inteligência Adaptativa ao Negócio',           icon: 'brain' },
   ssma:                     { label: 'SSMA / Qualidade / Compliance',                icon: 'hard-hat' },
+  mm:                       { label: 'MM — Gestão de Materiais (BOM/Engenharia)',    icon: 'sitemap' },
   custos:                   { label: 'Controle de Custos & Rastreabilidade',         icon: 'chart-area' },
 };
 
@@ -636,6 +637,7 @@ function navigate(page) {
     frota: renderFrota,
     estoque: function() { if(typeof renderAlmoxarifado === 'function') renderAlmoxarifado(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Almoxarifado...</p>'; },
     ssma: renderSSMA,
+    mm: function() { if(typeof renderMM === 'function') renderMM(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando MM / Materiais...</p>'; },
     documentos: renderDocumentos,
     treinamentos: renderTreinamentos,
     relatorios: renderRelatorios,
