@@ -1214,6 +1214,66 @@ app.get('/api/dashboard-financeiro', requireAuth, (req, res) => {
   res.json(ok(_montarDashboardFinanceiro(empresaDoReq(req), { ano })))
 })
 
+// Painel Executivo (visão de dono/CEO): costura Financeiro + Suprimentos +
+// Fornecedores/OTIF num só lugar, com os riscos que exigem decisão. Reusa os
+// agregadores existentes. Isolado por tenant; gate de perfil.
+app.get('/api/painel-executivo', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso ao painel executivo', 403))
+  const emp = empresaDoReq(req)
+  const hoje = _hojeYMD()
+  const ano = req.query.ano ? parseInt(req.query.ano) : new Date().getFullYear()
+  const round = n => Math.round((Number(n) || 0) * 100) / 100
+  const one = (sql, ...p) => db.prepare(sql).get(emp, ...p) || {}
+
+  // 1) Financeiro — reaproveita o cockpit financeiro completo.
+  const fin = _montarDashboardFinanceiro(emp, { ano })
+
+  // 2) Suprimentos — pedidos ativos, RCs pendentes, estoque.
+  const pedAtivos = one(`SELECT COUNT(*) n, COALESCE(SUM(valor_total),0) v FROM pedidos_compra WHERE empresa_id = ? AND status NOT IN ('Cancelado','Entregue')`)
+  const rcPendentes = one(`SELECT COUNT(*) n FROM requisicoes_compra WHERE empresa_id = ? AND status IN ('Rascunho','Pendente','Aprovada')`)
+  const itensEstoque = db.prepare(`SELECT quantidade_atual, quantidade_minima, quantidade_maxima, valor_medio, categoria, id, codigo, descricao FROM almoxarifado_itens WHERE ativo = 1 AND empresa_id = ?`).all(emp)
+  const valorEstoque = valorizarEstoque(itensEstoque)
+  const reposicao = itensParaRepor(itensEstoque)
+  const anomalias = one(`SELECT COUNT(*) n FROM notificacoes WHERE empresa_id = ? AND tipo = 'anomalia' AND lida = 0`)
+
+  // 3) Fornecedores / OTIF — desempenho de entrega do tenant inteiro.
+  const entregas = db.prepare(`SELECT data_prometida, data_confirmada, data_entregue, status FROM programacao_entregas WHERE empresa_id = ?`).all(emp)
+  const otif = calcularOTIF(entregas, hoje)
+  const forn = one(`SELECT COUNT(*) total, SUM(CASE WHEN status='Homologado' THEN 1 ELSE 0 END) homologados FROM fornecedores WHERE empresa_id = ? AND ativo = 1`)
+  const cotacoesPendentes = one(`SELECT COUNT(*) n FROM rfq_fornecedores rf JOIN rfq r ON r.id = rf.rfq_id WHERE r.empresa_id = ? AND rf.status != 'Respondida' AND r.status = 'Aberta'`)
+  const convitesPendentes = one(`SELECT COUNT(*) n FROM fornecedor_convites WHERE empresa_id = ? AND status = 'pendente' AND COALESCE(expira_em,'') >= ?`, new Date().toISOString())
+
+  // 4) Riscos executivos — o que o dono precisa decidir hoje.
+  const riscos = []
+  if (fin.projecao.aperto_previsto) riscos.push({ nivel: 'alto', area: 'Caixa', titulo: 'Aperto de caixa previsto', detalhe: `Menor saldo ${fin.projecao.menor_saldo} na semana ${fin.projecao.semana_critica || '—'}` })
+  for (const c of (fin.contratos.prejuizo || []).slice(0, 3)) riscos.push({ nivel: 'alto', area: 'Margem', titulo: `Contrato no prejuízo: ${c.numero}`, detalhe: `Resultado ${c.resultado} (margem ${c.margem_pct}%)` })
+  if (round(fin.posicao.a_pagar_vencido) > 0) riscos.push({ nivel: 'medio', area: 'Financeiro', titulo: 'Contas a pagar vencidas', detalhe: `${fin.posicao.a_pagar_vencido} em atraso` })
+  if (otif.otif_pct != null && otif.otif_pct < 90) riscos.push({ nivel: 'medio', area: 'Suprimentos', titulo: `OTIF abaixo da meta`, detalhe: `${otif.otif_pct}% no prazo (${otif.atrasadas_abertas} atrasada(s) em aberto)` })
+  if (reposicao.length) riscos.push({ nivel: 'baixo', area: 'Estoque', titulo: `${reposicao.length} item(ns) no ponto de reposição`, detalhe: `Custo estimado de reposição ${round(reposicao.reduce((s, i) => s + (i.custo_estimado || 0), 0))}` })
+  if ((anomalias.n || 0) > 0) riscos.push({ nivel: 'medio', area: 'Compras', titulo: `${anomalias.n} anomalia(s) de compra em aberto`, detalhe: 'Ver Central de Alertas' })
+  const ordem = { alto: 0, medio: 1, baixo: 2 }
+  riscos.sort((a, b) => ordem[a.nivel] - ordem[b.nivel])
+
+  res.json(ok({
+    periodo: String(ano), gerado_em: new Date().toISOString(),
+    financeiro: {
+      receita: fin.dre.receita, resultado: fin.dre.resultado_operacional, margem_pct: fin.dre.margem_liquida_pct,
+      capital_giro: fin.posicao.capital_giro, saldo_projetado: fin.projecao.saldo_final, aperto_previsto: fin.projecao.aperto_previsto,
+      a_receber: fin.posicao.a_receber, a_pagar: fin.posicao.a_pagar,
+    },
+    suprimentos: {
+      pedidos_ativos: pedAtivos.n || 0, pedidos_valor: round(pedAtivos.v), rcs_pendentes: rcPendentes.n || 0,
+      estoque_valor: valorEstoque.total, itens_reposicao: reposicao.length, anomalias_abertas: anomalias.n || 0,
+    },
+    fornecedores: {
+      total: forn.total || 0, homologados: forn.homologados || 0,
+      otif_pct: otif.otif_pct, otif_sem_prazo: otif.sem_prazo || 0, entregas_atrasadas: otif.atrasadas_abertas || 0,
+      cotacoes_pendentes: cotacoesPendentes.n || 0, convites_pendentes: convitesPendentes.n || 0,
+    },
+    riscos,
+  }))
+})
+
 // Exportações CSV (Excel abre direto) para diretoria/contador.
 app.get('/api/dre/export.csv', requireAuth, (req, res) => {
   if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem acesso à DRE', 403))
