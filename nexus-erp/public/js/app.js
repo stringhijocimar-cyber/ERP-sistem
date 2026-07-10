@@ -601,6 +601,7 @@ function navigate(page) {
     custos: renderCustos,
     financeiro: renderFinanceiro,
     dashboard_financeiro: function() { if(typeof renderDashboardFinanceiro === 'function') renderDashboardFinanceiro(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Dashboard Financeiro...</p>'; },
+    painel_executivo: function() { if(typeof renderPainelExecutivo === 'function') renderPainelExecutivo(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Painel Executivo...</p>'; },
     faturamento: renderFaturamento,
     contas_pagar: renderContasPagar,
     conciliacao: function() { if(typeof renderConciliacao === 'function') renderConciliacao(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Conciliação...</p>'; },
