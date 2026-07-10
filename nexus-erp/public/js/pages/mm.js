@@ -75,10 +75,54 @@ function renderMM() {
     <div id="mmMateriais"></div>
     <div id="mmSourcingBox" style="margin-top:16px"></div>
     <div id="mmQualidadeBox" style="margin-top:16px"></div>
+    <div id="mmMrpBox" style="margin-top:16px"></div>
     <div id="mmExplosaoBox" style="margin-top:16px"></div>`
   _carregarMM()
   _carregarMMSourcing()
   _carregarMMQualidade()
+  _carregarMMMrp()
+}
+
+// Render puro do painel de MRP (necessidade × saldo → faltantes + gargalo).
+function _mmMrpHTML(d) {
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s))
+  if (!d) return ''
+  const kpi = (t, v, c, sub) => `<div class="stat-card" style="flex:1;min-width:120px"><div class="stat-label">${t}</div><div class="stat-value" style="color:${c}">${v}</div>${sub ? `<div style="font-size:11px;color:var(--text-muted)">${sub}</div>` : ''}</div>`
+  const corDisp = d.disponibilidade_pct >= 100 ? '#16a34a' : (d.disponibilidade_pct >= 60 ? '#d97706' : '#dc2626')
+  const gargalo = d.veiculos_possiveis < d.veiculos_alvo
+  const rows = (d.faltantes || []).map(i => `<tr>
+    <td style="font-size:12px;color:var(--fa-teal);font-weight:600">${esc(i.part_number)}</td>
+    <td style="font-size:12px">${esc(i.descricao || '—')}</td>
+    <td style="font-size:12px;text-align:right">${esc(i.necessidade)}</td>
+    <td style="font-size:12px;text-align:right">${esc(i.disponivel)}</td>
+    <td style="font-size:12px;text-align:right;font-weight:700;color:#dc2626">${esc(i.faltante)}</td>
+    <td style="font-size:12px;text-align:right">${esc(i.cobertura_pct)}%</td>
+    <td style="font-size:12px;text-align:right">${i.veiculos_cobertos == null ? '—' : esc(i.veiculos_cobertos)}</td>
+  </tr>`).join('')
+  return `<div class="ss-card"><div class="ss-card-head">
+      <div class="ss-card-title"><i class="fas fa-calculator" style="color:#0891b2"></i>MRP — necessidade × disponibilidade</div>
+    </div>
+    <div style="padding:10px 14px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        ${kpi('Disponibilidade', d.disponibilidade_pct + '%', corDisp, d.itens_buy + ' itens BUY')}
+        ${kpi('Itens faltantes', d.itens_faltantes || 0, (d.itens_faltantes ? '#dc2626' : '#16a34a'))}
+        ${kpi('Veículos possíveis', d.veiculos_possiveis, (gargalo ? '#dc2626' : '#16a34a'), 'alvo: ' + d.veiculos_alvo)}
+      </div>
+      ${gargalo ? `<div class="ss-alert danger" style="margin-bottom:12px"><i class="fas fa-industry" style="color:#dc2626;margin-top:2px"></i>
+        <div><div style="font-weight:700;color:#dc2626">Estoque cobre só ${d.veiculos_possiveis} de ${d.veiculos_alvo} veículos</div>
+        <div style="font-size:12px;color:var(--text-secondary)">O item mais restritivo (maior falta) limita o plano de produção. Reponha os faltantes abaixo.</div></div></div>` : ''}
+      ${(d.faltantes || []).length ? `<div class="ss-table-wrap"><table class="ss-table">
+        <thead><tr><th>Part Number</th><th>Descrição</th><th style="text-align:right">Necessidade</th><th style="text-align:right">Saldo</th><th style="text-align:right">Faltante</th><th style="text-align:right">Cobertura</th><th style="text-align:right">Veíc.</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+        : `<div style="text-align:center;padding:20px;color:var(--text-muted)"><i class="fas fa-check-circle" style="font-size:22px;color:#16a34a;display:block;margin-bottom:6px"></i>Estoque cobre toda a necessidade do plano</div>`}
+    </div></div>`
+}
+
+async function _carregarMMMrp() {
+  const box = document.getElementById('mmMrpBox')
+  if (!box || typeof apiAuth !== 'function') return
+  try { box.innerHTML = _mmMrpHTML(await apiAuth(`/api/mm/mrp?veiculos=${_mmVeiculos()}`)) }
+  catch (e) { box.innerHTML = '' }
 }
 
 // Render puro do painel de qualidade/produção (PPAP → gate de produção).
@@ -223,6 +267,7 @@ async function mmExplodirTudo() {
   try {
     const ex = await apiAuth(`/api/mm/bom/explosao?veiculos=${_mmVeiculos()}`)
     _mmRenderExplosao(ex, `Necessidade total (${_mmVeiculos()} veículos)`)
+    _carregarMMMrp() // recalcula o MRP para o mesmo volume
   } catch (e) { if (typeof showToast === 'function') showToast('Falha ao explodir BOM', 'error') }
 }
 function _mmRenderExplosao(ex, titulo) {
@@ -325,3 +370,5 @@ window._mmQualidadeHTML = _mmQualidadeHTML
 window._carregarMMQualidade = _carregarMMQualidade
 window.mmSubmeterPPAP = mmSubmeterPPAP
 window.mmConfirmarPPAP = mmConfirmarPPAP
+window._mmMrpHTML = _mmMrpHTML
+window._carregarMMMrp = _carregarMMMrp
