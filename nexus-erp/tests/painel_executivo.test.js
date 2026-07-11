@@ -71,12 +71,36 @@ describe('GET /api/painel-executivo', () => {
   })
 })
 
+describe('bloco industrial (MM) no painel', () => {
+  it('sem materiais MM o bloco é null (tenant não usa o módulo)', () => {
+    expect(painel.industrial).toBeNull()
+  })
+  it('com BOM: gaps + faltantes do MRP + riscos de produção/qualidade/engenharia', async () => {
+    // BOM mínima: sistema MAKE → motor BUY (sem engenharia, sem PPAP, sem estoque)
+    const sys = (await auth(request(app).post('/api/mm/materiais')).send({ part_number: 'PE-SYS', make_buy: 'MAKE', nivel: 1, qtd_veiculo: 1 })).body.data.id
+    await auth(request(app).post('/api/mm/materiais')).send({ part_number: 'PE-MOTOR', make_buy: 'BUY', nivel: 2, peca_pai_id: sys, qtd_veiculo: 1, criticidade: 'Alta' })
+    const d = (await auth(request(app).get('/api/painel-executivo?veiculos=10'))).body.data
+    expect(d.industrial).toBeTruthy()
+    expect(d.industrial.sem_engenharia).toBe(1)
+    expect(d.industrial.sem_ppap).toBe(1)
+    expect(d.industrial.mrp_faltantes).toBe(1)          // motor sem estoque
+    expect(d.industrial.veiculos_possiveis).toBe(0)     // nada coberto
+    expect(d.industrial.veiculos_alvo).toBe(10)
+    const areas = d.riscos.map(r => r.area).join(' | ')
+    expect(areas).toMatch(/Produção/)
+    expect(areas).toMatch(/Qualidade/)
+    expect(areas).toMatch(/Engenharia/)
+    // risco de produção é nível alto → aparece antes dos médios
+    expect(d.riscos[0].nivel).toBe('alto')
+  })
+})
+
 describe('isolamento e gate', () => {
   it('perfil fornecedor é bloqueado (403)', async () => {
     const r = await request(app).get('/api/painel-executivo').set('Authorization', `Bearer ${tokF}`)
     expect(r.status).toBe(403)
   })
-  it('tenant B tem painel zerado', async () => {
+  it('tenant B tem painel zerado e sem bloco industrial', async () => {
     const empB = (await auth(request(app).post('/api/empresas')).send({ razao_social: 'Tenant B' })).body.data.id
     await auth(request(app).post('/api/usuarios')).send({ nome: 'AdmB', email: 'pe.b@x.com', senha: 'Aa@123456', perfil: 'admin', empresa_id: empB })
     const tokB = (await request(app).post('/api/auth/login').send({ email: 'pe.b@x.com', senha: 'Aa@123456' })).body?.data?.token
@@ -84,5 +108,6 @@ describe('isolamento e gate', () => {
     expect(d.financeiro.receita).toBe(0)
     expect(d.suprimentos.pedidos_ativos).toBe(0)
     expect(d.fornecedores.total).toBe(0)
+    expect(d.industrial).toBeNull()
   })
 })
