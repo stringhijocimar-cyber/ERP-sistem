@@ -45,7 +45,9 @@ export function explodirBOM(materiais = [], rootId = null, veiculos = 1) {
       nivel: m.nivel, profundidade: prof, criticidade: m.criticidade,
       qtd_por_veiculo: qtdVeic, qtd_total: qtdVeic * n,
     })
-    for (const f of (filhos.get(m.id) || [])) anda(f, qtdVeic || 1, prof + 1)
+    // Propaga a quantidade REAL: pai com qtd 0 (conjunto opcional/desativado)
+    // zera a subárvore — antes herdava 1 e inflava a necessidade de compra.
+    for (const f of (filhos.get(m.id) || [])) anda(f, qtdVeic, prof + 1)
   }
   const raizes = rootId == null ? (filhos.get(null) || []) : (porId.has(rootId) ? [porId.get(rootId)] : [])
   for (const r of raizes) {
