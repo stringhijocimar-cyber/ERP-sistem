@@ -25,6 +25,7 @@ function _ppOrdensHTML(ordens) {
       <td style="white-space:nowrap">
         ${o.status === 'Planejada' ? `<button class="btn btn-sm" style="font-size:11px;padding:3px 8px;background:rgba(14,165,233,.1);color:#0ea5e9" onclick="ppLiberar(${Number(o.id)})"><i class="fas fa-unlock"></i> Liberar</button>` : ''}
         ${['Liberada', 'Em Produção'].includes(o.status) ? `<button class="btn btn-sm" style="font-size:11px;padding:3px 8px;background:rgba(22,163,74,.1);color:#16a34a" onclick="ppApontar(${Number(o.id)})"><i class="fas fa-industry"></i> Apontar</button>` : ''}
+        ${!['Concluída', 'Cancelada'].includes(o.status) ? `<button class="btn-icon" style="background:rgba(220,38,38,.08);color:#dc2626" onclick="ppCancelar(${Number(o.id)})" title="Cancelar ordem"><i class="fas fa-ban"></i></button>` : ''}
       </td>
     </tr>`
   }).join('')
@@ -123,3 +124,13 @@ window.ppSalvarOrdem = ppSalvarOrdem
 window.ppLiberar = ppLiberar
 window.ppApontar = ppApontar
 window.ppConfirmarApontamento = ppConfirmarApontamento
+
+// Cancelamento congela o restante da ordem (material consumido permanece).
+async function ppCancelar(id) {
+  try {
+    const op = await apiAuth(`/api/pp/ordens/${id}/cancelar`, { method: 'POST', body: {} })
+    if (typeof showToast === 'function') showToast(`${op.numero} cancelada`, 'warning')
+    _carregarPP()
+  } catch (e) { if (typeof showToast === 'function') showToast(e && e.message ? e.message : 'Falha ao cancelar', 'error') }
+}
+window.ppCancelar = ppCancelar

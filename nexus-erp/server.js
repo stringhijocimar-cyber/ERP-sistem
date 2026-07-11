@@ -4700,8 +4700,14 @@ app.post('/api/pp/ordens/:id/apontar', requireAuth, requireRole('admin', 'direto
   if (!(n > 0)) return res.status(400).json(err('Informe a quantidade de veículos produzidos'))
   const restante = (op.veiculos_plan || 0) - (op.veiculos_produzidos || 0)
   if (n > restante) return res.status(400).json(err(`Apontamento (${n}) maior que o restante da ordem (${restante})`))
-  // Consumo pela BOM agregada (por PN) para N veículos, validado contra o saldo.
-  const { mrp } = _ppMrpDaOrdem(emp, n)
+  // RECALL de qualidade: se o PPAP vigente deixou de liberar DEPOIS da
+  // liberação da ordem (reprovado em nova submissão), a produção para aqui —
+  // apontar seguiria montando peça reprovada.
+  const { materiais: matsAtual, mrp } = _ppMrpDaOrdem(emp, n)
+  const recall = bloqueiosProducao(matsAtual, _ppapVigente(emp))
+  if (recall.length) {
+    return res.status(409).json(err(`Produção suspensa por qualidade: ${recall.map(m => m.part_number).join(', ')} sem PPAP que libere (recall)`, 409))
+  }
   const consumo = consumoDaOrdem(mrp.itens, n)
   const estoqueRows = db.prepare(`SELECT id, codigo, descricao, quantidade_atual, valor_medio FROM almoxarifado_itens WHERE empresa_id = ? AND ativo = 1`).all(emp)
   const v = validarConsumo(consumo, indexarEstoque(estoqueRows))
@@ -4722,6 +4728,17 @@ app.post('/api/pp/ordens/:id/apontar', requireAuth, requireRole('admin', 'direto
     .run(prog.veiculos_produzidos, prog.status, prog.concluida ? 1 : 0, op.id)
   log(req.user.usuario_id, req.user.nome, 'pp_op_apontar', 'pp_ordens', `${op.numero}: +${n} veíc. (${prog.veiculos_produzidos}/${op.veiculos_plan})${prog.concluida ? ' — CONCLUÍDA' : ''}`)
   res.json(ok({ ...db.prepare(`SELECT * FROM pp_ordens WHERE id = ?`).get(op.id), consumo }))
+})
+
+// CANCELAR a ordem (qualquer status exceto Concluída/Cancelada). O material já
+// consumido permanece consumido — o cancelamento congela o restante.
+app.post('/api/pp/ordens/:id/cancelar', requireAuth, requireRole('admin', 'diretor', 'pcp'), (req, res) => {
+  const op = rowScoped('pp_ordens', req)
+  if (!op) return res.status(404).json(err('Ordem não encontrada'))
+  if (['Concluída', 'Cancelada'].includes(op.status)) return res.status(409).json(err(`Ordem ${op.status} não pode ser cancelada`, 409))
+  db.prepare(`UPDATE pp_ordens SET status='Cancelada', updated_at=datetime('now') WHERE id=?`).run(op.id)
+  log(req.user.usuario_id, req.user.nome, 'pp_op_cancelar', 'pp_ordens', `${op.numero} cancelada (${op.veiculos_produzidos}/${op.veiculos_plan} produzidos)${req.body?.motivo ? ' — ' + String(req.body.motivo).slice(0, 200) : ''}`)
+  res.json(ok(db.prepare(`SELECT * FROM pp_ordens WHERE id = ?`).get(op.id)))
 })
 
 // Score de fornecedor a partir de OTIF (entregas), PPAP e avaliações.
