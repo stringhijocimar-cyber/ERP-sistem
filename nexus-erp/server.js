@@ -4527,6 +4527,45 @@ app.get('/api/mm/mrp', requireAuth, (req, res) => {
   res.json(ok(calcularMRP(explosao, indexarEstoque(estoque), veiculos)))
 })
 
+// MRP → RC: transforma os faltantes em requisição de compra no ciclo
+// existente (RC → aprovação → pedido). A demanda é real independente da
+// engenharia; o gate "sem liberação não compra" segue valendo no sourcing.
+app.post('/api/mm/mrp/gerar-rc', requireAuth, requireRole('admin', 'diretor', 'comprador', 'pcp'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const b = req.body || {}
+  const veiculos = b.veiculos ? Number(b.veiculos) : 1
+  const materiais = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const estoque = db.prepare(`SELECT codigo, quantidade_atual, valor_medio, unidade FROM almoxarifado_itens WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const mrp = calcularMRP(explodirBOM(materiais, null, veiculos), indexarEstoque(estoque), veiculos)
+  let faltantes = mrp.faltantes.filter(f => String(f.make_buy || '').toUpperCase() === 'BUY')
+  // Seleção opcional de materiais específicos (senão, todos os faltantes BUY).
+  if (Array.isArray(b.material_ids) && b.material_ids.length) {
+    const set = new Set(b.material_ids.map(Number))
+    faltantes = faltantes.filter(f => set.has(Number(f.id)))
+  }
+  if (!faltantes.length) return res.status(400).json(err('Nenhum item faltante no MRP para requisitar'))
+  // Valor estimado: custo médio do item de estoque com o mesmo código (se houver).
+  const custoPorPN = new Map(estoque.filter(e => e.codigo).map(e => [String(e.codigo).trim().toUpperCase(), e]))
+  const matById = new Map(materiais.map(m => [m.id, m]))
+  const itens = faltantes.map(f => {
+    const est = custoPorPN.get(String(f.part_number || '').trim().toUpperCase())
+    const m = matById.get(f.id) || {}
+    return {
+      descricao: f.descricao || f.part_number, codigo_produto: f.part_number,
+      quantidade: f.faltante, unidade: m.unidade || est?.unidade || 'PC',
+      valor_unitario_estimado: est?.valor_medio || 0,
+    }
+  })
+  const wbs = (b.wbs && String(b.wbs).trim()) || 'MRP'
+  const rc = inserirRC(emp, req.user, {
+    departamento: b.departamento || 'PCP', prioridade: b.prioridade || 'Alta',
+    observacoes: b.observacoes || `Faltantes do MRP para ${mrp.veiculos_alvo} veículo(s) — estoque cobre ${mrp.veiculos_possiveis}`,
+    tipo: 'Material', wbs,
+  }, itens)
+  log(req.user.usuario_id, req.user.nome, 'mm_mrp_rc', 'rc', `RC ${rc.numero} gerada do MRP (${faltantes.length} faltante(s), ${mrp.veiculos_alvo} veíc.)`)
+  res.status(201).json(ok({ ...rc, origem: 'mrp', itens_faltantes: faltantes.length, veiculos_alvo: mrp.veiculos_alvo, veiculos_possiveis: mrp.veiculos_possiveis }))
+})
+
 // ── MM fase 5: dashboard executivo + score de fornecedor + sugestão de compra ─
 // Dashboard consolidado do MM: gaps do pipeline + resumo do MRP + sugestão.
 app.get('/api/mm/dashboard', requireAuth, (req, res) => {

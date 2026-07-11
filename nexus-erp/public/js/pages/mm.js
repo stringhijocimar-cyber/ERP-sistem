@@ -171,6 +171,7 @@ function _mmMrpHTML(d) {
   </tr>`).join('')
   return `<div class="ss-card"><div class="ss-card-head">
       <div class="ss-card-title"><i class="fas fa-calculator" style="color:#0891b2"></i>MRP — necessidade × disponibilidade</div>
+      <button class="btn btn-primary btn-sm" onclick="mmGerarRCFaltantes()"${(d.faltantes || []).length ? '' : ' disabled'}><i class="fas fa-file-signature"></i> Gerar RC dos faltantes (${(d.faltantes || []).length})</button>
     </div>
     <div style="padding:10px 14px">
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
@@ -193,6 +194,15 @@ async function _carregarMMMrp() {
   if (!box || typeof apiAuth !== 'function') return
   try { box.innerHTML = _mmMrpHTML(await apiAuth(`/api/mm/mrp?veiculos=${_mmVeiculos()}`)) }
   catch (e) { box.innerHTML = '' }
+}
+
+// Transforma os faltantes do MRP em RC no ciclo existente (RC→aprovação→pedido).
+async function mmGerarRCFaltantes() {
+  try {
+    const rc = await apiAuth('/api/mm/mrp/gerar-rc', { method: 'POST', body: { veiculos: _mmVeiculos() } })
+    if (typeof showToast === 'function') showToast(`${rc.numero} gerada com ${rc.itens_faltantes} faltante(s)`, 'success')
+    _carregarMMMrp(); _carregarMMDashboard()
+  } catch (e) { if (typeof showToast === 'function') showToast(e && e.message ? e.message : 'Falha ao gerar RC', 'error') }
 }
 
 // Render puro do painel de qualidade/produção (PPAP → gate de produção).
@@ -442,6 +452,7 @@ window.mmSubmeterPPAP = mmSubmeterPPAP
 window.mmConfirmarPPAP = mmConfirmarPPAP
 window._mmMrpHTML = _mmMrpHTML
 window._carregarMMMrp = _carregarMMMrp
+window.mmGerarRCFaltantes = mmGerarRCFaltantes
 window._mmDashboardHTML = _mmDashboardHTML
 window._carregarMMDashboard = _carregarMMDashboard
 window._mmScoreHTML = _mmScoreHTML
