@@ -51,8 +51,73 @@ function renderPP() {
         <p>Planejada → Liberada (gate PPAP+MRP) → Em Produção → Concluída · baixa automática da BOM</p></div>
       <div class="page-actions"><button class="btn btn-primary btn-sm" onclick="ppNovaOrdem()"><i class="fas fa-plus"></i> Nova ordem</button></div>
     </div>
-    <div id="ppOrdens"></div>`
+    <div id="ppOrdens"></div>
+    <div id="ppCalendario" style="margin-top:16px"></div>`
   _carregarPP()
+  _carregarPPCalendario()
+}
+
+const _PP_CAL_COR = { 'Concluído': '#16a34a', 'Em andamento': '#0ea5e9', 'Atrasado': '#dc2626', 'Planejado': '#64748b' }
+
+// Render puro do calendário de produção (plan × real por mês + acumulados).
+function _ppCalendarioHTML(d) {
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s))
+  if (!d || !Array.isArray(d.meses)) return ''
+  const r = d.resumo || {}
+  const fmt = v => typeof window.fmt === 'function' ? window.fmt(v) : ('R$ ' + Number(v || 0).toLocaleString('pt-BR'))
+  const rows = d.meses.map(m => `<tr>
+    <td style="font-size:12px;font-weight:600">${esc(m.label)}</td>
+    <td style="font-size:12px;text-align:right">${esc(m.plan)}</td>
+    <td style="font-size:12px;text-align:right;font-weight:700">${esc(m.real)}</td>
+    <td style="font-size:12px;text-align:right">${m.pct == null ? '—' : esc(m.pct) + '%'}</td>
+    <td style="font-size:12px;text-align:right;color:var(--text-muted)">${esc(m.acum_plan)}</td>
+    <td style="font-size:12px;text-align:right;color:var(--text-muted)">${esc(m.acum_real)}</td>
+    <td><span style="font-size:10px;font-weight:700;color:${_PP_CAL_COR[m.status] || '#64748b'}">${esc(m.status)}</span></td>
+  </tr>`).join('')
+  return `<div class="ss-card"><div class="ss-card-head">
+      <div class="ss-card-title"><i class="fas fa-calendar-days" style="color:#0891b2"></i>Calendário de produção · ${esc(d.ano)}</div>
+      <button class="btn btn-secondary btn-sm" onclick="ppDefinirPlano()"><i class="fas fa-pen"></i> Definir plano mensal</button>
+    </div>
+    <div style="padding:10px 14px">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
+        <span>Plano: <b>${esc(r.total_plan || 0)}</b></span>
+        <span>Real: <b style="color:#16a34a">${esc(r.total_real || 0)}</b></span>
+        <span>Realizado: <b>${r.pct == null ? '—' : esc(r.pct) + '%'}</b></span>
+        ${r.atrasados ? `<span style="color:#dc2626">Meses atrasados: <b>${esc(r.atrasados)}</b></span>` : ''}
+        <span>Custo de produção: <b>${fmt(r.custo_producao)}</b></span>
+      </div>
+      <div class="ss-table-wrap"><table class="ss-table">
+        <thead><tr><th>Mês</th><th style="text-align:right">Plan</th><th style="text-align:right">Real</th><th style="text-align:right">%</th><th style="text-align:right">Acum. Plan</th><th style="text-align:right">Acum. Real</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+    </div></div>`
+}
+
+async function _carregarPPCalendario() {
+  const box = document.getElementById('ppCalendario')
+  if (!box || typeof apiAuth !== 'function') return
+  try { box.innerHTML = _ppCalendarioHTML(await apiAuth('/api/pp/calendario')) }
+  catch (e) { box.innerHTML = '' }
+}
+
+async function ppDefinirPlano() {
+  if (typeof openModal !== 'function') return
+  const mesAtual = new Date().toISOString().slice(0, 7)
+  openModal('Definir plano mensal de produção', `
+    <div class="form-row">
+      <div class="form-group"><label>Mês (YYYY-MM) *</label><input class="form-control" id="pp-plano-mes" value="${mesAtual}" placeholder="2027-01"></div>
+      <div class="form-group"><label>Veículos planejados *</label><input class="form-control" type="number" id="pp-plano-qtd" value="0" min="0"></div>
+    </div>`, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button class="btn btn-primary" onclick="ppSalvarPlano()"><i class="fas fa-save"></i> Salvar</button>`)
+}
+async function ppSalvarPlano() {
+  const g = id => document.getElementById(id)
+  try {
+    await apiAuth('/api/pp/plano', { method: 'POST', body: { mes: g('pp-plano-mes')?.value?.trim(), veiculos_plan: parseInt(g('pp-plano-qtd')?.value) } })
+    if (typeof showToast === 'function') showToast('Plano salvo', 'success')
+    if (typeof closeModal === 'function') closeModal()
+    _carregarPPCalendario()
+  } catch (e) { if (typeof showToast === 'function') showToast(e && e.message ? e.message : 'Falha ao salvar plano', 'error') }
 }
 
 async function _carregarPP() {
@@ -134,3 +199,7 @@ async function ppCancelar(id) {
   } catch (e) { if (typeof showToast === 'function') showToast(e && e.message ? e.message : 'Falha ao cancelar', 'error') }
 }
 window.ppCancelar = ppCancelar
+window._ppCalendarioHTML = _ppCalendarioHTML
+window._carregarPPCalendario = _carregarPPCalendario
+window.ppDefinirPlano = ppDefinirPlano
+window.ppSalvarPlano = ppSalvarPlano

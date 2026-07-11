@@ -43,6 +43,7 @@ import { avaliarPPAP, resolverStatusPPAP, ppapLibera, gateProducao, bloqueiosPro
 import { indexarEstoque, calcularMRP } from './lib/mm_mrp.js'
 import { consolidarMM, scoreFornecedor, classificarFornecedor, sugestaoCompra } from './lib/mm_dashboard.js'
 import { gateLiberacaoOP, consumoDaOrdem, validarConsumo, statusAposApontamento } from './lib/pp_producao.js'
+import { custoConsumo, montarCalendario } from './lib/pp_calendario.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -402,6 +403,28 @@ db.exec(`CREATE TABLE IF NOT EXISTS pp_ordens (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 )`)
+// PP fase 2: histórico de apontamentos (mês do real + custo dos materiais) e
+// plano mensal de produção (a aba "Calendário de Produção" da planilha).
+db.exec(`CREATE TABLE IF NOT EXISTS pp_apontamentos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ordem_id INTEGER REFERENCES pp_ordens(id) ON DELETE CASCADE,
+  veiculos INTEGER DEFAULT 0, custo_materiais REAL DEFAULT 0,
+  data TEXT, usuario_id INTEGER, usuario_nome TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+db.exec(`CREATE TABLE IF NOT EXISTS pp_plano (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mes TEXT NOT NULL, veiculos_plan INTEGER DEFAULT 0,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`)
+// OP pode apontar para um contrato: o custo de produção entra na margem.
+ensureColumns('pp_ordens', [
+  ['contrato_id', 'contrato_id TEXT'],
+  ['custo_real', 'custo_real REAL DEFAULT 0'],
+])
 
 // Programação de entregas: nasce na emissão do pedido (promessa original) e
 // acompanha confirmação/replanejamento pelo FORNECEDOR no portal e a entrega
@@ -3528,18 +3551,24 @@ function _margemDoContrato(emp, ct) {
   const custoPedidos = one(`SELECT COALESCE(SUM(valor),0) v FROM contas_pagar WHERE empresa_id = ? AND contrato_id IN (${inClause})`).v || 0
   const mo = one(`SELECT COALESCE(SUM(custo),0) v, COALESCE(SUM(horas),0) h FROM apontamentos_hora WHERE empresa_id = ? AND contrato_id IN (${inClause})`)
   const custoMaoObra = mo.v || 0, horas = mo.h || 0
+  // Custo de produção: materiais consumidos pelas OPs ligadas ao contrato
+  // (comprado-para-estoque que virou veículo — não passa por contas_pagar do contrato).
+  const custoProducao = one(`SELECT COALESCE(SUM(a.custo_materiais),0) v FROM pp_apontamentos a
+     JOIN pp_ordens o ON o.id = a.ordem_id WHERE a.empresa_id = ? AND o.contrato_id IN (${inClause})`).v || 0
   const round = n => Math.round(n * 100) / 100
-  const custoTotal = round(custoPedidos + custoMaoObra)
+  const custoTotal = round(custoPedidos + custoMaoObra + custoProducao)
   const resultado = round(receita - custoTotal)
   const margemPct = receita > 0 ? round((resultado / receita) * 100) : 0
   return {
     contrato_id: ct.id, numero: ct.numero, titulo: ct.titulo, valor_contratado: ct.valor_total || 0,
     receita, custo_pedidos: custoPedidos, custo_mao_obra: custoMaoObra, horas_mao_obra: round(horas),
+    custo_producao: round(custoProducao),
     custo_total: custoTotal, resultado, margem_pct: margemPct,
     linhas: [
       { label: 'Receita faturada (contas a receber)', valor: receita, tipo: 'receita' },
       { label: '(-) Custo de pedidos/compras', valor: -custoPedidos, tipo: 'custo' },
       { label: '(-) Custo de mão de obra', valor: -custoMaoObra, tipo: 'custo' },
+      { label: '(-) Custo de produção (OPs)', valor: -round(custoProducao), tipo: 'custo' },
       { label: '= Resultado do contrato', valor: resultado, tipo: 'total' },
     ],
   }
@@ -4647,13 +4676,20 @@ app.post('/api/pp/ordens', requireAuth, requireRole('admin', 'diretor', 'pcp', '
   if (!(veiculos > 0)) return res.status(400).json(err('Quantidade de veículos deve ser maior que zero'))
   const temBOM = db.prepare(`SELECT COUNT(*) n FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).get(emp).n
   if (!temBOM) return res.status(400).json(err('Cadastre a BOM no MM antes de criar ordens de produção'))
+  // Contrato opcional: liga o custo de produção à margem do contrato.
+  let contratoId = null
+  if (b.contrato_id != null && String(b.contrato_id).trim() !== '') {
+    const ct = db.prepare(`SELECT id FROM contratos WHERE (id = ? OR numero = ?) AND empresa_id = ?`).get(String(b.contrato_id), String(b.contrato_id), emp)
+    if (!ct) return res.status(404).json(err('Contrato não encontrado'))
+    contratoId = String(b.contrato_id)
+  }
   const year = new Date().getFullYear()
   const count = db.prepare(`SELECT COUNT(*) n FROM pp_ordens WHERE empresa_id = ? AND numero LIKE ?`).get(emp, `OP-${year}-%`).n
   const numero = `OP-${year}-${String(count + 1).padStart(3, '0')}`
-  const r = db.prepare(`INSERT INTO pp_ordens(numero, projeto, descricao, veiculos_plan, data_inicio, data_fim_prevista, criada_por_id, criada_por_nome, empresa_id)
-     VALUES(?,?,?,?,?,?,?,?,?)`)
+  const r = db.prepare(`INSERT INTO pp_ordens(numero, projeto, descricao, veiculos_plan, data_inicio, data_fim_prevista, contrato_id, criada_por_id, criada_por_nome, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`)
     .run(numero, b.projeto || null, b.descricao || null, veiculos, b.data_inicio || _hojeYMD(), b.data_fim_prevista || null,
-      req.user.usuario_id, req.user.nome, emp)
+      contratoId, req.user.usuario_id, req.user.nome, emp)
   log(req.user.usuario_id, req.user.nome, 'pp_op_criar', 'pp_ordens', `${numero} (${veiculos} veículo(s))`)
   res.status(201).json(ok(db.prepare(`SELECT * FROM pp_ordens WHERE id = ?`).get(r.lastInsertRowid)))
 })
@@ -4712,6 +4748,9 @@ app.post('/api/pp/ordens/:id/apontar', requireAuth, requireRole('admin', 'direto
   const estoqueRows = db.prepare(`SELECT id, codigo, descricao, quantidade_atual, valor_medio FROM almoxarifado_itens WHERE empresa_id = ? AND ativo = 1`).all(emp)
   const v = validarConsumo(consumo, indexarEstoque(estoqueRows))
   if (!v.ok) return res.status(409).json(err('Estoque insuficiente: ' + v.insuficientes.map(i => `${i.part_number} (precisa ${i.quantidade}, tem ${i.disponivel})`).join(' · '), 409))
+  // Custo dos materiais no momento do consumo (custo médio vigente).
+  const custoPorPN = new Map(estoqueRows.filter(e => e.codigo).map(e => [String(e.codigo).trim().toUpperCase(), Number(e.valor_medio) || 0]))
+  const custo = custoConsumo(consumo, custoPorPN)
   // Baixa por item (Saída) com trilha de movimento — tudo validado acima.
   const porPN = new Map(estoqueRows.filter(e => e.codigo).map(e => [String(e.codigo).trim().toUpperCase(), e]))
   for (const c of consumo) {
@@ -4723,11 +4762,43 @@ app.post('/api/pp/ordens/:id/apontar', requireAuth, requireRole('admin', 'direto
        VALUES(?,?,?,?,?,?,?,?,?,?)`)
       .run(item.id, 'Saída', c.quantidade, item.valor_medio || 0, op.numero, `Consumo OP ${op.numero} (${n} veíc.)`, novoSaldo, req.user.usuario_id, req.user.nome, emp)
   }
+  // Histórico do apontamento: alimenta o calendário (real por mês) e a margem.
+  db.prepare(`INSERT INTO pp_apontamentos(ordem_id, veiculos, custo_materiais, data, usuario_id, usuario_nome, empresa_id)
+     VALUES(?,?,?,?,?,?,?)`)
+    .run(op.id, n, custo.total, req.body?.data || _hojeYMD(), req.user.usuario_id, req.user.nome, emp)
   const prog = statusAposApontamento(op, n)
-  db.prepare(`UPDATE pp_ordens SET veiculos_produzidos=?, status=?, data_conclusao=CASE WHEN ? THEN datetime('now') ELSE data_conclusao END, updated_at=datetime('now') WHERE id=?`)
-    .run(prog.veiculos_produzidos, prog.status, prog.concluida ? 1 : 0, op.id)
-  log(req.user.usuario_id, req.user.nome, 'pp_op_apontar', 'pp_ordens', `${op.numero}: +${n} veíc. (${prog.veiculos_produzidos}/${op.veiculos_plan})${prog.concluida ? ' — CONCLUÍDA' : ''}`)
-  res.json(ok({ ...db.prepare(`SELECT * FROM pp_ordens WHERE id = ?`).get(op.id), consumo }))
+  db.prepare(`UPDATE pp_ordens SET veiculos_produzidos=?, status=?, custo_real=COALESCE(custo_real,0)+?, data_conclusao=CASE WHEN ? THEN datetime('now') ELSE data_conclusao END, updated_at=datetime('now') WHERE id=?`)
+    .run(prog.veiculos_produzidos, prog.status, custo.total, prog.concluida ? 1 : 0, op.id)
+  log(req.user.usuario_id, req.user.nome, 'pp_op_apontar', 'pp_ordens', `${op.numero}: +${n} veíc. (${prog.veiculos_produzidos}/${op.veiculos_plan}) custo R$ ${custo.total}${prog.concluida ? ' — CONCLUÍDA' : ''}`)
+  res.json(ok({ ...db.prepare(`SELECT * FROM pp_ordens WHERE id = ?`).get(op.id), consumo: custo.itens, custo_apontamento: custo.total }))
+})
+
+// Plano mensal de produção (upsert por mês). Base do calendário plan×real.
+app.post('/api/pp/plano', requireAuth, requireRole('admin', 'diretor', 'pcp'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const b = req.body || {}
+  const mes = String(b.mes || '').slice(0, 7)
+  if (!/^\d{4}-\d{2}$/.test(mes)) return res.status(400).json(err('Mês inválido (use YYYY-MM)'))
+  const qtd = parseInt(b.veiculos_plan)
+  if (!(qtd >= 0)) return res.status(400).json(err('Veículos planejados deve ser ≥ 0'))
+  const cur = db.prepare(`SELECT id FROM pp_plano WHERE empresa_id = ? AND mes = ?`).get(emp, mes)
+  if (cur) db.prepare(`UPDATE pp_plano SET veiculos_plan = ?, updated_at = datetime('now') WHERE id = ?`).run(qtd, cur.id)
+  else db.prepare(`INSERT INTO pp_plano(mes, veiculos_plan, empresa_id) VALUES(?,?,?)`).run(mes, qtd, emp)
+  log(req.user.usuario_id, req.user.nome, 'pp_plano', 'pp_plano', `Plano ${mes}: ${qtd} veículo(s)`)
+  res.status(cur ? 200 : 201).json(ok(db.prepare(`SELECT * FROM pp_plano WHERE empresa_id = ? AND mes = ?`).get(emp, mes)))
+})
+
+app.get('/api/pp/plano', requireAuth, (req, res) => {
+  res.json(ok(db.prepare(`SELECT * FROM pp_plano WHERE empresa_id = ? ORDER BY mes ASC`).all(empresaDoReq(req))))
+})
+
+// Calendário de produção do ano: plan × real por mês + acumulados + custo.
+app.get('/api/pp/calendario', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const ano = req.query.ano ? parseInt(req.query.ano) : new Date().getFullYear()
+  const plano = db.prepare(`SELECT mes, veiculos_plan FROM pp_plano WHERE empresa_id = ?`).all(emp)
+  const apont = db.prepare(`SELECT data, veiculos, custo_materiais FROM pp_apontamentos WHERE empresa_id = ?`).all(emp)
+  res.json(ok(montarCalendario(plano, apont, ano, _hojeYMD())))
 })
 
 // CANCELAR a ordem (qualquer status exceto Concluída/Cancelada). O material já
