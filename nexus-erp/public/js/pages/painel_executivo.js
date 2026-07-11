@@ -48,6 +48,13 @@ function _painelExecutivoHTML(d) {
       ${kpi('Cotações pendentes', fo.cotacoes_pendentes || 0, 'aguardando fornecedor')}
       ${kpi('Convites pendentes', fo.convites_pendentes || 0, 'onboarding em aberto')}
     `)}
+    ${d.industrial ? secao('fa-industry', 'Industrial (MM)', `
+      ${kpi('Disponibilidade MRP', (d.industrial.disponibilidade_pct != null ? d.industrial.disponibilidade_pct + '%' : '—'), d.industrial.mrp_faltantes + ' faltante(s)', d.industrial.mrp_faltantes ? '#dc2626' : '#16a34a')}
+      ${kpi('Veículos possíveis', d.industrial.veiculos_possiveis + '/' + d.industrial.veiculos_alvo, 'cobertos pelo estoque', d.industrial.veiculos_possiveis < d.industrial.veiculos_alvo ? '#dc2626' : '#16a34a')}
+      ${kpi('Sem engenharia', d.industrial.sem_engenharia, 'bloqueiam o sourcing', d.industrial.sem_engenharia ? '#dc2626' : '#16a34a')}
+      ${kpi('Sem PPAP', d.industrial.sem_ppap, 'bloqueiam a produção', d.industrial.sem_ppap ? '#d97706' : '#16a34a')}
+      ${kpi('Críticos (Alta)', d.industrial.criticos, d.industrial.materiais + ' materiais na BOM', d.industrial.criticos ? '#d97706' : '#16a34a')}
+    `) : ''}
     <div class="card"><div class="card-body">
       <h4 style="margin:0"><i class="fas fa-triangle-exclamation" style="color:#d97706"></i> Riscos que exigem decisão</h4>
       ${riscos}

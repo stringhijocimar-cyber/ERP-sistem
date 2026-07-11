@@ -44,6 +44,19 @@ describe('_painelExecutivoHTML (puro)', () => {
     expect(window._painelExecutivoHTML({ ...PAINEL, riscos: [] })).toContain('Nenhum risco crítico')
     expect(window._painelExecutivoHTML(null)).toBe('')
   })
+  it('bloco industrial só aparece quando o tenant usa o MM', () => {
+    // sem industrial (null) → seção ausente
+    expect(window._painelExecutivoHTML(PAINEL)).not.toContain('Industrial (MM)')
+    const html = window._painelExecutivoHTML({ ...PAINEL, industrial: {
+      materiais: 30, buy: 20, sem_engenharia: 2, sem_cotacao: 3, sem_ppap: 5, criticos: 4,
+      mrp_faltantes: 6, disponibilidade_pct: 70, veiculos_alvo: 50, veiculos_possiveis: 20,
+    } })
+    expect(html).toContain('Industrial (MM)')
+    expect(html).toContain('20/50')            // veículos possíveis/alvo
+    expect(html).toContain('70%')              // disponibilidade
+    expect(html).toContain('bloqueiam o sourcing')
+    expect(html).toContain('bloqueiam a produção')
+  })
 })
 
 describe('renderPainelExecutivo', () => {

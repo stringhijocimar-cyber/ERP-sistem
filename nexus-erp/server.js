@@ -1348,7 +1348,24 @@ app.get('/api/painel-executivo', requireAuth, (req, res) => {
   const cotacoesPendentes = one(`SELECT COUNT(*) n FROM rfq_fornecedores rf JOIN rfq r ON r.id = rf.rfq_id WHERE r.empresa_id = ? AND rf.status != 'Respondida' AND r.status = 'Aberta'`)
   const convitesPendentes = one(`SELECT COUNT(*) n FROM fornecedor_convites WHERE empresa_id = ? AND status = 'pendente' AND COALESCE(expira_em,'') >= ?`, new Date().toISOString())
 
-  // 4) Riscos executivos — o que o dono precisa decidir hoje.
+  // 4) Industrial (MM) — gaps do pipeline BOM→Engenharia→PPAP→MRP do CEO.
+  const mmMateriais = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  let industrial = null
+  if (mmMateriais.length) {
+    const veiculosPlano = req.query.veiculos ? Number(req.query.veiculos) : 1
+    const rfqIds = db.prepare(`SELECT DISTINCT mm_material_id FROM rfq WHERE empresa_id = ? AND mm_material_id IS NOT NULL`).all(emp).map(r => r.mm_material_id)
+    const gapsMM = consolidarMM({ materiais: mmMateriais, rfqMaterialIds: rfqIds, ppapMap: _ppapVigente(emp) })
+    const mrpExec = calcularMRP(explodirBOM(mmMateriais, null, veiculosPlano), indexarEstoque(itensEstoque), veiculosPlano)
+    industrial = {
+      materiais: gapsMM.resumo.total, buy: gapsMM.resumo.buy,
+      sem_engenharia: gapsMM.resumo.sem_engenharia, sem_cotacao: gapsMM.resumo.sem_cotacao,
+      sem_ppap: gapsMM.resumo.sem_ppap, criticos: gapsMM.resumo.criticos,
+      mrp_faltantes: mrpExec.itens_faltantes, disponibilidade_pct: mrpExec.disponibilidade_pct,
+      veiculos_alvo: mrpExec.veiculos_alvo, veiculos_possiveis: mrpExec.veiculos_possiveis,
+    }
+  }
+
+  // 5) Riscos executivos — o que o dono precisa decidir hoje.
   const riscos = []
   if (fin.projecao.aperto_previsto) riscos.push({ nivel: 'alto', area: 'Caixa', titulo: 'Aperto de caixa previsto', detalhe: `Menor saldo ${fin.projecao.menor_saldo} na semana ${fin.projecao.semana_critica || '—'}` })
   for (const c of (fin.contratos.prejuizo || []).slice(0, 3)) riscos.push({ nivel: 'alto', area: 'Margem', titulo: `Contrato no prejuízo: ${c.numero}`, detalhe: `Resultado ${c.resultado} (margem ${c.margem_pct}%)` })
@@ -1356,6 +1373,14 @@ app.get('/api/painel-executivo', requireAuth, (req, res) => {
   if (otif.otif_pct != null && otif.otif_pct < 90) riscos.push({ nivel: 'medio', area: 'Suprimentos', titulo: `OTIF abaixo da meta`, detalhe: `${otif.otif_pct}% no prazo (${otif.atrasadas_abertas} atrasada(s) em aberto)` })
   if (reposicao.length) riscos.push({ nivel: 'baixo', area: 'Estoque', titulo: `${reposicao.length} item(ns) no ponto de reposição`, detalhe: `Custo estimado de reposição ${round(reposicao.reduce((s, i) => s + (i.custo_estimado || 0), 0))}` })
   if ((anomalias.n || 0) > 0) riscos.push({ nivel: 'medio', area: 'Compras', titulo: `${anomalias.n} anomalia(s) de compra em aberto`, detalhe: 'Ver Central de Alertas' })
+  if (industrial) {
+    // Faltante no MRP limita o plano de produção — decisão de dono.
+    if (industrial.mrp_faltantes > 0 && industrial.veiculos_possiveis < industrial.veiculos_alvo) {
+      riscos.push({ nivel: 'alto', area: 'Produção', titulo: 'Estoque não cobre o plano de produção', detalhe: `${industrial.mrp_faltantes} faltante(s) — cobre ${industrial.veiculos_possiveis} de ${industrial.veiculos_alvo} veículo(s)` })
+    }
+    if (industrial.sem_ppap > 0) riscos.push({ nivel: 'medio', area: 'Qualidade', titulo: `${industrial.sem_ppap} item(ns) BUY sem PPAP`, detalhe: 'Sem PPAP aprovado a peça não entra na produção' })
+    if (industrial.sem_engenharia > 0) riscos.push({ nivel: 'medio', area: 'Engenharia', titulo: `${industrial.sem_engenharia} item(ns) BUY sem engenharia liberada`, detalhe: 'Bloqueiam o sourcing (sem liberação não compra)' })
+  }
   const ordem = { alto: 0, medio: 1, baixo: 2 }
   riscos.sort((a, b) => ordem[a.nivel] - ordem[b.nivel])
 
@@ -1375,6 +1400,7 @@ app.get('/api/painel-executivo', requireAuth, (req, res) => {
       otif_pct: otif.otif_pct, otif_sem_prazo: otif.sem_prazo || 0, entregas_atrasadas: otif.atrasadas_abertas || 0,
       cotacoes_pendentes: cotacoesPendentes.n || 0, convites_pendentes: convitesPendentes.n || 0,
     },
+    industrial, // null quando o tenant não usa o MM
     riscos,
   }))
 })
