@@ -4209,11 +4209,14 @@ app.post('/api/mm/materiais', requireAuth, requireRole('admin', 'diretor', 'enge
     const pai = db.prepare(`SELECT id FROM mm_materiais WHERE id = ? AND empresa_id = ?`).get(b.peca_pai_id, emp)
     if (!pai) return res.status(404).json(err('Peça pai não encontrada'))
   }
+  // Qtd negativa corromperia a explosão/MRP (necessidade negativa). Zero é
+  // válido (conjunto opcional desativado).
+  if (b.qtd_veiculo != null && Number(b.qtd_veiculo) < 0) return res.status(400).json(err('Qtd por veículo não pode ser negativa'))
   const mb = String(b.make_buy || 'BUY').toUpperCase() === 'MAKE' ? 'MAKE' : 'BUY'
   const r = db.prepare(`INSERT INTO mm_materiais(part_number, descricao, sistema, subsistema, nivel, peca_pai_id, qtd_veiculo, unidade, make_buy, material_tipo, peso, criticidade, fornecedor_id, projeto, eng_desenho, eng_revisao, empresa_id)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(pn, b.descricao || null, b.sistema || null, b.subsistema || null, Number(b.nivel) || 1,
-      b.peca_pai_id || null, Number(b.qtd_veiculo) || 1, b.unidade || 'PC', mb, b.material_tipo || null,
+      b.peca_pai_id || null, b.qtd_veiculo != null ? (Number(b.qtd_veiculo) || 0) : 1, b.unidade || 'PC', mb, b.material_tipo || null,
       b.peso != null ? Number(b.peso) : null, b.criticidade || 'Média', b.fornecedor_id || null, b.projeto || null,
       b.eng_desenho || null, b.eng_revisao || null, emp)
   log(req.user.usuario_id, req.user.nome, 'mm_material_criar', 'mm_materiais', `${pn} (${mb}) ${b.descricao || ''}`)
@@ -4240,10 +4243,11 @@ app.put('/api/mm/materiais/:id', requireAuth, requireRole('admin', 'diretor', 'e
   const cur = rowScoped('mm_materiais', req)
   if (!cur) return res.status(404).json(err('Material não encontrado'))
   const b = req.body || {}
+  if (b.qtd_veiculo != null && Number(b.qtd_veiculo) < 0) return res.status(400).json(err('Qtd por veículo não pode ser negativa'))
   const mb = b.make_buy != null ? (String(b.make_buy).toUpperCase() === 'MAKE' ? 'MAKE' : 'BUY') : cur.make_buy
   db.prepare(`UPDATE mm_materiais SET descricao=?, sistema=?, subsistema=?, nivel=?, qtd_veiculo=?, unidade=?, make_buy=?, material_tipo=?, peso=?, criticidade=?, fornecedor_id=?, projeto=?, updated_at=datetime('now') WHERE id=?`)
     .run(b.descricao ?? cur.descricao, b.sistema ?? cur.sistema, b.subsistema ?? cur.subsistema, Number(b.nivel ?? cur.nivel) || 1,
-      Number(b.qtd_veiculo ?? cur.qtd_veiculo) || 1, b.unidade ?? cur.unidade, mb, b.material_tipo ?? cur.material_tipo,
+      Number(b.qtd_veiculo ?? cur.qtd_veiculo) || 0, b.unidade ?? cur.unidade, mb, b.material_tipo ?? cur.material_tipo,
       b.peso != null ? Number(b.peso) : cur.peso, b.criticidade ?? cur.criticidade, b.fornecedor_id ?? cur.fornecedor_id,
       b.projeto ?? cur.projeto, req.params.id)
   res.json(ok(db.prepare(`SELECT * FROM mm_materiais WHERE id = ?`).get(req.params.id)))
@@ -4391,6 +4395,13 @@ function _ppapVigente(emp) {
 }
 const _asBool = v => (v ? 1 : 0)
 
+// Fornecedor referenciado em PPAP/amostra precisa ser do próprio tenant —
+// senão o score/rastreabilidade apontaria para fornecedor de outro cliente.
+function _fornecedorDoTenant(fid, emp) {
+  if (fid == null) return true
+  return !!db.prepare(`SELECT 1 FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(fid, emp)
+}
+
 // Solicitar amostra (APQP) de um material. Valida material do tenant.
 app.post('/api/mm/materiais/:id/amostra', requireAuth, requireRole('admin', 'diretor', 'engenharia', 'comprador', 'qualidade'), (req, res) => {
   const emp = empresaDoReq(req)
@@ -4398,9 +4409,12 @@ app.post('/api/mm/materiais/:id/amostra', requireAuth, requireRole('admin', 'dir
   if (!m) return res.status(404).json(err('Material não encontrado'))
   const b = req.body || {}
   const fid = b.fornecedor_id || m.fornecedor_id || null
+  if (!_fornecedorDoTenant(fid, emp)) return res.status(400).json(err('Fornecedor não pertence a esta empresa'))
+  const qtd = b.quantidade != null ? parseInt(b.quantidade) : 1
+  if (!(qtd > 0)) return res.status(400).json(err('Quantidade deve ser maior que zero'))
   const r = db.prepare(`INSERT INTO mm_amostras(material_id, fornecedor_id, data_pedido, data_prevista, quantidade, tipo_teste, status, observacao, empresa_id)
      VALUES(?,?,?,?,?,?,?,?,?)`)
-    .run(m.id, fid, b.data_pedido || _hojeYMD(), b.data_prevista || null, b.quantidade != null ? parseInt(b.quantidade) : 1,
+    .run(m.id, fid, b.data_pedido || _hojeYMD(), b.data_prevista || null, qtd,
       b.tipo_teste || null, 'Solicitada', b.observacao || null, emp)
   log(req.user.usuario_id, req.user.nome, 'mm_amostra', 'mm_amostras', `Amostra de ${m.part_number} (${b.tipo_teste || 'teste'})`)
   res.status(201).json(ok(db.prepare(`SELECT * FROM mm_amostras WHERE id = ?`).get(r.lastInsertRowid)))
@@ -4431,6 +4445,7 @@ app.post('/api/mm/materiais/:id/ppap', requireAuth, requireRole('admin', 'direto
   if (!m) return res.status(404).json(err('Material não encontrado'))
   if (String(m.make_buy || '').toUpperCase() === 'MAKE') return res.status(400).json(err('Item MAKE não exige PPAP de fornecedor'))
   const b = req.body || {}
+  if (!_fornecedorDoTenant(b.fornecedor_id || m.fornecedor_id || null, emp)) return res.status(400).json(err('Fornecedor não pertence a esta empresa'))
   const r = db.prepare(`INSERT INTO mm_ppap(material_id, fornecedor_id, nivel, data_submissao, dimensional_ok, material_ok, funcional_ok, documentacao_ok, status, psw_assinado, responsavel_qa, observacao, empresa_id)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(m.id, b.fornecedor_id || m.fornecedor_id || null, b.nivel != null ? parseInt(b.nivel) : 3, b.data_submissao || _hojeYMD(),

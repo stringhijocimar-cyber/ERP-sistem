@@ -25,21 +25,41 @@ export function indexarEstoque(itensEstoque = []) {
 // Calcula o MRP a partir da BOM explodida (itens com part_number, make_buy,
 // qtd_por_veiculo, qtd_total) e do índice de saldo. Só itens BUY são "comprados"
 // (MAKE é fabricado internamente); ambos aparecem, mas o gargalo usa BUY.
+//
+// AGREGA por part_number antes de comparar com o saldo: o mesmo componente
+// usado em vários nós da BOM (parafuso em 2 sistemas) tem UMA necessidade
+// total contra UM saldo — sem agregação o estoque era contado em dobro e o
+// MRP ficava otimista (faltante escondido = parada de linha).
 export function calcularMRP(explosao = [], saldoPorPN = new Map(), veiculosAlvo = 1) {
   const alvo = Number(veiculosAlvo) > 0 ? Number(veiculosAlvo) : 1
-  const itens = (explosao || []).map(e => {
+  const _CRIT_PESO = { 'Alta': 3, 'Média': 2, 'Baixa': 1 }
+  const porPN = new Map()
+  for (const e of explosao || []) {
     const pn = String(e.part_number || '').trim().toUpperCase()
+    const cur = porPN.get(pn)
+    if (!cur) {
+      porPN.set(pn, {
+        id: e.id, part_number: e.part_number, descricao: e.descricao, make_buy: e.make_buy,
+        criticidade: e.criticidade,
+        qtd_por_veiculo: Number(e.qtd_por_veiculo) || 0,
+        necessidade: Number(e.qtd_total) || 0,
+      })
+    } else {
+      cur.necessidade += Number(e.qtd_total) || 0
+      cur.qtd_por_veiculo += Number(e.qtd_por_veiculo) || 0
+      // BUY vence (se qualquer uso é comprado, o PN é comprado); criticidade = a maior.
+      if (String(e.make_buy || '').toUpperCase() === 'BUY') cur.make_buy = 'BUY'
+      if ((_CRIT_PESO[e.criticidade] || 0) > (_CRIT_PESO[cur.criticidade] || 0)) cur.criticidade = e.criticidade
+    }
+  }
+  const itens = Array.from(porPN.entries()).map(([pn, g]) => {
     const disponivel = saldoPorPN.get(pn) || 0
-    const necessidade = Number(e.qtd_total) || 0
-    const faltante = Math.max(0, necessidade - disponivel)
-    const cobertura = necessidade > 0 ? Math.min(100, Math.round((disponivel / necessidade) * 1000) / 10) : 100
-    const qtdVeic = Number(e.qtd_por_veiculo) || 0
-    // Quantos veículos o saldo cobre para este item (só faz sentido se consome).
-    const veiculosCobertos = qtdVeic > 0 ? Math.floor(disponivel / qtdVeic) : Infinity
+    const faltante = Math.max(0, g.necessidade - disponivel)
+    const cobertura = g.necessidade > 0 ? Math.min(100, Math.round((disponivel / g.necessidade) * 1000) / 10) : 100
+    // Quantos veículos o saldo cobre para este PN (só faz sentido se consome).
+    const veiculosCobertos = g.qtd_por_veiculo > 0 ? Math.floor(disponivel / g.qtd_por_veiculo) : Infinity
     return {
-      id: e.id, part_number: e.part_number, descricao: e.descricao, make_buy: e.make_buy,
-      criticidade: e.criticidade, qtd_por_veiculo: qtdVeic,
-      necessidade, disponivel, faltante, cobertura_pct: cobertura,
+      ...g, disponivel, faltante, cobertura_pct: cobertura,
       veiculos_cobertos: veiculosCobertos === Infinity ? null : veiculosCobertos,
       status: faltante > 0 ? 'Faltante' : 'Disponível',
     }
