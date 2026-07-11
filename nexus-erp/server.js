@@ -42,6 +42,7 @@ import { statusSourcing, itensParaCotar, resumoSourcing, montarRFQdeMaterial } f
 import { avaliarPPAP, resolverStatusPPAP, ppapLibera, gateProducao, bloqueiosProducao, statusQualidade } from './lib/mm_ppap.js'
 import { indexarEstoque, calcularMRP } from './lib/mm_mrp.js'
 import { consolidarMM, scoreFornecedor, classificarFornecedor, sugestaoCompra } from './lib/mm_dashboard.js'
+import { gateLiberacaoOP, consumoDaOrdem, validarConsumo, statusAposApontamento } from './lib/pp_producao.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -382,6 +383,21 @@ db.exec(`CREATE TABLE IF NOT EXISTS mm_ppap (
   funcional_ok INTEGER DEFAULT 0, documentacao_ok INTEGER DEFAULT 0,
   status TEXT DEFAULT 'Em Análise', psw_assinado INTEGER DEFAULT 0,
   responsavel_qa TEXT, observacao TEXT,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`)
+// PP — Ordens de produção: Planejada → Liberada (gate PPAP+MRP) → Em
+// Produção → Concluída. Apontar produção baixa os componentes BUY do
+// estoque conforme a BOM explodida. Isolada por tenant.
+db.exec(`CREATE TABLE IF NOT EXISTS pp_ordens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  numero TEXT, projeto TEXT, descricao TEXT,
+  veiculos_plan INTEGER DEFAULT 1, veiculos_produzidos INTEGER DEFAULT 0,
+  data_inicio TEXT, data_fim_prevista TEXT, data_conclusao TEXT,
+  status TEXT DEFAULT 'Planejada',
+  liberada_por TEXT, liberada_em TEXT,
+  criada_por_id INTEGER, criada_por_nome TEXT,
   empresa_id INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
@@ -4612,6 +4628,100 @@ app.get('/api/mm/dashboard', requireAuth, (req, res) => {
     mrp: { veiculos_alvo: mrp.veiculos_alvo, veiculos_possiveis: mrp.veiculos_possiveis, disponibilidade_pct: mrp.disponibilidade_pct, itens_faltantes: mrp.itens_faltantes },
     sugestao_compra: sugestao,
   }))
+})
+
+// ════════════════════════════════════════════════════════════
+// PP — ORDENS DE PRODUÇÃO (gate de liberação + apontamento com baixa da BOM)
+// ════════════════════════════════════════════════════════════
+function _ppMrpDaOrdem(emp, veiculos) {
+  const materiais = db.prepare(`SELECT * FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const estoque = db.prepare(`SELECT codigo, quantidade_atual FROM almoxarifado_itens WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  return { materiais, mrp: calcularMRP(explodirBOM(materiais, null, veiculos), indexarEstoque(estoque), veiculos) }
+}
+
+// Criar ordem de produção (Planejada). Exige BOM cadastrada no MM.
+app.post('/api/pp/ordens', requireAuth, requireRole('admin', 'diretor', 'pcp', 'operacao'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const b = req.body || {}
+  const veiculos = parseInt(b.veiculos_plan)
+  if (!(veiculos > 0)) return res.status(400).json(err('Quantidade de veículos deve ser maior que zero'))
+  const temBOM = db.prepare(`SELECT COUNT(*) n FROM mm_materiais WHERE empresa_id = ? AND ativo = 1`).get(emp).n
+  if (!temBOM) return res.status(400).json(err('Cadastre a BOM no MM antes de criar ordens de produção'))
+  const year = new Date().getFullYear()
+  const count = db.prepare(`SELECT COUNT(*) n FROM pp_ordens WHERE empresa_id = ? AND numero LIKE ?`).get(emp, `OP-${year}-%`).n
+  const numero = `OP-${year}-${String(count + 1).padStart(3, '0')}`
+  const r = db.prepare(`INSERT INTO pp_ordens(numero, projeto, descricao, veiculos_plan, data_inicio, data_fim_prevista, criada_por_id, criada_por_nome, empresa_id)
+     VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(numero, b.projeto || null, b.descricao || null, veiculos, b.data_inicio || _hojeYMD(), b.data_fim_prevista || null,
+      req.user.usuario_id, req.user.nome, emp)
+  log(req.user.usuario_id, req.user.nome, 'pp_op_criar', 'pp_ordens', `${numero} (${veiculos} veículo(s))`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM pp_ordens WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+app.get('/api/pp/ordens', requireAuth, (req, res) => {
+  const where = ['empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (req.query.status) { where.push('status = ?'); params.push(req.query.status) }
+  res.json(ok(db.prepare(`SELECT * FROM pp_ordens WHERE ${where.join(' AND ')} ORDER BY created_at DESC`).all(...params)))
+})
+
+// Gate de liberação (dry-run): PPAP + MRP para a quantidade RESTANTE da ordem.
+app.get('/api/pp/ordens/:id/gate', requireAuth, (req, res) => {
+  const op = rowScoped('pp_ordens', req)
+  if (!op) return res.status(404).json(err('Ordem não encontrada'))
+  const emp = empresaDoReq(req)
+  const restante = Math.max(1, (op.veiculos_plan || 0) - (op.veiculos_produzidos || 0))
+  const { materiais, mrp } = _ppMrpDaOrdem(emp, restante)
+  const bloqueiosPPAP = bloqueiosProducao(materiais, _ppapVigente(emp))
+  res.json(ok({ ...gateLiberacaoOP({ bloqueiosPPAP, mrp, veiculos: restante }), veiculos_avaliados: restante }))
+})
+
+// LIBERAR a ordem: só passa com PPAP ok e estoque cobrindo a ordem inteira.
+app.post('/api/pp/ordens/:id/liberar', requireAuth, requireRole('admin', 'diretor', 'pcp'), (req, res) => {
+  const op = rowScoped('pp_ordens', req)
+  if (!op) return res.status(404).json(err('Ordem não encontrada'))
+  if (op.status !== 'Planejada') return res.status(409).json(err(`Ordem ${op.status} não pode ser liberada`, 409))
+  const emp = empresaDoReq(req)
+  const { materiais, mrp } = _ppMrpDaOrdem(emp, op.veiculos_plan)
+  const gate = gateLiberacaoOP({ bloqueiosPPAP: bloqueiosProducao(materiais, _ppapVigente(emp)), mrp, veiculos: op.veiculos_plan })
+  if (!gate.ok) return res.status(409).json(err('Liberação bloqueada: ' + gate.motivos.join(' · '), 409))
+  db.prepare(`UPDATE pp_ordens SET status='Liberada', liberada_por=?, liberada_em=datetime('now'), updated_at=datetime('now') WHERE id=?`)
+    .run(req.user.nome, op.id)
+  log(req.user.usuario_id, req.user.nome, 'pp_op_liberar', 'pp_ordens', `${op.numero} liberada (${op.veiculos_plan} veíc.)`)
+  res.json(ok(db.prepare(`SELECT * FROM pp_ordens WHERE id = ?`).get(op.id)))
+})
+
+// APONTAR produção: baixa os componentes BUY do estoque pela BOM (tudo-ou-nada).
+app.post('/api/pp/ordens/:id/apontar', requireAuth, requireRole('admin', 'diretor', 'pcp', 'operacao'), (req, res) => {
+  const op = rowScoped('pp_ordens', req)
+  if (!op) return res.status(404).json(err('Ordem não encontrada'))
+  if (!['Liberada', 'Em Produção'].includes(op.status)) return res.status(409).json(err(`Ordem ${op.status} não aceita apontamento (libere primeiro)`, 409))
+  const emp = empresaDoReq(req)
+  const n = parseInt(req.body?.veiculos)
+  if (!(n > 0)) return res.status(400).json(err('Informe a quantidade de veículos produzidos'))
+  const restante = (op.veiculos_plan || 0) - (op.veiculos_produzidos || 0)
+  if (n > restante) return res.status(400).json(err(`Apontamento (${n}) maior que o restante da ordem (${restante})`))
+  // Consumo pela BOM agregada (por PN) para N veículos, validado contra o saldo.
+  const { mrp } = _ppMrpDaOrdem(emp, n)
+  const consumo = consumoDaOrdem(mrp.itens, n)
+  const estoqueRows = db.prepare(`SELECT id, codigo, descricao, quantidade_atual, valor_medio FROM almoxarifado_itens WHERE empresa_id = ? AND ativo = 1`).all(emp)
+  const v = validarConsumo(consumo, indexarEstoque(estoqueRows))
+  if (!v.ok) return res.status(409).json(err('Estoque insuficiente: ' + v.insuficientes.map(i => `${i.part_number} (precisa ${i.quantidade}, tem ${i.disponivel})`).join(' · '), 409))
+  // Baixa por item (Saída) com trilha de movimento — tudo validado acima.
+  const porPN = new Map(estoqueRows.filter(e => e.codigo).map(e => [String(e.codigo).trim().toUpperCase(), e]))
+  for (const c of consumo) {
+    const item = porPN.get(String(c.part_number).trim().toUpperCase())
+    if (!item) continue // sem item de estoque = consumo zero já validado
+    const novoSaldo = Math.round((item.quantidade_atual - c.quantidade) * 1000) / 1000
+    db.prepare(`UPDATE almoxarifado_itens SET quantidade_atual = ?, updated_at = datetime('now') WHERE id = ?`).run(novoSaldo, item.id)
+    db.prepare(`INSERT INTO almoxarifado_movimentos(item_id, tipo, quantidade, valor_unitario, documento, observacao, saldo_apos, usuario_id, usuario_nome, empresa_id)
+       VALUES(?,?,?,?,?,?,?,?,?,?)`)
+      .run(item.id, 'Saída', c.quantidade, item.valor_medio || 0, op.numero, `Consumo OP ${op.numero} (${n} veíc.)`, novoSaldo, req.user.usuario_id, req.user.nome, emp)
+  }
+  const prog = statusAposApontamento(op, n)
+  db.prepare(`UPDATE pp_ordens SET veiculos_produzidos=?, status=?, data_conclusao=CASE WHEN ? THEN datetime('now') ELSE data_conclusao END, updated_at=datetime('now') WHERE id=?`)
+    .run(prog.veiculos_produzidos, prog.status, prog.concluida ? 1 : 0, op.id)
+  log(req.user.usuario_id, req.user.nome, 'pp_op_apontar', 'pp_ordens', `${op.numero}: +${n} veíc. (${prog.veiculos_produzidos}/${op.veiculos_plan})${prog.concluida ? ' — CONCLUÍDA' : ''}`)
+  res.json(ok({ ...db.prepare(`SELECT * FROM pp_ordens WHERE id = ?`).get(op.id), consumo }))
 })
 
 // Score de fornecedor a partir de OTIF (entregas), PPAP e avaliações.
