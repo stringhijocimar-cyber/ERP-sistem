@@ -569,6 +569,7 @@ const PAGE_META = {
   ssma:                     { label: 'SSMA / Qualidade / Compliance',                icon: 'hard-hat' },
   mm:                       { label: 'MM — Gestão de Materiais (BOM/Engenharia)',    icon: 'sitemap' },
   pp:                       { label: 'PP — Ordens de Produção',                       icon: 'industry' },
+  wms:                      { label: 'WMS — Endereçamento & Separação',               icon: 'warehouse' },
   custos:                   { label: 'Controle de Custos & Rastreabilidade',         icon: 'chart-area' },
 };
 
@@ -640,6 +641,7 @@ function navigate(page) {
     ssma: renderSSMA,
     mm: function() { if(typeof renderMM === 'function') renderMM(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando MM / Materiais...</p>'; },
     pp: function() { if(typeof renderPP === 'function') renderPP(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando PP / Produção...</p>'; },
+    wms: function() { if(typeof renderWMS === 'function') renderWMS(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando WMS...</p>'; },
     documentos: renderDocumentos,
     treinamentos: renderTreinamentos,
     relatorios: renderRelatorios,

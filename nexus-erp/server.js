@@ -44,6 +44,7 @@ import { indexarEstoque, calcularMRP } from './lib/mm_mrp.js'
 import { consolidarMM, scoreFornecedor, classificarFornecedor, sugestaoCompra } from './lib/mm_dashboard.js'
 import { gateLiberacaoOP, consumoDaOrdem, validarConsumo, statusAposApontamento } from './lib/pp_producao.js'
 import { custoConsumo, montarCalendario } from './lib/pp_calendario.js'
+import { saldoEnderecado, saldoNaoEnderecado, validarAlocacao, sugerirPicking, ocupacaoEndereco } from './lib/wms.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -3804,6 +3805,131 @@ app.post('/api/almoxarifado/requisicao-reposicao', requireAuth, requireRole('adm
   }, itens)
   log(req.user.usuario_id, req.user.nome, 'rc_reposicao', 'almoxarifado', `RC ${rc.numero} gerada da reposição (${repor.length} item(ns))`)
   res.status(201).json(ok({ ...rc, origem: 'reposicao', itens_repostos: repor.length }))
+})
+
+// ════════════════════════════════════════════════════════════
+// WMS — endereçamento físico do estoque (endereços/bins + alocações)
+// ════════════════════════════════════════════════════════════
+db.exec(`CREATE TABLE IF NOT EXISTS wms_enderecos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  codigo TEXT NOT NULL, descricao TEXT, zona TEXT,
+  capacidade REAL DEFAULT 0, ativo INTEGER DEFAULT 1,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`)
+db.exec(`CREATE TABLE IF NOT EXISTS wms_alocacoes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER REFERENCES almoxarifado_itens(id) ON DELETE CASCADE,
+  endereco_id INTEGER REFERENCES wms_enderecos(id) ON DELETE CASCADE,
+  quantidade REAL DEFAULT 0,
+  empresa_id INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`)
+
+// Alocações de um item (com o código do endereço, para o picking).
+function _wmsAlocacoesItem(itemId, emp) {
+  return db.prepare(`SELECT a.*, e.codigo AS endereco_codigo, e.zona AS endereco_zona
+     FROM wms_alocacoes a JOIN wms_enderecos e ON e.id = a.endereco_id
+     WHERE a.item_id = ? AND a.empresa_id = ? AND a.quantidade > 0 ORDER BY a.quantidade DESC`).all(itemId, emp)
+}
+
+// Endereço/bin do armazém. Código único por tenant.
+app.post('/api/wms/enderecos', requireAuth, requireRole('admin', 'diretor', 'almoxarife', 'operacao'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const b = req.body || {}
+  const codigo = String(b.codigo || '').trim()
+  if (!codigo) return res.status(400).json(err('Código do endereço é obrigatório'))
+  if (db.prepare(`SELECT id FROM wms_enderecos WHERE empresa_id = ? AND UPPER(codigo) = UPPER(?)`).get(emp, codigo))
+    return res.status(409).json(err('Já existe endereço com este código', 409))
+  const r = db.prepare(`INSERT INTO wms_enderecos(codigo, descricao, zona, capacidade, empresa_id) VALUES(?,?,?,?,?)`)
+    .run(codigo, b.descricao || null, b.zona || null, Number(b.capacidade) || 0, emp)
+  log(req.user.usuario_id, req.user.nome, 'wms_endereco', 'wms_enderecos', `Endereço ${codigo} (${b.zona || '—'})`)
+  res.status(201).json(ok(db.prepare(`SELECT * FROM wms_enderecos WHERE id = ?`).get(r.lastInsertRowid)))
+})
+
+// Lista de endereços com ocupação (usado × capacidade).
+app.get('/api/wms/enderecos', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const rows = db.prepare(`SELECT * FROM wms_enderecos WHERE empresa_id = ? AND ativo = 1 ORDER BY codigo ASC`).all(emp)
+  res.json(ok(rows.map(e => {
+    const aloc = db.prepare(`SELECT quantidade FROM wms_alocacoes WHERE endereco_id = ? AND empresa_id = ?`).all(e.id, emp)
+    return { ...e, ...ocupacaoEndereco(e.capacidade, aloc) }
+  })))
+})
+
+// Itens armazenados num endereço.
+app.get('/api/wms/enderecos/:id/itens', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  if (!db.prepare(`SELECT id FROM wms_enderecos WHERE id = ? AND empresa_id = ?`).get(req.params.id, emp)) return res.status(404).json(err('Endereço não encontrado'))
+  res.json(ok(db.prepare(`SELECT a.*, i.codigo, i.descricao FROM wms_alocacoes a JOIN almoxarifado_itens i ON i.id = a.item_id
+     WHERE a.endereco_id = ? AND a.empresa_id = ? AND a.quantidade > 0`).all(req.params.id, emp)))
+})
+
+// Endereçar (guardar) uma quantidade de um item num endereço.
+app.post('/api/almoxarifado/:itemId/alocar', requireAuth, requireRole('admin', 'diretor', 'almoxarife', 'operacao'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const item = db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ? AND empresa_id = ?`).get(req.params.itemId, emp)
+  if (!item) return res.status(404).json(err('Item não encontrado'))
+  const b = req.body || {}
+  const end = db.prepare(`SELECT * FROM wms_enderecos WHERE id = ? AND empresa_id = ?`).get(b.endereco_id, emp)
+  if (!end) return res.status(404).json(err('Endereço não encontrado'))
+  const v = validarAlocacao(item.quantidade_atual, _wmsAlocacoesItem(item.id, emp), b.quantidade)
+  if (!v.ok) return res.status(409).json(err(v.erro, 409))
+  const qtd = Number(b.quantidade)
+  const cur = db.prepare(`SELECT id, quantidade FROM wms_alocacoes WHERE item_id = ? AND endereco_id = ? AND empresa_id = ?`).get(item.id, end.id, emp)
+  if (cur) db.prepare(`UPDATE wms_alocacoes SET quantidade = quantidade + ?, updated_at=datetime('now') WHERE id = ?`).run(qtd, cur.id)
+  else db.prepare(`INSERT INTO wms_alocacoes(item_id, endereco_id, quantidade, empresa_id) VALUES(?,?,?,?)`).run(item.id, end.id, qtd, emp)
+  log(req.user.usuario_id, req.user.nome, 'wms_alocar', 'wms_alocacoes', `${qtd} de ${item.codigo || item.descricao} → ${end.codigo}`)
+  res.status(201).json(ok({ item_id: item.id, endereco_id: end.id, ...saldosWms(item, emp) }))
+})
+
+// Mover quantidade entre endereços (transferência interna).
+app.post('/api/almoxarifado/:itemId/mover', requireAuth, requireRole('admin', 'diretor', 'almoxarife', 'operacao'), (req, res) => {
+  const emp = empresaDoReq(req)
+  const item = db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ? AND empresa_id = ?`).get(req.params.itemId, emp)
+  if (!item) return res.status(404).json(err('Item não encontrado'))
+  const b = req.body || {}
+  const qtd = Number(b.quantidade)
+  if (!(qtd > 0)) return res.status(400).json(err('Quantidade deve ser maior que zero'))
+  const de = db.prepare(`SELECT * FROM wms_alocacoes WHERE item_id = ? AND endereco_id = ? AND empresa_id = ?`).get(item.id, b.de_endereco_id, emp)
+  if (!de || de.quantidade < qtd) return res.status(409).json(err('Saldo insuficiente no endereço de origem', 409))
+  const paraEnd = db.prepare(`SELECT id, codigo FROM wms_enderecos WHERE id = ? AND empresa_id = ?`).get(b.para_endereco_id, emp)
+  if (!paraEnd) return res.status(404).json(err('Endereço de destino não encontrado'))
+  db.prepare(`UPDATE wms_alocacoes SET quantidade = quantidade - ?, updated_at=datetime('now') WHERE id = ?`).run(qtd, de.id)
+  const cur = db.prepare(`SELECT id FROM wms_alocacoes WHERE item_id = ? AND endereco_id = ? AND empresa_id = ?`).get(item.id, paraEnd.id, emp)
+  if (cur) db.prepare(`UPDATE wms_alocacoes SET quantidade = quantidade + ?, updated_at=datetime('now') WHERE id = ?`).run(qtd, cur.id)
+  else db.prepare(`INSERT INTO wms_alocacoes(item_id, endereco_id, quantidade, empresa_id) VALUES(?,?,?,?)`).run(item.id, paraEnd.id, qtd, emp)
+  log(req.user.usuario_id, req.user.nome, 'wms_mover', 'wms_alocacoes', `${qtd} de ${item.codigo || item.descricao} → ${paraEnd.codigo}`)
+  res.json(ok(saldosWms(item, emp)))
+})
+
+// Posição do item: onde está + saldo endereçado/não endereçado.
+function saldosWms(item, emp) {
+  const aloc = _wmsAlocacoesItem(item.id, emp)
+  return {
+    item_id: item.id, codigo: item.codigo, descricao: item.descricao,
+    quantidade_atual: item.quantidade_atual,
+    saldo_enderecado: saldoEnderecado(aloc), saldo_nao_enderecado: saldoNaoEnderecado(item.quantidade_atual, aloc),
+    posicoes: aloc.map(a => ({ endereco_id: a.endereco_id, codigo: a.endereco_codigo, zona: a.endereco_zona, quantidade: a.quantidade })),
+  }
+}
+app.get('/api/almoxarifado/:itemId/enderecos', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const item = db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ? AND empresa_id = ?`).get(req.params.itemId, emp)
+  if (!item) return res.status(404).json(err('Item não encontrado'))
+  res.json(ok(saldosWms(item, emp)))
+})
+
+// Sugestão de separação (picking) para uma quantidade demandada.
+app.get('/api/almoxarifado/:itemId/picking', requireAuth, (req, res) => {
+  const emp = empresaDoReq(req)
+  const item = db.prepare(`SELECT * FROM almoxarifado_itens WHERE id = ? AND empresa_id = ?`).get(req.params.itemId, emp)
+  if (!item) return res.status(404).json(err('Item não encontrado'))
+  const q = Number(req.query.quantidade) || 0
+  if (!(q > 0)) return res.status(400).json(err('Informe a quantidade a separar'))
+  res.json(ok(sugerirPicking(_wmsAlocacoesItem(item.id, emp), q)))
 })
 
 // ════════════════════════════════════════════════════════════
