@@ -38,8 +38,9 @@ export function montarCalendario(plano = [], apontamentos = [], ano, hoje) {
   let custoTotal = 0
   for (const a of apontamentos || []) {
     const m = String(a.data || '').slice(0, 7)
+    if (!m.startsWith(y)) continue // calendário de UM ano: real E custo só do ano exibido
     custoTotal += Number(a.custo_materiais) || 0
-    if (m.startsWith(y)) realPorMes.set(m, (realPorMes.get(m) || 0) + (Number(a.veiculos) || 0))
+    realPorMes.set(m, (realPorMes.get(m) || 0) + (Number(a.veiculos) || 0))
   }
   let acumPlan = 0, acumReal = 0
   const meses = []
@@ -61,7 +62,7 @@ export function montarCalendario(plano = [], apontamentos = [], ano, hoje) {
       total_plan: totalPlan, total_real: totalReal,
       pct: totalPlan > 0 ? Math.round((totalReal / totalPlan) * 100) : null,
       atrasados: meses.filter(m => m.status === 'Atrasado').length,
-      custo_producao: Math.round(custoTotal * 100) / 100, // custo de TODOS os apontamentos (trilha financeira)
+      custo_producao: Math.round(custoTotal * 100) / 100, // custo dos apontamentos DO ANO exibido
     },
   }
 }

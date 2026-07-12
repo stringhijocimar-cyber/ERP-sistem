@@ -4762,10 +4762,18 @@ app.post('/api/pp/ordens/:id/apontar', requireAuth, requireRole('admin', 'direto
        VALUES(?,?,?,?,?,?,?,?,?,?)`)
       .run(item.id, 'Saída', c.quantidade, item.valor_medio || 0, op.numero, `Consumo OP ${op.numero} (${n} veíc.)`, novoSaldo, req.user.usuario_id, req.user.nome, emp)
   }
+  // Data do apontamento: hoje por padrão; retroativa é legítima (apontar
+  // ontem), mas o formato precisa ser ISO — data lixo sumia do calendário.
+  let dataApont = _hojeYMD()
+  if (req.body?.data != null && String(req.body.data).trim() !== '') {
+    const d = String(req.body.data).slice(0, 10)
+    if (!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(d)) return res.status(400).json(err('Data do apontamento inválida (use YYYY-MM-DD)'))
+    dataApont = d
+  }
   // Histórico do apontamento: alimenta o calendário (real por mês) e a margem.
   db.prepare(`INSERT INTO pp_apontamentos(ordem_id, veiculos, custo_materiais, data, usuario_id, usuario_nome, empresa_id)
      VALUES(?,?,?,?,?,?,?)`)
-    .run(op.id, n, custo.total, req.body?.data || _hojeYMD(), req.user.usuario_id, req.user.nome, emp)
+    .run(op.id, n, custo.total, dataApont, req.user.usuario_id, req.user.nome, emp)
   const prog = statusAposApontamento(op, n)
   db.prepare(`UPDATE pp_ordens SET veiculos_produzidos=?, status=?, custo_real=COALESCE(custo_real,0)+?, data_conclusao=CASE WHEN ? THEN datetime('now') ELSE data_conclusao END, updated_at=datetime('now') WHERE id=?`)
     .run(prog.veiculos_produzidos, prog.status, custo.total, prog.concluida ? 1 : 0, op.id)
@@ -4778,7 +4786,7 @@ app.post('/api/pp/plano', requireAuth, requireRole('admin', 'diretor', 'pcp'), (
   const emp = empresaDoReq(req)
   const b = req.body || {}
   const mes = String(b.mes || '').slice(0, 7)
-  if (!/^\d{4}-\d{2}$/.test(mes)) return res.status(400).json(err('Mês inválido (use YYYY-MM)'))
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) return res.status(400).json(err('Mês inválido (use YYYY-MM, 01–12)'))
   const qtd = parseInt(b.veiculos_plan)
   if (!(qtd >= 0)) return res.status(400).json(err('Veículos planejados deve ser ≥ 0'))
   const cur = db.prepare(`SELECT id FROM pp_plano WHERE empresa_id = ? AND mes = ?`).get(emp, mes)

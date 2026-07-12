@@ -20,7 +20,7 @@ describe('lib pp_calendario (pura)', () => {
     const apont = [
       { data: '2027-01-15', veiculos: 4, custo_materiais: 100 },
       { data: '2027-02-10', veiculos: 2, custo_materiais: 50 },  // fev abaixo do plano
-      { data: '2026-12-01', veiculos: 9, custo_materiais: 10 },  // fora do ano (custo conta, real não)
+      { data: '2026-12-01', veiculos: 9, custo_materiais: 10 },  // fora do ano: NEM real NEM custo
     ]
     const c = montarCalendario(plano, apont, 2027, '2027-03-05')
     const jan = c.meses[0], fev = c.meses[1], mar = c.meses[2]
@@ -30,7 +30,7 @@ describe('lib pp_calendario (pura)', () => {
     expect(mar.acum_plan).toBe(13); expect(mar.acum_real).toBe(6)
     expect(c.resumo.total_plan).toBe(13)
     expect(c.resumo.atrasados).toBe(1)
-    expect(c.resumo.custo_producao).toBe(160) // trilha financeira total
+    expect(c.resumo.custo_producao).toBe(150) // VARREDURA: só o custo DO ANO (2026 não vaza)
   })
 })
 
@@ -99,5 +99,22 @@ describe('endpoints — calendário + custo da OP na margem', () => {
     const cal = (await request(app).get('/api/pp/calendario').set('Authorization', `Bearer ${tokB}`)).body.data
     expect(cal.resumo.total_real).toBe(0)
     expect(cal.resumo.custo_producao).toBe(0)
+  })
+
+  it('VARREDURA: data de apontamento inválida → 400 (lixo sumia do calendário)', async () => {
+    const op = (await auth(request(app).post('/api/pp/ordens')).send({ veiculos_plan: 5 })).body.data
+    await auth(request(app).post(`/api/pp/ordens/${op.id}/liberar`)).send({})
+    const lixo = await auth(request(app).post(`/api/pp/ordens/${op.id}/apontar`)).send({ veiculos: 1, data: 'garbage' })
+    expect(lixo.status).toBe(400)
+    const mes13 = await auth(request(app).post(`/api/pp/ordens/${op.id}/apontar`)).send({ veiculos: 1, data: '2027-13-01' })
+    expect(mes13.status).toBe(400)
+    // retroativa VÁLIDA é legítima
+    const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    expect((await auth(request(app).post(`/api/pp/ordens/${op.id}/apontar`)).send({ veiculos: 1, data: ontem })).status).toBe(200)
+  })
+
+  it('VARREDURA: plano com mês 13 → 400', async () => {
+    const r = await auth(request(app).post('/api/pp/plano')).send({ mes: '2027-13', veiculos_plan: 4 })
+    expect(r.status).toBe(400)
   })
 })
