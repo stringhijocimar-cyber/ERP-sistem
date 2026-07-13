@@ -553,10 +553,11 @@ function renderRequisicoes() {
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <button onclick="_reqExportarRC()"
+        <button id="reqBtnExportar" onclick="_reqExportarRC()"
+          title="Gera um arquivo .xlsx com os registros filtrados (planilha Processos)"
           style="padding:8px 16px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#475569;font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px;transition:border-color .15s;"
           onmouseover="this.style.borderColor='#cbd5e1'" onmouseout="this.style.borderColor='#e2e8f0'">
-          <i class="fas fa-download" style="font-size:12px;"></i> Exportar
+          <i class="fas fa-file-excel" style="font-size:12px;color:#16a34a;"></i> Exportar para Excel
         </button>
         ${podeEmitir ? `
         <button onclick="reqEmitirRCAvulsa()"
@@ -1143,17 +1144,50 @@ function _reqRenderOSCards(lista, rcsDeOS, podeEmitir) {
 function _reqSwitchTab(tab) { renderRequisicoes(); }
 
 // ─── EXPORTAR ────────────────────────────────────────────────────────────────
-function _reqExportarRC() {
-  const lista = _reqGetRC();
-  const csv = [
-    ['Número','Título','Contrato','OS Vinculada','Solicitante','Tipo','Urgência','Valor Total','Status','Data'],
-    ...lista.map(r=>[r.numero,r.titulo,r.contrato||'',r.os_vinculada||'',r.solicitante,r.tipo||'Material',r.urgencia||'Normal',r.valor_total,r.status,r.data_criacao])
-  ].map(row=>row.map(c=>`"${String(c||'').replace(/"/g,'""')}"`).join(',')).join('\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
-  a.download = `RC_${new Date().toISOString().split('T')[0]}.csv`;
-  a.click();
-  if (typeof showToast === 'function') showToast('Exportado com sucesso!','success');
+// Exportação para Excel (.xlsx REAL, gerado no backend a partir dos dados do
+// servidor — multi-tenant e por perfil). Respeita a busca e o filtro de status
+// ativos na tela. Substitui o CSV antigo, que ignorava os filtros e não
+// neutralizava fórmulas (=cmd executava no Excel).
+const _REQ_STATUS_EXPORT = {
+  aguard_aprv: 'Aguardando Aprovação',
+  aprovada: 'Aprovada – Aguardando Comprador|RFQ Criado|Em Cotação|Cotações Recebidas|Mapa Criado|Mapa Aprovado|Aprovada',
+  em_cotacao: 'RFQ Criado|Em Cotação|Cotações Recebidas',
+  concluida: 'PC Emitido|Atendida',
+  rejeitada: 'Rejeitada',
+};
+async function _reqExportarRC() {
+  const btn = document.getElementById('reqBtnExportar');
+  if (btn && btn.disabled) return; // impede cliques simultâneos
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.style.opacity = '.6'; btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="font-size:12px;"></i> Gerando…'; }
+  try {
+    const params = new URLSearchParams();
+    const q = (document.getElementById('reqSearch')?.value || '').trim();
+    const statusKey = document.getElementById('reqStatusSel')?.value || 'todas';
+    if (q) params.set('q', q);
+    if (_REQ_STATUS_EXPORT[statusKey]) params.set('status', _REQ_STATUS_EXPORT[statusKey]);
+    const token = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
+    const resp = await fetch(`/api/rc/export.xlsx?${params}`, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!resp.ok) {
+      let msg = 'Falha na exportação';
+      try { msg = (await resp.json()).error || msg; } catch (e) {}
+      if (typeof showToast === 'function') showToast(msg, resp.status === 404 ? 'warning' : 'error');
+      return;
+    }
+    const nome = (resp.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1]
+      || `processos_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = nome;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    if (typeof showToast === 'function') showToast('Exportação concluída: ' + nome, 'success');
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Erro na exportação: ' + ((e && e.message) || 'rede'), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = original; }
+  }
 }
 
 // ─── VER OS ──────────────────────────────────────────────────────────────────

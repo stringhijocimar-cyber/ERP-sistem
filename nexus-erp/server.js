@@ -45,6 +45,7 @@ import { consolidarMM, scoreFornecedor, classificarFornecedor, sugestaoCompra } 
 import { gateLiberacaoOP, consumoDaOrdem, validarConsumo, statusAposApontamento } from './lib/pp_producao.js'
 import { custoConsumo, montarCalendario } from './lib/pp_calendario.js'
 import { saldoEnderecado, saldoNaoEnderecado, validarAlocacao, sugerirPicking, ocupacaoEndereco } from './lib/wms.js'
+import { gerarXLSX } from './lib/xlsx.js'
 import { validarUpload, mimeDe } from './lib/storage.js'
 
 const Auditoria = globalThis.Auditoria
@@ -2767,12 +2768,66 @@ app.get('/api/rc', requireAuth, (req, res) => {
   let sql = `SELECT rc.* FROM requisicoes_compra rc`
   const where = ['rc.empresa_id = ?']; const params = [empresaDoReq(req)]
   if (status) { where.push('rc.status = ?'); params.push(status) }
-  if (q) { where.push('(rc.numero LIKE ? OR rc.descricao LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
+  if (q) { where.push('(rc.numero LIKE ? OR rc.observacoes LIKE ?)'); params.push(`%${q}%`, `%${q}%`) } // BUG pré-existente: rc.descricao não existe → 500
   sql += ' WHERE ' + where.join(' AND ')
   sql += ' ORDER BY rc.created_at DESC'
   const rows = db.prepare(sql).all(...params)
   const result = rows.map(r => ({ ...r, itens: db.prepare(`SELECT * FROM rc_itens WHERE rc_id = ?`).all(r.id) }))
   res.json(ok(result))
+})
+
+// Exportação Excel (.xlsx REAL, não CSV) do processo de compras (Requisições).
+// Respeita os MESMOS filtros da listagem (status, q) + período (de/ate) e o
+// tenant/perfil do usuário. Planilha "Processos": cabeçalho destacado, filtros
+// automáticos, 1ª linha congelada, datas/moedas nativas, sem conteúdo
+// executável (texto vira inline string — "=cmd" fica literal).
+app.get('/api/rc/export.xlsx', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem permissão para exportar processos', 403))
+  const { status, q = '', de, ate } = req.query
+  const where = ['rc.empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (status) {
+    // aceita um status ou vários separados por "|" (o filtro da tela agrupa)
+    const lista = String(status).split('|').map(s => s.trim()).filter(Boolean)
+    if (lista.length) { where.push(`rc.status IN (${lista.map(() => '?').join(',')})`); params.push(...lista) }
+  }
+  if (q) { where.push('(rc.numero LIKE ? OR rc.observacoes LIKE ?)'); params.push(`%${q}%`, `%${q}%`) } // BUG pré-existente: rc.descricao não existe → 500
+  for (const [campo, op] of [[de, '>='], [ate, '<=']]) {
+    if (campo != null && String(campo).trim() !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(campo))) return res.status(400).json(err('Período inválido (use YYYY-MM-DD)'))
+      where.push(`substr(rc.created_at,1,10) ${op} ?`); params.push(String(campo))
+    }
+  }
+  const rows = db.prepare(`SELECT rc.* FROM requisicoes_compra rc WHERE ${where.join(' AND ')} ORDER BY rc.created_at DESC`).all(...params)
+  if (!rows.length) return res.status(404).json(err('Nenhum registro para exportar com os filtros atuais'))
+  const buf = gerarXLSX({
+    sheetName: 'Processos',
+    colunas: [
+      { titulo: 'Número', tipo: 'text', largura: 14 },
+      { titulo: 'Status', tipo: 'text', largura: 26 },
+      { titulo: 'Tipo', tipo: 'text', largura: 12 },
+      { titulo: 'WBS', tipo: 'text', largura: 12 },
+      { titulo: 'Departamento', tipo: 'text', largura: 16 },
+      { titulo: 'Prioridade', tipo: 'text', largura: 12 },
+      { titulo: 'Solicitante', tipo: 'text', largura: 20 },
+      { titulo: 'OS Vinculada', tipo: 'text', largura: 14 },
+      { titulo: 'Valor Total', tipo: 'money', largura: 16 },
+      { titulo: 'Criada em', tipo: 'date', largura: 12 },
+      { titulo: 'Aprovada por', tipo: 'text', largura: 20 },
+      { titulo: 'Observações', tipo: 'text', largura: 40 },
+    ],
+    linhas: rows.map(r => [
+      r.numero, r.status, r.tipo, r.wbs, r.departamento, r.prioridade,
+      r.solicitante_nome, r.os_numero, r.valor_total,
+      String(r.created_at || '').slice(0, 10), r.aprovado_por, r.observacoes,
+    ]),
+  })
+  const agora = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const nome = `processos_${agora.getFullYear()}-${pad(agora.getMonth() + 1)}-${pad(agora.getDate())}_${pad(agora.getHours())}${pad(agora.getMinutes())}.xlsx`
+  log(req.user.usuario_id, req.user.nome, 'rc_export_xlsx', 'requisicoes_compra', `Exportou ${rows.length} processo(s) → ${nome}`)
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', `attachment; filename="${nome}"`)
+  res.send(buf)
 })
 
 app.get('/api/rc/:id', requireAuth, (req, res) => {

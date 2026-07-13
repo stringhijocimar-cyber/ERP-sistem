@@ -571,7 +571,28 @@ const PAGE_META = {
   pp:                       { label: 'PP — Ordens de Produção',                       icon: 'industry' },
   wms:                      { label: 'WMS — Endereçamento & Separação',               icon: 'warehouse' },
   custos:                   { label: 'Controle de Custos & Rastreabilidade',         icon: 'chart-area' },
+  // Achados da auditoria do menu: páginas que caíam no breadcrumb genérico.
+  proposta_comercial:       { label: 'Propostas Comerciais',                          icon: 'file-pen' },
+  onboarding_fornecedor:    { label: 'Onboarding de Fornecedor',                      icon: 'user-plus' },
+  painel_executivo:         { label: 'Painel Executivo',                              icon: 'gauge-high' },
+  dashboard_financeiro:     { label: 'Dashboard Financeiro',                          icon: 'chart-column' },
+  conciliacao:              { label: 'Conciliação Bancária',                          icon: 'right-left' },
+  orcamento:                { label: 'Orçamento Anual',                               icon: 'bullseye' },
+  rh:                       { label: 'RH / Colaboradores',                            icon: 'id-badge' },
+  saas_dashboard:           { label: 'Dashboard SaaS',                                icon: 'rocket' },
+  saas_clientes:            { label: 'Clientes / Organizações (SaaS)',                icon: 'city' },
+  saas_leads:               { label: 'Leads / Pipeline (SaaS)',                       icon: 'funnel-dollar' },
+  saas_billing:             { label: 'Billing / Receita (SaaS)',                      icon: 'credit-card' },
+  saas_lgpd:                { label: 'LGPD (SaaS)',                                   icon: 'shield-halved' },
 };
+
+// Tooltips do menu (úteis com a sidebar recolhida): title = texto do item.
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.nav-item').forEach(a => {
+    const label = a.querySelector('.nav-label');
+    if (label && !a.title) a.title = label.textContent.trim();
+  });
+});
 
 function navigate(page) {
   currentPage = page;
@@ -650,6 +671,14 @@ function navigate(page) {
     admin_logs: renderAdminLogs,
     admin_backup: renderAdminBackup,
     perfil: renderPerfil,
+    // Painel SaaS (admin do negócio): os renders sempre existiram em
+    // saas_admin.js, mas as rotas nunca foram registradas — os 5 itens do
+    // menu caíam em "Módulo em desenvolvimento" (achado da auditoria).
+    saas_dashboard: function() { if(typeof renderSaasDashboard === 'function') renderSaasDashboard(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando SaaS...</p>'; },
+    saas_clientes:  function() { if(typeof renderSaasClientes === 'function') renderSaasClientes(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando clientes...</p>'; },
+    saas_leads:     function() { if(typeof renderSaasLeads === 'function') renderSaasLeads(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando leads...</p>'; },
+    saas_billing:   function() { if(typeof renderSaasBilling === 'function') renderSaasBilling(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando billing...</p>'; },
+    saas_lgpd:      function() { if(typeof renderSaasLgpd === 'function') renderSaasLgpd(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando LGPD...</p>'; },
     projetos_gantt: function() { if(typeof renderProjetosGantt === 'function') renderProjetosGantt(); else document.getElementById('mainContent').innerHTML = '<p style="color:#fff;padding:40px">Módulo Projetos & Gantt carregando...</p>'; },
     dre:        function() { if(typeof renderDRE === 'function') renderDRE(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando DRE...</p>'; },
     orcamento:  function() { if(typeof renderOrcamento === 'function') renderOrcamento(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Orçamento...</p>'; },

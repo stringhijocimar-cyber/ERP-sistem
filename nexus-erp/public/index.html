@@ -125,7 +125,7 @@
           <span class="nav-label">CRM Comercial</span>
         </a>
         <a class="nav-item" onclick="navigate('proposta_comercial')" href="#" id="nav-proposta">
-          <span class="nav-icon"><i class="fas fa-file-invoice"></i></span>
+          <span class="nav-icon"><i class="fas fa-file-pen"></i></span>
           <span class="nav-label">Propostas Comerciais</span>
         </a>
         <a class="nav-item" onclick="navigate('contratos')" href="#">
@@ -172,8 +172,8 @@
           <span class="nav-label">Suprimentos</span>
         </a>
         <a class="nav-item" onclick="navigate('fluxo_compras')" href="#" style="background:linear-gradient(90deg,rgba(0,180,184,0.12),transparent);border-left:2px solid var(--fa-teal)">
-          <span class="nav-icon"><i class="fas fa-project-diagram" style="color:var(--fa-teal)"></i></span>
-          <span class="nav-label" style="color:var(--fa-teal);font-weight:600">Aprovação de OS</span>
+          <span class="nav-icon"><i class="fas fa-check-double" style="color:var(--fa-teal)"></i></span>
+          <span class="nav-label" style="color:var(--fa-teal);font-weight:600">Aprovações de RC</span>
           <span class="nav-badge" id="badge-fluxo" style="background:var(--fa-teal)">Novo</span>
         </a>
         <a class="nav-item" onclick="navigate('requisicoes')" href="#">
@@ -199,7 +199,7 @@
           <span class="nav-label">Materiais</span>
         </a>
         <a class="nav-item" onclick="navigate('contratos_sup')" href="#">
-          <span class="nav-icon"><i class="fas fa-handshake"></i></span>
+          <span class="nav-icon"><i class="fas fa-handshake-angle"></i></span>
           <span class="nav-label">Contratos Fornecimento</span>
         </a>
         <a class="nav-item" onclick="navigate('fornecedores')" href="#">
@@ -255,7 +255,7 @@
           <span class="nav-label">Painel Financeiro</span>
         </a>
         <a class="nav-item" onclick="navigate('dashboard_financeiro')" href="#">
-          <span class="nav-icon"><i class="fas fa-gauge-high"></i></span>
+          <span class="nav-icon"><i class="fas fa-chart-column"></i></span>
           <span class="nav-label">Dashboard Financeiro</span>
           <span class="nav-badge" style="background:#7c3aed;color:#fff;">Novo</span>
         </a>
@@ -284,13 +284,8 @@
           <span class="nav-badge" style="background:#7c3aed;color:#fff;">Novo</span>
         </a>
         <a class="nav-item" onclick="navigate('ativo_fixo')" href="#">
-          <span class="nav-icon"><i class="fas fa-building"></i></span>
+          <span class="nav-icon"><i class="fas fa-archive"></i></span>
           <span class="nav-label">Ativo Fixo / Patrimônio</span>
-          <span class="nav-badge" style="background:#7c3aed;color:#fff;">Novo</span>
-        </a>
-        <a class="nav-item" onclick="navigate('kpi_exec')" href="#">
-          <span class="nav-icon"><i class="fas fa-chart-pie"></i></span>
-          <span class="nav-label">KPI Executivo / BI</span>
           <span class="nav-badge" style="background:#7c3aed;color:#fff;">Novo</span>
         </a>
         <a class="nav-item" onclick="navigate('fiscal')" href="#">
@@ -354,7 +349,7 @@
           <span class="nav-badge" style="background:#4f46e5;color:#fff;">Novo</span>
         </a>
         <a class="nav-item" onclick="navigate('meu_painel')" href="#">
-          <span class="nav-icon"><i class="fas fa-th-large"></i></span>
+          <span class="nav-icon"><i class="fas fa-id-card"></i></span>
           <span class="nav-label">Meu Painel</span>
         </a>
         <a class="nav-item" onclick="navigate('auditoria_ai')" href="#">
@@ -377,7 +372,7 @@
           <span class="nav-badge" style="background:#a855f7;color:#fff;font-weight:700">Novo</span>
         </a>
         <a class="nav-item" onclick="navigate('comparativo')" href="#">
-          <span class="nav-icon"><i class="fas fa-chart-bar"></i></span>
+          <span class="nav-icon"><i class="fas fa-chart-simple"></i></span>
           <span class="nav-label">Análise Comparativa ERP</span>
         </a>
         <a class="nav-item" onclick="navigate('relatorios')" href="#">
@@ -389,7 +384,7 @@
           <span class="nav-label">Aval. Fornecedores</span>
         </a>
         <a class="nav-item" onclick="navigate('idf')" href="#">
-          <span class="nav-icon"><i class="fas fa-chart-bar"></i></span>
+          <span class="nav-icon"><i class="fas fa-ranking-star"></i></span>
           <span class="nav-label">IDF Fornecedores</span>
         </a>
         <a class="nav-item" onclick="navigate('iso')" href="#">
@@ -409,11 +404,11 @@
           <span class="nav-label">Central de Alertas</span>
         </a>
         <a class="nav-item" id="nav-bi" onclick="navigate('bi')" href="#">
-          <span class="nav-icon"><i class="fas fa-chart-line"></i></span>
+          <span class="nav-icon"><i class="fas fa-magnifying-glass-chart"></i></span>
           <span class="nav-label">Dashboard BI</span>
         </a>
         <a class="nav-item" id="nav-nfe" onclick="navigate('nfe')" href="#">
-          <span class="nav-icon"><i class="fas fa-file-invoice-dollar"></i></span>
+          <span class="nav-icon"><i class="fas fa-receipt"></i></span>
           <span class="nav-label">Documentos Fiscais</span>
         </a>
       </div>
@@ -443,11 +438,11 @@
       <div class="nav-section" id="nav-saas-admin" style="display:none">
         <div class="nav-section-label">SaaS / Negócio</div>
         <a class="nav-item" onclick="navigate('saas_dashboard')" href="#">
-          <span class="nav-icon"><i class="fas fa-chart-line"></i></span>
+          <span class="nav-icon"><i class="fas fa-rocket"></i></span>
           <span class="nav-label">Dashboard SaaS</span>
         </a>
         <a class="nav-item" onclick="navigate('saas_clientes')" href="#">
-          <span class="nav-icon"><i class="fas fa-building"></i></span>
+          <span class="nav-icon"><i class="fas fa-city"></i></span>
           <span class="nav-label">Clientes / Orgs</span>
         </a>
         <a class="nav-item" onclick="navigate('saas_leads')" href="#">
@@ -455,12 +450,12 @@
           <span class="nav-label">Leads / Pipeline</span>
         </a>
         <a class="nav-item" onclick="navigate('saas_billing')" href="#">
-          <span class="nav-icon"><i class="fas fa-file-invoice-dollar"></i></span>
+          <span class="nav-icon"><i class="fas fa-credit-card"></i></span>
           <span class="nav-label">Billing / Receita</span>
         </a>
         <a class="nav-item" onclick="navigate('saas_lgpd')" href="#">
-          <span class="nav-icon"><i class="fas fa-shield-alt"></i></span>
-          <span class="nav-label">LGPD</span>
+          <span class="nav-icon"><i class="fas fa-shield-halved"></i></span>
+          <span class="nav-label">LGPD (SaaS)</span>
         </a>
       </div>
     </div>
