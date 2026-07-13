@@ -586,11 +586,35 @@ const PAGE_META = {
   saas_lgpd:                { label: 'LGPD (SaaS)',                                   icon: 'shield-halved' },
 };
 
-// Tooltips do menu (úteis com a sidebar recolhida): title = texto do item.
+// Enhancements do menu: tooltips (sidebar recolhida) + seções recolhíveis com
+// estado persistido por usuário (localStorage). Progressivo: sem JS, tudo aberto.
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.nav-item').forEach(a => {
     const label = a.querySelector('.nav-label');
     if (label && !a.title) a.title = label.textContent.trim();
+  });
+  let colapsadas = [];
+  try { colapsadas = JSON.parse(localStorage.getItem('fa_nav_colapsadas') || '[]'); } catch (e) {}
+  document.querySelectorAll('.nav-section').forEach(sec => {
+    const lbl = sec.querySelector('.nav-section-label');
+    if (!lbl) return;
+    const nome = lbl.textContent.trim();
+    if (colapsadas.includes(nome)) sec.classList.add('collapsed');
+    lbl.setAttribute('role', 'button');
+    lbl.setAttribute('tabindex', '0');
+    lbl.setAttribute('aria-expanded', String(!sec.classList.contains('collapsed')));
+    const toggle = () => {
+      sec.classList.toggle('collapsed');
+      lbl.setAttribute('aria-expanded', String(!sec.classList.contains('collapsed')));
+      let cur = [];
+      try { cur = JSON.parse(localStorage.getItem('fa_nav_colapsadas') || '[]'); } catch (e) {}
+      const i = cur.indexOf(nome);
+      if (sec.classList.contains('collapsed')) { if (i < 0) cur.push(nome); }
+      else if (i >= 0) cur.splice(i, 1);
+      localStorage.setItem('fa_nav_colapsadas', JSON.stringify(cur));
+    };
+    lbl.addEventListener('click', toggle);
+    lbl.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
   });
 });
 
