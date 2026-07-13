@@ -45,7 +45,19 @@ describe('integridade do menu de navegação', () => {
     expect(sem, `itens sem PAGE_META: ${sem.join(', ')}`).toEqual([])
   })
 
-  it('rotas fora do menu são as intencionais (acessíveis por outros caminhos)', () => {
+  it('estrutura profissional: 11 seções na ordem esperada + 69 itens', () => {
+    const navBloco = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'))
+    const secoes = [...navBloco.matchAll(/nav-section-label[^>]*>([^<]+)</g)].map(m => m[1].trim())
+    expect(secoes).toEqual([
+      'Visão Geral', 'Comercial', 'Operações', 'Suprimentos & Compras',
+      'Industrial & Estoque', 'Fornecedores', 'Financeiro & Fiscal',
+      'SSMA & Compliance', 'Relatórios & Análises', 'Administração', 'SaaS / Negócio',
+    ])
+    const itensDeSecao = [...navBloco.matchAll(/class="nav-item"[^>]*onclick="navigate/g)].length
+    expect(itensDeSecao).toBe(69) // 69 nas seções (o atalho de perfil fica no rodapé)
+  })
+
+    it('rotas fora do menu são as intencionais (acessíveis por outros caminhos)', () => {
     const foraDoMenu = [...routeKeys].filter(k => !menuPages.includes(k))
     // sino (notificações) e o atalho interno do fluxo de RC; perfil fica no
     // rodapé da própria sidebar
