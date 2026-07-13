@@ -2033,16 +2033,9 @@ function abrirNovoPedidoComDados(dados) {
   }, 150);
 }
 
-function exportPedidos() {
-  const rows = [['Nº Pedido','Fornecedor','Descrição','Contrato','Valor','Emissão','Status']];
-  FA_PEDIDOS.forEach(p => rows.push([p.numero, p.fornecedor_nome, p.descricao, p.contrato_id, p.valor_total, p.data_emissao, p.status]));
-  const csv = rows.map(r => r.join(';')).join('\n');
-  const a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
-  a.download = 'pedidos_compra_fraser_alexander.csv';
-  a.click();
-  showToast('Relatório de pedidos exportado!', 'success');
-}
+// Exportação para Excel (.xlsx real, backend multi-tenant) — substitui o CSV
+// que não neutralizava fórmulas.
+function exportPedidos(ev) { nexusBaixarXLSX('/api/pedidos/export.xlsx', ev); }
 
 // ═══════════════════════════════════════════════════════════
 // MODAL PÓS-CRIAÇÃO: OPÇÕES DE PDF E ENVIO DE EMAIL

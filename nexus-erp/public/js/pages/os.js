@@ -279,6 +279,9 @@ function renderOS() {
           <i class="fas fa-file-excel"></i> Excel
         </button>
         ${hasPermission('os', 'create') ? `
+        <button class="btn btn-secondary btn-sm" onclick="nexusBaixarXLSX('/api/os/export.xlsx', event)" title="Gera um arquivo .xlsx com as ordens de serviço">
+          <i class="fas fa-file-excel" style="color:#16a34a"></i> Exportar para Excel
+        </button>
         <button class="btn btn-primary btn-sm" onclick="openNovaOS()">
           <i class="fas fa-plus"></i> Nova OS
         </button>` : ''}

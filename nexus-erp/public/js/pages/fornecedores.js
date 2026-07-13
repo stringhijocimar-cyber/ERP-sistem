@@ -1468,19 +1468,9 @@ async function salvarEdicaoFornecedor(id) {
 }
 
 // ─── EXPORTAR ────────────────────────────────────────────────
-function exportFornecedores() {
-  showToast('Exportando lista de fornecedores...', 'info');
-  const rows = [['ID','Razão Social','Categoria','CNPJ','Status','Cidade','UF','Score IDF','Total Gasto']];
-  FA_FORNECEDORES.forEach(f => {
-    const idf = _idfDoFornecedor(f.id);
-    rows.push([f.id, f.razao_social, f.categoria, f.cnpj, f.status, f.cidade, f.estado, idf ? idf.score.toFixed(1) : '—', f.total_gasto || 0]);
-  });
-  const csv = rows.map(r => r.join(';')).join('\n');
-  const a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
-  a.download = 'fornecedores_fraser_alexander.csv';
-  a.click();
-}
+// Exportação para Excel (.xlsx real, backend multi-tenant) — substitui o CSV
+// que não neutralizava fórmulas.
+function exportFornecedores(ev) { nexusBaixarXLSX('/api/fornecedores/export.xlsx', ev); }
 
 function openNovoPedidoFor(forId) {
   navigate('pedidos');

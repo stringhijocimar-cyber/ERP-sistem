@@ -2427,6 +2427,35 @@ app.get('/api/fornecedores', requireAuth, (req, res) => {
   res.json(ok(rows, { total: rows.length }))
 })
 
+// Exportação .xlsx da base de fornecedores (mesmos filtros da listagem).
+app.get('/api/fornecedores/export.xlsx', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem permissão para exportar', 403))
+  const { q = '', ativo = '1' } = req.query
+  const where = ['f.empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (ativo !== 'todos') { where.push('f.ativo = ?'); params.push(parseInt(ativo)) }
+  if (q) { where.push('(f.nome LIKE ? OR f.cnpj LIKE ? OR f.email LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`) }
+  if (!_filtrosExportXLSX(req, res, where, params, { colStatus: 'f.status', colData: 'f.created_at' })) return
+  const rows = db.prepare(`SELECT f.* FROM fornecedores f WHERE ${where.join(' AND ')} ORDER BY f.nome ASC`).all(...params)
+  return _enviarXLSX(req, res, {
+    planilha: 'Fornecedores', arquivoBase: 'fornecedores',
+    colunas: [
+      { titulo: 'Nome', tipo: 'text', largura: 30 },
+      { titulo: 'CNPJ', tipo: 'text', largura: 20 },
+      { titulo: 'E-mail', tipo: 'text', largura: 26 },
+      { titulo: 'Telefone', tipo: 'text', largura: 16 },
+      { titulo: 'Cidade', tipo: 'text', largura: 18 },
+      { titulo: 'UF', tipo: 'text', largura: 6 },
+      { titulo: 'Categoria', tipo: 'text', largura: 14 },
+      { titulo: 'Status', tipo: 'text', largura: 14 },
+      { titulo: 'Prazo Entrega (dias)', tipo: 'number', largura: 18 },
+      { titulo: 'Cond. Pagamento', tipo: 'text', largura: 16 },
+      { titulo: 'Cadastrado em', tipo: 'date', largura: 14 },
+    ],
+    linhas: rows.map(f => [f.nome, f.cnpj, f.email, f.telefone, f.cidade, f.estado, f.categoria, f.status,
+      f.prazo_entrega, f.condicao_pagamento, String(f.created_at || '').slice(0, 10)]),
+  })
+})
+
 app.get('/api/fornecedores/:id', requireAuth, (req, res) => {
   const f = fornecedorScoped(req)
   if (!f) return res.status(404).json(err('Fornecedor não encontrado'))
@@ -2618,6 +2647,34 @@ app.get('/api/os', requireAuth, (req, res) => {
   res.json(ok(db.prepare(sql).all(...params)))
 })
 
+// Exportação .xlsx das ordens de serviço (mesmos filtros da listagem).
+app.get('/api/os/export.xlsx', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem permissão para exportar', 403))
+  const { q = '' } = req.query
+  const where = ['os.empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (q) { where.push('(os.numero LIKE ? OR os.titulo LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
+  if (!_filtrosExportXLSX(req, res, where, params, { colStatus: 'os.status', colData: 'os.created_at' })) return
+  const rows = db.prepare(`SELECT os.* FROM ordens_servico os WHERE ${where.join(' AND ')} ORDER BY os.created_at DESC`).all(...params)
+  return _enviarXLSX(req, res, {
+    planilha: 'Ordens de Serviço', arquivoBase: 'ordens_servico',
+    colunas: [
+      { titulo: 'Número', tipo: 'text', largura: 14 },
+      { titulo: 'Título', tipo: 'text', largura: 34 },
+      { titulo: 'Status', tipo: 'text', largura: 16 },
+      { titulo: 'Prioridade', tipo: 'text', largura: 12 },
+      { titulo: 'Solicitante', tipo: 'text', largura: 20 },
+      { titulo: 'Departamento', tipo: 'text', largura: 16 },
+      { titulo: 'Centro de Custo', tipo: 'text', largura: 16 },
+      { titulo: 'Projeto', tipo: 'text', largura: 16 },
+      { titulo: 'Valor Estimado', tipo: 'money', largura: 16 },
+      { titulo: 'Necessidade', tipo: 'date', largura: 13 },
+      { titulo: 'Criada em', tipo: 'date', largura: 12 },
+    ],
+    linhas: rows.map(o => [o.numero, o.titulo, o.status, o.prioridade, o.solicitante_nome, o.departamento,
+      o.centro_custo, o.projeto, o.valor_estimado, o.data_necessidade, String(o.created_at || '').slice(0, 10)]),
+  })
+})
+
 app.get('/api/os/:id', requireAuth, (req, res) => {
   const os = rowScoped('ordens_servico', req)
   if (!os) return res.status(404).json(err('OS não encontrada'))
@@ -2776,6 +2833,36 @@ app.get('/api/rc', requireAuth, (req, res) => {
   res.json(ok(result))
 })
 
+// ── Exportação .xlsx genérica (cabeçalho/nome/log/vazio padronizados) ──────
+// Toda listagem exportável passa por aqui: 404 claro sem registros, nome
+// <base>_YYYY-MM-DD_HHMM.xlsx e trilha de auditoria no log.
+function _enviarXLSX(req, res, { planilha, arquivoBase, colunas, linhas }) {
+  if (!linhas.length) return res.status(404).json(err('Nenhum registro para exportar com os filtros atuais'))
+  const buf = gerarXLSX({ sheetName: planilha, colunas, linhas })
+  const agora = new Date(); const pad = n => String(n).padStart(2, '0')
+  const nome = `${arquivoBase}_${agora.getFullYear()}-${pad(agora.getMonth() + 1)}-${pad(agora.getDate())}_${pad(agora.getHours())}${pad(agora.getMinutes())}.xlsx`
+  log(req.user.usuario_id, req.user.nome, 'export_xlsx', arquivoBase, `Exportou ${linhas.length} registro(s) → ${nome}`)
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  res.setHeader('Content-Disposition', `attachment; filename="${nome}"`)
+  res.send(buf)
+}
+// Filtros comuns dos exports: status múltiplo (a|b) e período de/ate sobre uma
+// coluna de data. Retorna false (e responde 400) se o período for inválido.
+function _filtrosExportXLSX(req, res, where, params, { colStatus, colData }) {
+  const { status, de, ate } = req.query
+  if (status && colStatus) {
+    const lista = String(status).split('|').map(x => x.trim()).filter(Boolean)
+    if (lista.length) { where.push(`${colStatus} IN (${lista.map(() => '?').join(',')})`); params.push(...lista) }
+  }
+  for (const [campo, op] of [[de, '>='], [ate, '<=']]) {
+    if (campo != null && String(campo).trim() !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(campo))) { res.status(400).json(err('Período inválido (use YYYY-MM-DD)')); return false }
+      where.push(`substr(${colData},1,10) ${op} ?`); params.push(String(campo))
+    }
+  }
+  return true
+}
+
 // Exportação Excel (.xlsx REAL, não CSV) do processo de compras (Requisições).
 // Respeita os MESMOS filtros da listagem (status, q) + período (de/ate) e o
 // tenant/perfil do usuário. Planilha "Processos": cabeçalho destacado, filtros
@@ -2783,24 +2870,13 @@ app.get('/api/rc', requireAuth, (req, res) => {
 // executável (texto vira inline string — "=cmd" fica literal).
 app.get('/api/rc/export.xlsx', requireAuth, (req, res) => {
   if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem permissão para exportar processos', 403))
-  const { status, q = '', de, ate } = req.query
+  const { q = '' } = req.query
   const where = ['rc.empresa_id = ?']; const params = [empresaDoReq(req)]
-  if (status) {
-    // aceita um status ou vários separados por "|" (o filtro da tela agrupa)
-    const lista = String(status).split('|').map(s => s.trim()).filter(Boolean)
-    if (lista.length) { where.push(`rc.status IN (${lista.map(() => '?').join(',')})`); params.push(...lista) }
-  }
-  if (q) { where.push('(rc.numero LIKE ? OR rc.observacoes LIKE ?)'); params.push(`%${q}%`, `%${q}%`) } // BUG pré-existente: rc.descricao não existe → 500
-  for (const [campo, op] of [[de, '>='], [ate, '<=']]) {
-    if (campo != null && String(campo).trim() !== '') {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(campo))) return res.status(400).json(err('Período inválido (use YYYY-MM-DD)'))
-      where.push(`substr(rc.created_at,1,10) ${op} ?`); params.push(String(campo))
-    }
-  }
+  if (q) { where.push('(rc.numero LIKE ? OR rc.observacoes LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
+  if (!_filtrosExportXLSX(req, res, where, params, { colStatus: 'rc.status', colData: 'rc.created_at' })) return
   const rows = db.prepare(`SELECT rc.* FROM requisicoes_compra rc WHERE ${where.join(' AND ')} ORDER BY rc.created_at DESC`).all(...params)
-  if (!rows.length) return res.status(404).json(err('Nenhum registro para exportar com os filtros atuais'))
-  const buf = gerarXLSX({
-    sheetName: 'Processos',
+  return _enviarXLSX(req, res, {
+    planilha: 'Processos', arquivoBase: 'processos',
     colunas: [
       { titulo: 'Número', tipo: 'text', largura: 14 },
       { titulo: 'Status', tipo: 'text', largura: 26 },
@@ -2821,13 +2897,6 @@ app.get('/api/rc/export.xlsx', requireAuth, (req, res) => {
       String(r.created_at || '').slice(0, 10), r.aprovado_por, r.observacoes,
     ]),
   })
-  const agora = new Date()
-  const pad = n => String(n).padStart(2, '0')
-  const nome = `processos_${agora.getFullYear()}-${pad(agora.getMonth() + 1)}-${pad(agora.getDate())}_${pad(agora.getHours())}${pad(agora.getMinutes())}.xlsx`
-  log(req.user.usuario_id, req.user.nome, 'rc_export_xlsx', 'requisicoes_compra', `Exportou ${rows.length} processo(s) → ${nome}`)
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-  res.setHeader('Content-Disposition', `attachment; filename="${nome}"`)
-  res.send(buf)
 })
 
 app.get('/api/rc/:id', requireAuth, (req, res) => {
@@ -3113,6 +3182,34 @@ app.get('/api/pedidos', requireAuth, (req, res) => {
   res.json(ok(result))
 })
 
+// Exportação .xlsx dos pedidos de compra (mesmos filtros da listagem).
+app.get('/api/pedidos/export.xlsx', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem permissão para exportar', 403))
+  const { q = '', fornecedor_id } = req.query
+  const where = ['pc.empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (fornecedor_id) { where.push('pc.fornecedor_id = ?'); params.push(fornecedor_id) }
+  if (q) { where.push('(pc.numero LIKE ? OR f.nome LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
+  if (!_filtrosExportXLSX(req, res, where, params, { colStatus: 'pc.status', colData: 'pc.created_at' })) return
+  const rows = db.prepare(`SELECT pc.*, f.nome AS fornecedor FROM pedidos_compra pc LEFT JOIN fornecedores f ON f.id = pc.fornecedor_id
+     WHERE ${where.join(' AND ')} ORDER BY pc.created_at DESC`).all(...params)
+  return _enviarXLSX(req, res, {
+    planilha: 'Pedidos de Compra', arquivoBase: 'pedidos_compra',
+    colunas: [
+      { titulo: 'Número', tipo: 'text', largura: 14 },
+      { titulo: 'Fornecedor', tipo: 'text', largura: 26 },
+      { titulo: 'Status', tipo: 'text', largura: 14 },
+      { titulo: 'Mapa', tipo: 'text', largura: 14 },
+      { titulo: 'Valor Total', tipo: 'money', largura: 16 },
+      { titulo: 'Prazo Entrega', tipo: 'text', largura: 14 },
+      { titulo: 'Cond. Pagamento', tipo: 'text', largura: 16 },
+      { titulo: 'Local Entrega', tipo: 'text', largura: 20 },
+      { titulo: 'Emitido em', tipo: 'date', largura: 12 },
+    ],
+    linhas: rows.map(pc => [pc.numero, pc.fornecedor || pc.fornecedor_nome, pc.status, pc.mapa_numero,
+      pc.valor_total, pc.prazo_entrega, pc.condicao_pagamento, pc.local_entrega, String(pc.created_at || '').slice(0, 10)]),
+  })
+})
+
 app.get('/api/pedidos/:id', requireAuth, (req, res) => {
   const pc = db.prepare(`SELECT pc.*, f.nome as fornecedor FROM pedidos_compra pc LEFT JOIN fornecedores f ON f.id = pc.fornecedor_id WHERE pc.id = ? AND pc.empresa_id = ?`).get(req.params.id, empresaDoReq(req))
   if (!pc) return res.status(404).json(err('PC não encontrado'))
@@ -3270,6 +3367,34 @@ app.get('/api/contas-pagar', requireAuth, (req, res) => {
   sql += ' WHERE ' + where.join(' AND ')
   sql += ' ORDER BY cp.data_vencimento ASC'
   res.json(ok(db.prepare(sql).all(...params)))
+})
+
+// Exportação .xlsx do contas a pagar (mesmos filtros da listagem; período
+// sobre o VENCIMENTO — é o eixo do financeiro).
+app.get('/api/contas-pagar/export.xlsx', requireAuth, (req, res) => {
+  if (req.user.perfil === 'fornecedor') return res.status(403).json(err('Sem permissão para exportar', 403))
+  const { q = '' } = req.query
+  const where = ['cp.empresa_id = ?']; const params = [empresaDoReq(req)]
+  if (q) { where.push('(cp.numero LIKE ? OR cp.descricao LIKE ?)'); params.push(`%${q}%`, `%${q}%`) }
+  if (!_filtrosExportXLSX(req, res, where, params, { colStatus: 'cp.status', colData: 'cp.data_vencimento' })) return
+  const rows = db.prepare(`SELECT cp.*, f.nome AS fornecedor FROM contas_pagar cp LEFT JOIN fornecedores f ON f.id = cp.fornecedor_id
+     WHERE ${where.join(' AND ')} ORDER BY cp.data_vencimento ASC`).all(...params)
+  return _enviarXLSX(req, res, {
+    planilha: 'Contas a Pagar', arquivoBase: 'contas_pagar',
+    colunas: [
+      { titulo: 'Número', tipo: 'text', largura: 14 },
+      { titulo: 'Descrição', tipo: 'text', largura: 30 },
+      { titulo: 'Fornecedor', tipo: 'text', largura: 24 },
+      { titulo: 'Pedido', tipo: 'text', largura: 14 },
+      { titulo: 'Valor', tipo: 'money', largura: 16 },
+      { titulo: 'Vencimento', tipo: 'date', largura: 13 },
+      { titulo: 'Pagamento', tipo: 'date', largura: 13 },
+      { titulo: 'Status', tipo: 'text', largura: 12 },
+      { titulo: 'Forma Pagamento', tipo: 'text', largura: 16 },
+    ],
+    linhas: rows.map(cp => [cp.numero, cp.descricao, cp.fornecedor || cp.fornecedor_nome, cp.pc_numero,
+      cp.valor, cp.data_vencimento, cp.data_pagamento, cp.status, cp.forma_pagamento]),
+  })
 })
 
 app.put('/api/contas-pagar/:id', requireAuth, requireRole('admin', 'financeiro'), (req, res) => {

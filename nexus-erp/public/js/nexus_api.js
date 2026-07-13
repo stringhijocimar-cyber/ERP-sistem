@@ -98,5 +98,36 @@
     ));
   }
 
+  // Baixa um .xlsx autenticado com estado de carregamento no botão (evento).
+  // Usado por todas as telas com "Exportar para Excel".
+  async function baixarXLSX(url, ev) {
+    const btn = ev && (ev.currentTarget || ev.target && ev.target.closest && ev.target.closest('button'));
+    if (btn && btn.disabled) return;
+    const original = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Gerando…'; }
+    try {
+      const token = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
+      const resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+      if (!resp.ok) {
+        let msg = 'Falha na exportação';
+        try { msg = (await resp.json()).error || msg; } catch (e) {}
+        if (typeof showToast === 'function') showToast(msg, resp.status === 404 ? 'warning' : 'error');
+        return;
+      }
+      const nome = (resp.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'exportacao.xlsx';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(await resp.blob());
+      a.download = nome;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      if (typeof showToast === 'function') showToast('Exportação concluída: ' + nome, 'success');
+    } catch (e) {
+      if (typeof showToast === 'function') showToast('Erro na exportação: ' + ((e && e.message) || 'rede'), 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    }
+  }
+  window.nexusBaixarXLSX = baixarXLSX;
+
   window.NexusAPI = { __real: true, get, post, put, delete: del, del, escapeHtml };
 })();

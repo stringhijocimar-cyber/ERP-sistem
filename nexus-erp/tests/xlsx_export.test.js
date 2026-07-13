@@ -70,13 +70,13 @@ process.env.DB_PATH = ':memory:'
 process.env.SEED_PASSWORD = 'Fraser@2025'
 
 const ADMIN = { email: 'admin@fraseralexander.com.br', senha: 'Fraser@2025' }
-let request, app, token, tokF
+let request, app, db, token, tokF
 
 describe('GET /api/rc/export.xlsx (módulo Processos)', () => {
   beforeAll(async () => {
     const st = await import('supertest')
     request = st.default
-    ;({ app } = await import('../server.js'))
+    ;({ app, db } = await import('../server.js'))
     token = (await request(app).post('/api/auth/login').send(ADMIN)).body?.data?.token
     const m = r => r.set('Authorization', `Bearer ${token}`)
     await m(request(app).post('/api/rc')).send({ tipo: 'Material', wbs: 'WBS-1', prioridade: 'Alta', itens: [{ descricao: 'Aço 1020', quantidade: 10, valor_unitario_estimado: 50 }] })
@@ -123,5 +123,36 @@ describe('GET /api/rc/export.xlsx (módulo Processos)', () => {
   it('perfil fornecedor não exporta (403)', async () => {
     const r = await request(app).get('/api/rc/export.xlsx').set('Authorization', `Bearer ${tokF}`)
     expect(r.status).toBe(403)
+  })
+})
+
+describe('exports .xlsx dos demais módulos (mesma receita)', () => {
+  beforeAll(() => {
+    // semeia direto no banco (os fluxos de criação completos já são testados alhures)
+    const fid = db.prepare(`SELECT id FROM fornecedores WHERE empresa_id = 1 LIMIT 1`).get().id
+    db.prepare(`INSERT INTO pedidos_compra(numero, fornecedor_id, fornecedor_nome, status, valor_total, empresa_id) VALUES('PC-EXP-1', ?, 'F Exp', 'Emitido', 1500.5, 1)`).run(fid)
+    db.prepare(`INSERT INTO contas_pagar(numero, fornecedor_id, descricao, valor, data_vencimento, status, empresa_id) VALUES('CP-EXP-1', ?, 'Parcela aço çãõ', 800, '2026-08-01', 'Pendente', 1)`).run(fid)
+    db.prepare(`INSERT INTO ordens_servico(numero, titulo, status, prioridade, valor_estimado, empresa_id) VALUES('OS-EXP-1', 'Manutenção britador', 'Rascunho', 'Alta', 5000, 1)`).run()
+  })
+  const auth = r => r.set('Authorization', `Bearer ${token}`)
+
+  it('pedidos: 200 + nome pedidos_compra_*.xlsx + conteúdo', async () => {
+    const r = await auth(request(app).get('/api/pedidos/export.xlsx'))
+    expect(r.status).toBe(200)
+    expect(r.headers['content-disposition']).toMatch(/pedidos_compra_\d{4}-\d{2}-\d{2}_\d{4}\.xlsx/)
+  })
+  it('contas a pagar: período sobre o VENCIMENTO filtra', async () => {
+    expect((await auth(request(app).get('/api/contas-pagar/export.xlsx?de=2026-08-01&ate=2026-08-31'))).status).toBe(200)
+    expect((await auth(request(app).get('/api/contas-pagar/export.xlsx?de=2030-01-01'))).status).toBe(404)
+  })
+  it('OS: 200 com filtros da listagem (q)', async () => {
+    expect((await auth(request(app).get('/api/os/export.xlsx?q=britador'))).status).toBe(200)
+    expect((await auth(request(app).get('/api/os/export.xlsx?q=NAO-EXISTE'))).status).toBe(404)
+  })
+  it('fornecedores: 200; perfil fornecedor bloqueado em todos (403)', async () => {
+    expect((await auth(request(app).get('/api/fornecedores/export.xlsx'))).status).toBe(200)
+    for (const u of ['/api/pedidos/export.xlsx', '/api/contas-pagar/export.xlsx', '/api/os/export.xlsx', '/api/fornecedores/export.xlsx']) {
+      expect((await request(app).get(u).set('Authorization', `Bearer ${tokF}`)).status).toBe(403)
+    }
   })
 })
