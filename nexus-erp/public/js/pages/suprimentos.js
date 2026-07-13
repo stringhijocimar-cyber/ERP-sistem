@@ -353,14 +353,49 @@ function exportarMateriais() {
 // ════════════════════════════════════════════════════════════════════
 
 // helpers locais para fa_rcs (compatíveis com fluxo_aprovacao_rc.js)
-function _reqGetRC()       { try { return JSON.parse(localStorage.getItem('fa_rcs')||'[]'); } catch(e){ return []; } }
-function _reqSaveRC(d)     { localStorage.setItem('fa_rcs', JSON.stringify(d)); }
+// Fonte de verdade: API multi-tenant (/api/rc). RCs locais legadas (demo)
+// continuam visíveis via merge até a migração completa da emissão.
+function _reqGetRCLocais() { try { return JSON.parse(localStorage.getItem('fa_rcs')||'[]'); } catch(e){ return []; } }
+function _reqGetRC() {
+  const api = (window._reqRCsCache && window._reqRCsCache.dados) || null;
+  const locais = _reqGetRCLocais();
+  return api ? [...api, ...locais] : locais;
+}
+// Nunca persistir linhas da API no localStorage (duplicaria no próximo merge).
+function _reqSaveRC(d)     { localStorage.setItem('fa_rcs', JSON.stringify((d||[]).filter(r => r.origem !== 'api'))); }
+// Adapta a RC do servidor para o formato que a tela sempre usou.
+function _reqAdaptarRC(r) {
+  return {
+    id: r.id, numero: r.numero,
+    titulo: r.observacoes || (r.itens && r.itens[0] && r.itens[0].descricao) || r.tipo || 'Requisição',
+    contrato: r.wbs || '', os_vinculada: r.os_numero || '',
+    solicitante: r.solicitante_nome || '', tipo: r.tipo || 'Material',
+    urgencia: r.prioridade || 'Normal', valor_total: r.valor_total || 0,
+    status: r.status, data_criacao: String(r.created_at || '').slice(0, 10),
+    itens: (r.itens || []).map(i => ({ descricao: i.descricao, qtd: i.quantidade, quantidade: i.quantidade, unidade: i.unidade, valor_unit: i.valor_unitario_estimado, preco_unit: i.valor_unitario_estimado })),
+    origem: 'api',
+  };
+}
+// Carrega as RCs do servidor para o cache (silencioso: sem API → modo local).
+async function _reqCarregarRCsAPI() {
+  if (typeof apiAuth !== 'function') return false;
+  try {
+    const dados = (await apiAuth('/api/rc')).map(_reqAdaptarRC);
+    window._reqRCsCache = { dados, em: Date.now() };
+    return true;
+  } catch (e) { window._reqRCsCache = null; return false; }
+}
 function _reqGetFluxoOS()  { try { return JSON.parse(localStorage.getItem('fa_fluxo_os')||'[]'); } catch(e){ return []; } }
 
 // badge de status da RC
 function _reqStatusBadge(s) {
   const m = {
     'Aguardando Aprovação':           { bg:'#f59e0b22', c:'#f59e0b' },
+    'Rascunho':                       { bg:'#94a3b822', c:'#64748b' },
+    'Pendente':                       { bg:'#f59e0b22', c:'#f59e0b' },
+    'Aprovada':                       { bg:'#22c55e22', c:'#22c55e' },
+    'Atendida':                       { bg:'#3b82f622', c:'#3b82f6' },
+    'Cancelada':                      { bg:'#ef444422', c:'#ef4444' },
     'Aprovada – Aguardando Comprador':{ bg:'#3b82f622', c:'#3b82f6' },
     'RFQ Criado':                     { bg:'#6366f122', c:'#6366f1' },
     'Em Cotação':                     { bg:'#6366f122', c:'#6366f1' },
@@ -518,8 +553,12 @@ function _reqSeedDemo() {
 // ─────────────────────────────────────────────────────────────────
 // RENDER PRINCIPAL  (layout limpo – estilo imagem de referência)
 // ─────────────────────────────────────────────────────────────────
-function renderRequisicoes() {
+async function renderRequisicoes() {
   if (!hasPermission('requisicoes', 'view')) { renderAcessoNegado(); return; }
+  // Dados reais do servidor (multi-tenant); sem servidor, cai no modo local.
+  const _mainLoading = document.getElementById('mainContent');
+  if (_mainLoading && !window._reqRCsCache) _mainLoading.innerHTML = '<p style="padding:40px;color:#64748b"><i class="fas fa-spinner fa-spin"></i> Carregando requisições…</p>';
+  await _reqCarregarRCsAPI();
 
   // _reqSeedDemo(); // DADOS DEMO DESATIVADOS – uso com dados reais
 
@@ -530,10 +569,10 @@ function renderRequisicoes() {
 
   // KPIs
   const kpiTotal    = rcs.length;
-  const kpiAguard   = rcs.filter(r => r.status === 'Aguardando Aprovação').length;
-  const kpiAprov    = rcs.filter(r => ['Aprovada – Aguardando Comprador','RFQ Criado','Em Cotação','Cotações Recebidas','Mapa Criado','Mapa Aprovado','PC Emitido'].includes(r.status)).length;
+  const kpiAguard   = rcs.filter(r => ['Aguardando Aprovação','Rascunho','Pendente'].includes(r.status)).length;
+  const kpiAprov    = rcs.filter(r => ['Aprovada – Aguardando Comprador','RFQ Criado','Em Cotação','Cotações Recebidas','Mapa Criado','Mapa Aprovado','PC Emitido','Aprovada','Atendida'].includes(r.status)).length;
   const kpiValTotal = rcs.reduce((s, r) => s + (r.valor_total || 0), 0);
-  const aguardMinhas = rcs.filter(r => r.status === 'Aguardando Aprovação');
+  const aguardMinhas = rcs.filter(r => ['Aguardando Aprovação','Rascunho','Pendente'].includes(r.status));
 
   main.innerHTML = `
   <div style="padding:24px 28px;max-width:1400px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
@@ -1004,7 +1043,7 @@ function _reqTabelaRC(lista, podeEditar) {
                   onmouseover="this.style.borderColor='#fcd34d';this.style.background='#fffbeb'" onmouseout="this.style.borderColor='#e2e8f0';this.style.background='#fff'">
                   <i class="fas fa-pen" style="font-size:10px;color:#f59e0b;"></i>
                 </button>` : ''}
-                ${r.status === 'Aguardando Aprovação' && podeEditar ? `
+                ${['Aguardando Aprovação','Rascunho','Pendente'].includes(r.status) && podeEditar ? `
                 <button onclick="reqAprovarRC && reqAprovarRC('${r.id}')" title="Aprovar RC"
                   style="width:30px;height:30px;border:1px solid #bbf7d0;border-radius:7px;background:#f0fdf4;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;"
                   onmouseover="this.style.background='#dcfce7'" onmouseout="this.style.background='#f0fdf4'">
@@ -1027,10 +1066,10 @@ function _reqAplicarFiltros() {
   const podeEditar = (typeof _podeEmitirRC === 'function') ? _podeEmitirRC() : hasPermission('requisicoes','create');
   let f = rcs;
   switch(sel) {
-    case 'aguard_aprv': f = rcs.filter(r => r.status === 'Aguardando Aprovação'); break;
-    case 'aprovada':    f = rcs.filter(r => ['Aprovada – Aguardando Comprador','RFQ Criado','Em Cotação','Cotações Recebidas','Mapa Criado','Mapa Aprovado'].includes(r.status)); break;
+    case 'aguard_aprv': f = rcs.filter(r => ['Aguardando Aprovação','Rascunho','Pendente'].includes(r.status)); break;
+    case 'aprovada':    f = rcs.filter(r => ['Aprovada – Aguardando Comprador','RFQ Criado','Em Cotação','Cotações Recebidas','Mapa Criado','Mapa Aprovado','Aprovada'].includes(r.status)); break;
     case 'em_cotacao':  f = rcs.filter(r => ['RFQ Criado','Em Cotação','Cotações Recebidas'].includes(r.status)); break;
-    case 'concluida':   f = rcs.filter(r => r.status === 'PC Emitido'); break;
+    case 'concluida':   f = rcs.filter(r => ['PC Emitido','Atendida'].includes(r.status)); break;
     case 'rejeitada':   f = rcs.filter(r => r.status === 'Rejeitada'); break;
   }
   if (s) f = f.filter(r =>
@@ -1496,8 +1535,15 @@ function reqVerDetalheRC(rcId) {
 // ─── APROVAR RC (Gestor/Comprador aprova RC avulsa) ────────────────────────────
 function reqAprovarRC(rcId) {
   const rcs = _reqGetRC();
-  const r = rcs.find(x => x.id === rcId);
+  const r = rcs.find(x => String(x.id) === String(rcId));
   if (!r) { showToast('RC não encontrada.', 'error'); return; }
+  // RC do servidor: aprovação vai pelo endpoint real (auditada, multi-tenant).
+  if (r.origem === 'api') {
+    if (!['Rascunho', 'Pendente'].includes(r.status)) { showToast(`RC já está com status: ${r.status}`, 'info', 3000); return; }
+    if (typeof aprovarRequisicao !== 'function') { showToast('Ação de aprovação não carregada.', 'error'); return; }
+    aprovarRequisicao(r.id).then(ok => { if (ok) renderRequisicoes(); });
+    return;
+  }
   if (r.status !== 'Aguardando Aprovação') {
     showToast(`RC já está com status: ${r.status}`, 'info', 3000);
     return;
@@ -2697,6 +2743,10 @@ function exportarContratosFor() {
 window.renderRequisicoes      = renderRequisicoes;
 window._reqSwitchTab          = _reqSwitchTab;
 window._reqFiltrarStatus      = _reqFiltrarStatus;
+window._reqAdaptarRC          = _reqAdaptarRC;
+window._reqGetRC              = _reqGetRC;
+window._reqSaveRC             = _reqSaveRC;
+window._reqCarregarRCsAPI     = _reqCarregarRCsAPI;
 window._reqFiltrarTexto       = _reqFiltrarTexto;
 window._reqFiltrarOS          = _reqFiltrarOS;
 window._reqFiltrarOsPanel     = _reqFiltrarOsPanel;
