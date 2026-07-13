@@ -86,3 +86,31 @@ describe('_reqCarregarRCsAPI', () => {
     expect(window._reqRCsCache).toBeNull()
   })
 })
+
+describe('_reqCriarRCViaAPI (emissão fase 2)', () => {
+  it('POSTa o payload mapeado (qtd/valor_unit → quantidade/valor_unitario_estimado)', async () => {
+    window.apiAuth = vi.fn(async () => ({ id: 9, numero: 'RC-2026-009' }))
+    const rc = await window._reqCriarRCViaAPI({
+      tipo: 'material', wbs: 'WBS-1', observacoes: 'Título — obs', prioridade: 'Alta',
+      itens: [{ descricao: 'Rolamento', qtd: 4, unidade: 'PC', valor_unit: 350 }],
+    })
+    expect(rc.numero).toBe('RC-2026-009')
+    const [url, opts] = window.apiAuth.mock.calls[0]
+    expect(url).toBe('/api/rc')
+    expect(opts.method).toBe('POST')
+    expect(opts.body.itens[0]).toEqual({ descricao: 'Rolamento', quantidade: 4, unidade: 'PC', valor_unitario_estimado: 350 })
+    expect(opts.body.wbs).toBe('WBS-1')
+  })
+  it('validação do servidor → { erro:true } + toast (não salva local algo inválido)', async () => {
+    const toasts = []
+    window.showToast = m => toasts.push(m)
+    window.apiAuth = vi.fn(async () => { throw new Error('Vínculo WBS obrigatório na RC (rastreabilidade de custo)') })
+    const r = await window._reqCriarRCViaAPI({ tipo: 'Material', wbs: '', itens: [{ descricao: 'x' }] })
+    expect(r).toEqual({ erro: true })
+    expect(toasts[0]).toMatch(/WBS/)
+  })
+  it('sem servidor (falha de rede) → null (chamador cai no modo local)', async () => {
+    window.apiAuth = vi.fn(async () => { throw new TypeError('Failed to fetch') })
+    expect(await window._reqCriarRCViaAPI({ tipo: 'Material', wbs: 'W', itens: [] })).toBeNull()
+  })
+})

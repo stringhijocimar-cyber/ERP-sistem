@@ -377,6 +377,33 @@ function _reqAdaptarRC(r) {
   };
 }
 // Carrega as RCs do servidor para o cache (silencioso: sem API → modo local).
+// Cria a RC no SERVIDOR (fonte de verdade). Retorna a RC criada; null quando
+// não há servidor (o chamador cai no fluxo local/demo); { erro:true } quando o
+// servidor REJEITOU por validação (não deve salvar local algo inválido).
+async function _reqCriarRCViaAPI({ tipo, wbs, observacoes, departamento, prioridade, itens, os_id, os_numero }) {
+  if (typeof apiAuth !== 'function') return null;
+  try {
+    return await apiAuth('/api/rc', { method: 'POST', body: {
+      tipo, wbs, observacoes: observacoes || null, departamento: departamento || null,
+      prioridade: prioridade || 'Normal', os_id: os_id || null, os_numero: os_numero || null,
+      itens: (itens || []).map(i => ({
+        descricao: i.descricao,
+        quantidade: (i.qtd != null ? i.qtd : i.quantidade) || 1,
+        unidade: i.unidade || 'Un',
+        valor_unitario_estimado: (i.valor_unit != null ? i.valor_unit : i.valor_unitario_estimado) || 0,
+      })),
+    } });
+  } catch (e) {
+    const msg = (e && e.message) || '';
+    if (msg && !/fetch|network|load failed/i.test(msg)) {
+      if (typeof showToast === 'function') showToast(msg, 'error');
+      return { erro: true };
+    }
+    return null; // sem servidor → modo local
+  }
+}
+window._reqCriarRCViaAPI = _reqCriarRCViaAPI;
+
 async function _reqCarregarRCsAPI() {
   if (typeof apiAuth !== 'function') return false;
   try {
@@ -1718,7 +1745,7 @@ function calcTotalReq() {
   if (el) el.textContent = fmt(total);
 }
 
-function salvarNovaRequisicao() {
+async function salvarNovaRequisicao() {
   const titulo = document.getElementById('nr_titulo').value.trim();
   const prazo = document.getElementById('nr_prazo').value;
   const erroEl = document.getElementById('nr_erro');
@@ -1742,6 +1769,18 @@ function salvarNovaRequisicao() {
     }
   });
   if (!itens.length) { erroEl.textContent = 'Adicione pelo menos um item.'; erroEl.style.display = 'block'; return; }
+
+  // Fonte de verdade: cria no servidor; sem servidor cai no fluxo local (demo).
+  const _obsApi = titulo + ((document.getElementById('nr_obs')?.value || '').trim() ? ' — ' + document.getElementById('nr_obs').value.trim() : '');
+  const viaApi = await _reqCriarRCViaAPI({ tipo, wbs, observacoes: _obsApi, departamento: document.getElementById('nr_depto')?.value?.trim(), prioridade: 'Normal', itens });
+  if (viaApi && viaApi.erro) return; // servidor rejeitou por validação
+  if (viaApi) {
+    logAction('Nova Requisição', 'Suprimentos', `Requisição criada no servidor: ${viaApi.numero} – ${titulo}`);
+    closeModal();
+    showToast(`Requisição ${viaApi.numero} criada no servidor!`, 'success');
+    renderRequisicoes();
+    return;
+  }
 
   const total = itens.reduce((a, i) => a + i.total, 0);
   const lista = _getRequisicoes();
