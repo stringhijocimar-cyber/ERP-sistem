@@ -769,16 +769,9 @@ async function salvarNovaCP() {
   document.getElementById('tabelaCP').innerHTML = renderTabelaCP_();
 }
 
-function exportarCP() {
-  const rows = [['ID','Descrição','Fornecedor','Tipo','Contrato','Valor','Vencimento','Pgto. Real','Status']];
-  FA_CONTAS_PAGAR.forEach(c => rows.push([c.id, c.descricao, c.fornecedor_nome, c.tipo, c.contrato_id, c.valor, c.vencimento, c.data_pagamento||'—', c.status]));
-  const csv = rows.map(r => r.map(v => `"${v}"`).join(';')).join('\n');
-  const a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
-  a.download = 'contas_pagar_fraser_alexander.csv';
-  a.click();
-  showToast('Contas a pagar exportadas!', 'success');
-}
+// Exportação para Excel (.xlsx real, backend multi-tenant) — substitui o CSV
+// que não neutralizava fórmulas.
+function exportarCP(ev) { nexusBaixarXLSX('/api/contas-pagar/export.xlsx', ev); }
 
 // --- LANÇAMENTO DE DESPESAS ---
 function openLancamentoDespesa() {
