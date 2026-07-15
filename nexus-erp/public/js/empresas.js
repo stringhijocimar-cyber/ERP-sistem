@@ -389,12 +389,19 @@ async function semearDemoComercial() {
         <div style="font-size:12px;color:var(--text-muted)"><b>Onde:</b> ${esc(p.onde)}</div>
         <div style="font-size:12px;color:var(--text-muted)">${esc(p.valor)}</div></div>
     </div>`).join('');
+  // Estado da semeadura: novo, já existia, ou já existia mas os módulos
+  // industriais (MM/PP/WMS/SSMA) acabaram de ser completados (top-up).
+  const intro = !r.ja_existia
+    ? 'Cenário semeado no seu tenant — todos os módulos foram populados com dados de demonstração.'
+    : (r.modulos_completados
+        ? 'O roteiro já existia; agora completamos os módulos industriais (Materiais/MM, Produção/PP, Almoxarifado/WMS, SSMA, Compras e Financeiro) que estavam vazios.'
+        : 'O cenário já existia neste tenant e todos os módulos já estão populados.');
   if (typeof openModalWide === 'function') {
     openModalWide('Cenário de demonstração pronto', `
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:6px">${r.ja_existia ? 'O cenário já existia neste tenant.' : 'Cenário semeado no seu tenant.'} Siga o roteiro dos 4 momentos de valor:</p>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:6px">${esc(intro)} Siga o roteiro dos 4 momentos de valor:</p>
       ${passos}`, `<button class="btn btn-primary" onclick="closeModal()">Entendi</button>`);
   } else if (typeof showToast === 'function') {
-    showToast(r.ja_existia ? 'Cenário demo já existia.' : 'Cenário demo semeado!', 'success', 6000);
+    showToast(!r.ja_existia ? 'Cenário demo semeado!' : (r.modulos_completados ? 'Módulos completados com dados demo!' : 'Cenário demo já existia.'), 'success', 6000);
   }
 }
 

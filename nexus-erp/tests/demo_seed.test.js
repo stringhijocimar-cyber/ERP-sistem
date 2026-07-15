@@ -10,12 +10,12 @@ process.env.DB_PATH = ':memory:'
 process.env.SEED_PASSWORD = 'Fraser@2025'
 
 const ADMIN = { email: 'admin@fraseralexander.com.br', senha: 'Fraser@2025' }
-let request, app, token, tokenB
+let request, app, db, token, tokenB
 
 beforeAll(async () => {
   const st = await import('supertest')
   request = st.default
-  ;({ app } = await import('../server.js'))
+  ;({ app, db } = await import('../server.js'))
   token = (await request(app).post('/api/auth/login').send(ADMIN)).body?.data?.token
   const m = r => r.set('Authorization', `Bearer ${token}`)
   const empB = (await m(request(app).post('/api/empresas')).send({ razao_social: 'Tenant B' })).body.data.id
@@ -79,5 +79,62 @@ describe('demo/seed — isolamento e idempotência', () => {
     const opTok = (await request(app).post('/api/auth/login').send({ email: 'op.demo@x.com', senha: 'Aa@123456' })).body.data.token
     const r = await request(app).post('/api/demo/seed').set('Authorization', `Bearer ${opTok}`).send({})
     expect(r.status).toBe(403)
+  })
+})
+
+describe('demo/seed — volume em TODOS os módulos (nenhuma tela vazia)', () => {
+  const len = async ep => (await auth(request(app).get(ep))).body.data.length
+
+  it('semeia a BOM multinível do MM com o gate de engenharia', async () => {
+    const mats = (await auth(request(app).get('/api/mm/materiais'))).body.data
+    expect(mats.length).toBeGreaterThanOrEqual(9)
+    expect(mats.some(m => m.part_number === 'VBTP-GUARANI-II')).toBe(true)
+    // Placa balística é BUY sem liberação → o gate de compra deve barrar.
+    const placa = mats.find(m => m.part_number === 'PLACA-BALISTICA-N3')
+    expect(placa).toBeTruthy()
+    expect(Number(placa.eng_liberado_compras)).toBe(0)
+  })
+
+  it('semeia produção (PP), estoque endereçado (WMS) e SSMA', async () => {
+    expect(await len('/api/pp/ordens')).toBeGreaterThanOrEqual(1)
+    expect(await len('/api/wms/enderecos')).toBeGreaterThanOrEqual(3)
+    expect(await len('/api/ssma/epis')).toBeGreaterThanOrEqual(3)
+    expect(await len('/api/ssma/treinamentos')).toBeGreaterThanOrEqual(2)
+    expect(await len('/api/ssma/cat')).toBeGreaterThanOrEqual(1)
+    expect(await len('/api/mm/ppap')).toBeGreaterThanOrEqual(1)
+  })
+
+  it('semeia o funil de compras (RC → RFQ → mapa) e o financeiro', async () => {
+    expect(await len('/api/rc')).toBeGreaterThanOrEqual(1)
+    expect(await len('/api/rfq')).toBeGreaterThanOrEqual(1)
+    expect(await len('/api/mapas')).toBeGreaterThanOrEqual(1)
+    expect(await len('/api/contas-receber')).toBeGreaterThanOrEqual(2)
+    expect(await len('/api/colaboradores')).toBeGreaterThanOrEqual(3)
+    expect(await len('/api/projetos')).toBeGreaterThanOrEqual(2)
+  })
+
+  it('idempotente: 2ª chamada não completa módulos de novo', async () => {
+    const r = await auth(request(app).post('/api/demo/seed')).send({})
+    expect(r.body.data.modulos_completados).toBe(false)
+    const mats = (await auth(request(app).get('/api/mm/materiais'))).body.data
+    expect(mats.filter(m => m.part_number === 'VBTP-GUARANI-II').length).toBe(1) // não duplicou
+  })
+
+  it('top-up: tenant com seed antigo (só a espinha, sem módulos) é completado ao re-semear', async () => {
+    // Simula fielmente um tenant que rodou uma versão anterior do seed: tem a
+    // espinha (contrato DEMO) mas os módulos industriais nunca foram criados.
+    const empB = db.prepare(`SELECT id FROM empresas WHERE razao_social = 'Tenant B'`).get().id
+    const f = db.prepare(`INSERT INTO fornecedores(nome, status, ativo, empresa_id) VALUES('Aço Forte Ltda (DEMO)','Homologado',1,?)`).run(empB).lastInsertRowid
+    db.prepare(`INSERT INTO contratos(numero, titulo, fornecedor_id, tipo, status, valor_total, objeto, empresa_id) VALUES('CT-2099-D01','Manut',?,'Serviço','Ativo',1200000,'DEMO',?)`).run(f, empB)
+    db.prepare(`INSERT INTO wbs_linhas(codigo, descricao, tipo, contrato_id, empresa_id) VALUES('1.1','MO','OPEX','1',?)`).run(empB)
+    expect(db.prepare(`SELECT COUNT(*) n FROM mm_materiais WHERE empresa_id = ?`).get(empB).n).toBe(0)
+
+    const asB = r => r.set('Authorization', `Bearer ${tokenB}`)
+    const r = await asB(request(app).post('/api/demo/seed')).send({})
+    expect(r.body.data.ja_existia).toBe(true)
+    expect(r.body.data.modulos_completados).toBe(true)
+    expect(db.prepare(`SELECT COUNT(*) n FROM mm_materiais WHERE empresa_id = ?`).get(empB).n).toBeGreaterThanOrEqual(9)
+    // E permanece isolado: o tenant A não foi afetado.
+    expect((await asB(request(app).get('/api/pp/ordens'))).body.data.length).toBeGreaterThanOrEqual(1)
   })
 })
