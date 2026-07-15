@@ -5246,9 +5246,20 @@ app.get('/api/config', requireAuth, (req, res) => {
 app.post('/api/demo/seed', requireAuth, requireRole('admin'), (req, res) => {
   const emp = empresaDoReq(req)
   const uidNome = req.user.nome
-  // Idempotência: se já semeamos esta empresa, devolve o roteiro sem duplicar.
+  // Idempotência: se o cenário-roteiro já existe, não recria a espinha. Mas
+  // AINDA completa os módulos industriais (tenants que rodaram um seed antigo,
+  // anterior a esta versão, ficaram com MM/PP/WMS/SSMA vazios) — _demoSeedModulos
+  // é auto-idempotente e resolve as dependências por consulta.
   const jaTem = db.prepare(`SELECT COUNT(*) n FROM contratos WHERE empresa_id = ? AND objeto = 'DEMO'`).get(emp).n
-  if (jaTem) return res.json(ok({ ja_existia: true, roteiro: _demoRoteiro() }))
+  if (jaTem) {
+    try {
+      const completou = db.transaction(() => _demoSeedModulos({ emp, req, uidNome }))()
+      if (completou) log(req.user.usuario_id, uidNome, 'demo_seed', 'demo', `Módulos industriais completados na empresa ${emp}`)
+      return res.json(ok({ ja_existia: true, modulos_completados: completou, roteiro: _demoRoteiro() }))
+    } catch (e) {
+      return res.status(500).json(err('Falha ao completar módulos demo: ' + e.message))
+    }
+  }
 
   const tx = db.transaction(() => {
     // 1) Fornecedor HOMOLOGADO (libera emissão de PC).
@@ -5278,8 +5289,11 @@ app.post('/api/demo/seed', requireAuth, requireRole('admin'), (req, res) => {
       VALUES(?,?,?,?,?,?,?,?)`).run(cpNum, forn, 'Aço Forte Ltda (DEMO)', 'Serviço de manutenção — aguardando NF', 90000, '2026-08-15', 'Aprovado', emp)
 
     // 7) Lead em Qualificação com orçamentação pendente → orçamentista alertado.
-    db.prepare(`INSERT INTO crm_oportunidades(titulo, cliente, valor, estagio, probabilidade, responsavel_id, responsavel_nome, observacoes, orcamentacao_status, orcamentacao_em, empresa_id)
-      VALUES(?,?,?,?,?,?,?,?,?,datetime('now'),?)`).run('Obra Mina Serra Azul', 'Minera Serra Azul S.A.', 850000, 'Qualificação', 40, req.user.usuario_id, uidNome, 'Lead demo aguardando estimativa de custos', 'pendente', emp)
+    const lead = db.prepare(`INSERT INTO crm_oportunidades(titulo, cliente, valor, estagio, probabilidade, responsavel_id, responsavel_nome, observacoes, orcamentacao_status, orcamentacao_em, empresa_id)
+      VALUES(?,?,?,?,?,?,?,?,?,datetime('now'),?)`).run('Obra Mina Serra Azul', 'Minera Serra Azul S.A.', 850000, 'Qualificação', 40, req.user.usuario_id, uidNome, 'Lead demo aguardando estimativa de custos', 'pendente', emp).lastInsertRowid
+
+    // 8) Volume de demonstração em TODOS os módulos (para nenhuma tela abrir vazia).
+    _demoSeedModulos({ emp, req, uidNome, forn, contrato, wbs, lead })
   })
   try {
     tx()
@@ -5295,6 +5309,151 @@ function nextContratoDemo(emp) {
   const n = db.prepare(`SELECT COUNT(*) n FROM contratos WHERE empresa_id = ?`).get(emp).n
   return `CT-${year}-D${String(n + 1).padStart(2, '0')}`
 }
+// Semeia volume de demonstração em TODOS os módulos, de forma que nenhuma tela
+// abra vazia (o que, na prática, o usuário lê como "módulo quebrado"). Reaproveita
+// o fornecedor/contrato/WBS/lead do roteiro principal e monta um cenário
+// industrial coerente (BOM do Guarani, produção, SSMA, sourcing, financeiro).
+function _demoSeedModulos({ emp, req, uidNome, forn, contrato, wbs, lead }) {
+  // Auto-idempotente: a raiz da BOM é a marca de que os módulos já foram semeados.
+  const jaMod = db.prepare(`SELECT COUNT(*) n FROM mm_materiais WHERE empresa_id = ? AND part_number = 'VBTP-GUARANI-II'`).get(emp).n
+  if (jaMod) return false
+  const uid = req.user.usuario_id
+  uidNome = uidNome || req.user.nome
+  const hoje = _hojeYMD()
+  const ano = new Date().getFullYear()
+  // No top-up (cenário-roteiro já existia), resolve as dependências por consulta.
+  const pick = sql => (db.prepare(sql).get(emp) || {}).id
+  if (!forn) forn = pick(`SELECT id FROM fornecedores WHERE empresa_id = ? AND nome LIKE '%(DEMO)%' ORDER BY id LIMIT 1`) || pick(`SELECT id FROM fornecedores WHERE empresa_id = ? ORDER BY id LIMIT 1`) || null
+  if (!contrato) contrato = pick(`SELECT id FROM contratos WHERE empresa_id = ? AND objeto = 'DEMO' ORDER BY id LIMIT 1`) || pick(`SELECT id FROM contratos WHERE empresa_id = ? ORDER BY id LIMIT 1`) || null
+  if (!wbs) wbs = pick(`SELECT id FROM wbs_linhas WHERE empresa_id = ? ORDER BY id LIMIT 1`) || null
+  if (!lead) lead = pick(`SELECT id FROM crm_oportunidades WHERE empresa_id = ? ORDER BY id DESC LIMIT 1`) || null
+
+  // ── Fornecedores adicionais (sourcing / RFQ / mapa / BOM) ──
+  const insForn = db.prepare(`INSERT INTO fornecedores(nome, razao_social, cnpj, status, ativo, categoria, prazo_entrega, condicao_pagamento, empresa_id) VALUES(?,?,?,?,1,?,?,?,?)`)
+  const fBlind = insForn.run('Blindagem Sul S.A. (DEMO)', 'Blindagem Sul Indústria S.A.', '22.333.444/0001-55', 'Homologado', 'Blindagem', 45, '30 dias', emp).lastInsertRowid
+  const fMotor = insForn.run('MotorTech Diesel (DEMO)', 'MotorTech Powertrain Ltda', '33.444.555/0001-22', 'Homologado', 'Powertrain', 60, '45 dias', emp).lastInsertRowid
+  const fRodas = insForn.run('RodaForte Pneus (DEMO)', 'RodaForte Comércio de Pneus Ltda', '44.555.666/0001-99', 'Em Homologação', 'Rodagem', 20, '28 dias', emp).lastInsertRowid
+
+  // ── Colaboradores (SSMA / apontamentos de hora) ──
+  const insColab = db.prepare(`INSERT INTO colaboradores(nome, cpf, cargo, departamento, custo_hora, email, data_admissao, status, empresa_id) VALUES(?,?,?,?,?,?,?,?,?)`)
+  const cSold = insColab.run('João Ferreira (DEMO)', '111.111.111-11', 'Soldador', 'Produção', 45, 'joao.demo@fa.com.br', '2024-03-01', 'Ativo', emp).lastInsertRowid
+  const cMont = insColab.run('Marcos Lima (DEMO)', '222.222.222-22', 'Montador', 'Produção', 40, 'marcos.demo@fa.com.br', '2023-08-15', 'Ativo', emp).lastInsertRowid
+  const cEng = insColab.run('Ana Souza (DEMO)', '333.333.333-33', 'Engenheira de Produto', 'Engenharia', 90, 'ana.demo@fa.com.br', '2022-01-10', 'Ativo', emp).lastInsertRowid
+
+  // ── Almoxarifado (itens + 1 movimento de entrada) ──
+  const insAlm = db.prepare(`INSERT INTO almoxarifado_itens(codigo, descricao, categoria, unidade, quantidade_atual, quantidade_minima, quantidade_maxima, localizacao, valor_medio, empresa_id) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+  const almEletrodo = insAlm.run('ALM-001', 'Eletrodo de solda 3.25mm', 'Consumível', 'KG', 500, 100, 1000, 'Depósito Central', 38.5, emp).lastInsertRowid
+  const almTinta = insAlm.run('ALM-002', 'Tinta epóxi cinza militar', 'Consumível', 'L', 40, 60, 300, 'Depósito Central', 92, emp).lastInsertRowid // abaixo do mínimo → reposição
+  const almChapa = insAlm.run('CHAPA-ACO-NAVAL', 'Chapa de aço naval 12mm', 'Matéria-prima', 'PC', 40, 20, 200, 'Pátio A', 1850, emp).lastInsertRowid
+  const almParaf = insAlm.run('ALM-004', 'Parafuso M12 classe 10.9', 'Fixação', 'PC', 2000, 500, 5000, 'Prateleira B-02', 1.2, emp).lastInsertRowid
+  db.prepare(`INSERT INTO almoxarifado_movimentos(item_id, tipo, quantidade, valor_unitario, documento, observacao, saldo_apos, usuario_id, usuario_nome, empresa_id) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(almChapa, 'entrada', 40, 1850, 'NF 12345', 'Recebimento inicial (DEMO)', 40, uid, uidNome, emp)
+
+  // ── WMS (endereços + alocações) ──
+  const insEnd = db.prepare(`INSERT INTO wms_enderecos(codigo, descricao, zona, capacidade, empresa_id) VALUES(?,?,?,?,?)`)
+  const endReceb = insEnd.run('A-01-01', 'Doca de recebimento', 'Recebimento', 100, emp).lastInsertRowid
+  const endEstoq = insEnd.run('B-02-03', 'Porta-palete estoque', 'Estoque', 300, emp).lastInsertRowid
+  insEnd.run('C-03-01', 'Área de expedição', 'Expedição', 50, emp)
+  const insAloc = db.prepare(`INSERT INTO wms_alocacoes(item_id, endereco_id, quantidade, empresa_id) VALUES(?,?,?,?)`)
+  insAloc.run(almChapa, endEstoq, 30, emp)
+  insAloc.run(almParaf, endEstoq, 1500, emp)
+  insAloc.run(almEletrodo, endReceb, 200, emp)
+
+  // ── MM — BOM multinível do VBTP Guarani II (make/buy + gate de engenharia) ──
+  const insMat = db.prepare(`INSERT INTO mm_materiais(part_number, descricao, sistema, subsistema, nivel, peca_pai_id, qtd_veiculo, unidade, make_buy, material_tipo, criticidade, fornecedor_id, projeto, eng_status, eng_liberado_compras, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  const proj = 'VBTP-BR Guarani II'
+  const mRoot = insMat.run('VBTP-GUARANI-II', 'Viatura Blindada de Transporte de Pessoal 6x6', 'Veículo', 'Plataforma', 1, null, 1, 'PC', 'MAKE', 'Montado', 'Crítica', null, proj, 'Liberado', 1, emp).lastInsertRowid
+  const mCasco = insMat.run('CASCO-BLINDADO', 'Casco blindado monobloco', 'Proteção', 'Estrutura', 2, mRoot, 1, 'PC', 'MAKE', 'Montado', 'Crítica', null, proj, 'Liberado', 1, emp).lastInsertRowid
+  const mTracao = insMat.run('SIST-TRACAO-6X6', 'Sistema de tração 6x6', 'Mobilidade', 'Rodagem', 2, mRoot, 1, 'PC', 'MAKE', 'Montado', 'Alta', null, proj, 'Liberado', 1, emp).lastInsertRowid
+  insMat.run('TORRE-REMOTA-RCWS', 'Estação de armas controlada remotamente', 'Armamento', 'Torre', 2, mRoot, 1, 'PC', 'BUY', 'Comprado', 'Crítica', fBlind, proj, 'Liberado', 1, emp)
+  insMat.run('POWERPACK-DIESEL', 'Grupo motopropulsor diesel 340cv', 'Mobilidade', 'Powertrain', 2, mRoot, 1, 'PC', 'BUY', 'Comprado', 'Crítica', fMotor, proj, 'Liberado', 1, emp)
+  // Peça BUY SEM liberação de engenharia → o gate barra a compra (item do roteiro).
+  insMat.run('PLACA-BALISTICA-N3', 'Placa balística nível III+', 'Proteção', 'Blindagem', 3, mCasco, 12, 'PC', 'BUY', 'Comprado', 'Crítica', fBlind, proj, 'Em Análise', 0, emp)
+  const mChapa = insMat.run('CHAPA-ACO-NAVAL', 'Chapa de aço naval 12mm', 'Proteção', 'Estrutura', 3, mCasco, 8, 'PC', 'BUY', 'Comprado', 'Alta', forn, proj, 'Liberado', 1, emp).lastInsertRowid
+  insMat.run('CUBO-RODA', 'Cubo de roda reforçado', 'Mobilidade', 'Rodagem', 3, mTracao, 6, 'PC', 'BUY', 'Comprado', 'Média', fRodas, proj, 'Liberado', 1, emp)
+  insMat.run('PNEU-1400R20', 'Pneu 14.00 R20 run-flat', 'Mobilidade', 'Rodagem', 3, mTracao, 6, 'PC', 'BUY', 'Comprado', 'Alta', fRodas, proj, 'Liberado', 1, emp)
+
+  // ── MM — amostra (APQP) + PPAP aprovado (habilita produção da chapa) ──
+  db.prepare(`INSERT INTO mm_amostras(material_id, fornecedor_id, data_pedido, data_prevista, quantidade, tipo_teste, status, observacao, empresa_id) VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(mChapa, forn, hoje, hoje, 3, 'Dimensional + metalúrgico', 'Aprovada', 'Amostra inicial (DEMO)', emp)
+  db.prepare(`INSERT INTO mm_ppap(material_id, fornecedor_id, nivel, data_submissao, dimensional_ok, material_ok, funcional_ok, documentacao_ok, status, psw_assinado, responsavel_qa, observacao, empresa_id)
+    VALUES(?,?,?,?,1,1,1,1,?,1,?,?,?)`).run(mChapa, forn, 3, hoje, 'Aprovado', 'QA — Ana Souza', 'PPAP nível 3 aprovado (DEMO)', emp)
+
+  // ── PP — ordem de produção + apontamento (custo → margem) ──
+  const insOP = db.prepare(`INSERT INTO pp_ordens(numero, projeto, descricao, veiculos_plan, veiculos_produzidos, data_inicio, data_fim_prevista, status, liberada_por, liberada_em, contrato_id, criada_por_id, criada_por_nome, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  const opNum = `OP-${ano}-${String(db.prepare(`SELECT COUNT(*) n FROM pp_ordens WHERE empresa_id = ? AND numero LIKE ?`).get(emp, `OP-${ano}-%`).n + 1).padStart(3, '0')}`
+  const op = insOP.run(opNum, proj, 'Lote piloto — 5 viaturas', 5, 2, `${ano}-01-15`, `${ano}-06-30`, 'Em Produção', uidNome, hoje, contrato, uid, uidNome, emp).lastInsertRowid
+  db.prepare(`INSERT INTO pp_apontamentos(ordem_id, veiculos, custo_materiais, data, usuario_id, usuario_nome, empresa_id) VALUES(?,?,?,?,?,?,?)`)
+    .run(op, 2, 3600000, `${ano}-03-01`, uid, uidNome, emp)
+  db.prepare(`INSERT INTO pp_plano(mes, veiculos_plan, empresa_id) VALUES(?,?,?)`).run(`${ano}-01`, 3, emp)
+  db.prepare(`INSERT INTO pp_plano(mes, veiculos_plan, empresa_id) VALUES(?,?,?)`).run(`${ano}-02`, 4, emp)
+
+  // ── SSMA — ocorrência (com afastamento) + CAT + EPIs + treinamentos ──
+  // numero de SSMA/CAT é único GLOBAL (constraint UNIQUE) → contagem global, nunca hardcode.
+  const ssmaNum = `SSMA-${ano}-${String(db.prepare(`SELECT COUNT(*) n FROM ssma_ocorrencias WHERE numero LIKE ?`).get(`SSMA-${ano}-%`).n + 1).padStart(3, '0')}`
+  const oc = db.prepare(`INSERT INTO ssma_ocorrencias(numero, tipo, descricao, local, gravidade, status, responsavel_id, responsavel_nome, data_ocorrencia, acoes_corretivas, com_afastamento, dias_perdidos, colaborador_id, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(ssmaNum, 'Acidente', 'Corte superficial ao manusear chapa (DEMO)', 'Galpão de solda', 'Média', 'Em Investigação', uid, uidNome, `${ano}-02-10`, 'Reforço de treinamento e uso de luva anticorte', 1, 3, cSold, emp).lastInsertRowid
+  const catNum = `CAT-${ano}-${String(db.prepare(`SELECT COUNT(*) n FROM cat_comunicacoes WHERE numero LIKE ?`).get(`CAT-${ano}-%`).n + 1).padStart(3, '0')}`
+  db.prepare(`INSERT INTO cat_comunicacoes(numero, ssma_id, colaborador_id, tipo, data_acidente, hora_acidente, data_emissao, prazo_legal, local, tipo_local, parte_atingida, agente_causador, cid, descricao, com_afastamento, dias_afastamento, obito, data_obito, emitida_por_id, emitida_por_nome, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(catNum, oc, cSold, 'Inicial', `${ano}-02-10`, '10:30', hoje, `${ano}-02-11`, 'Galpão de solda', 1, 'Mão direita', 'Chapa de aço', 'S610', 'Corte superficial ao manusear chapa (DEMO)', 1, 3, 0, null, uid, uidNome, emp)
+  const insEPI = db.prepare(`INSERT INTO epi_entregas(colaborador_id, epi, ca, data_entrega, validade, quantidade, entregue_por_id, entregue_por_nome, observacao, empresa_id) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+  insEPI.run(cSold, 'Luva anticorte nível 5', 'CA 28.951', `${ano}-01-05`, `${ano}-12-31`, 2, uid, uidNome, 'Entrega inicial (DEMO)', emp)
+  insEPI.run(cSold, 'Máscara de solda automática', 'CA 35.030', '2024-06-01', '2025-06-01', 1, uid, uidNome, 'VENCIDA (DEMO)', emp) // vencida → alerta
+  insEPI.run(cMont, 'Botina de segurança', 'CA 42.100', `${ano}-01-05`, `${ano + 1}-01-05`, 1, uid, uidNome, 'Entrega inicial (DEMO)', emp)
+  const insTre = db.prepare(`INSERT INTO treinamentos_colaborador(colaborador_id, tipo, descricao, data_realizacao, validade, carga_horaria, instrutor, registrado_por_id, registrado_por_nome, empresa_id) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+  insTre.run(cSold, 'NR-34', 'Trabalho a quente / soldagem', `${ano}-01-20`, `${ano + 1}-01-20`, 8, 'SENAI', uid, uidNome, emp)
+  insTre.run(cMont, 'NR-12', 'Segurança em máquinas', '2024-02-01', '2025-02-01', 16, 'SESI', uid, uidNome, emp) // vencido → alerta
+
+  // ── Apontamentos de hora (custo direto no contrato) ──
+  const insAp = db.prepare(`INSERT INTO apontamentos_hora(colaborador_id, contrato_id, data, horas, custo_hora, custo, descricao, empresa_id) VALUES(?,?,?,?,?,?,?,?)`)
+  insAp.run(cSold, contrato, `${ano}-03-05`, 8, 45, 360, 'Solda de estrutura', emp)
+  insAp.run(cMont, contrato, `${ano}-03-05`, 8, 40, 320, 'Montagem de rodagem', emp)
+
+  // ── Compras — RC → RFQ → cotações → mapa comparativo ──
+  const rcNum = nextRC()
+  const rc = db.prepare(`INSERT INTO requisicoes_compra(numero, os_id, os_numero, solicitante_id, solicitante_nome, departamento, prioridade, status, valor_total, observacoes, tipo, wbs, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(rcNum, null, null, uid, uidNome, 'Suprimentos', 'Alta', 'Aprovada', 148000, 'Reposição de chapa de aço naval (DEMO)', 'Material', '1.1', emp).lastInsertRowid
+  db.prepare(`INSERT INTO rc_itens(rc_id, descricao, quantidade, unidade, valor_unitario_estimado, valor_total_estimado, codigo_produto) VALUES(?,?,?,?,?,?,?)`)
+    .run(rc, 'Chapa de aço naval 12mm', 80, 'PC', 1850, 148000, 'CHAPA-ACO-NAVAL')
+  const rfqNum = nextRFQ()
+  const rfq = db.prepare(`INSERT INTO rfq(numero, rc_id, rc_numero, titulo, descricao, status, prazo_resposta, comprador_id, comprador_nome, valor_estimado, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(rfqNum, rc, rcNum, 'Cotação de chapa de aço naval', 'RFQ para 80 chapas 12mm (DEMO)', 'Em Análise', `${ano}-04-30`, uid, uidNome, 148000, emp).lastInsertRowid
+  db.prepare(`INSERT INTO rfq_fornecedores(rfq_id, fornecedor_id, fornecedor_nome) VALUES(?,?,?)`).run(rfq, forn, 'Aço Forte Ltda (DEMO)')
+  db.prepare(`INSERT INTO rfq_fornecedores(rfq_id, fornecedor_id, fornecedor_nome) VALUES(?,?,?)`).run(rfq, fBlind, 'Blindagem Sul S.A. (DEMO)')
+  const insCot = db.prepare(`INSERT INTO cotacoes(rfq_id, fornecedor_id, fornecedor_nome, status, valor_total, prazo_entrega, condicao_pagamento, observacoes, vencedor) VALUES(?,?,?,?,?,?,?,?,?)`)
+  const cotVenc = insCot.run(rfq, forn, 'Aço Forte Ltda (DEMO)', 'Recebida', 140000, 30, '30 dias', 'Proposta A (DEMO)', 1).lastInsertRowid
+  insCot.run(rfq, fBlind, 'Blindagem Sul S.A. (DEMO)', 'Recebida', 152000, 45, '45 dias', 'Proposta B (DEMO)', 0)
+  db.prepare(`INSERT INTO mapas_comparativos(numero, rfq_id, rfq_numero, cotacao_vencedora_id, fornecedor_vencedor_id, fornecedor_vencedor_nome, status, valor_aprovado, economia_gerada, justificativa, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(nextMapa(), rfq, rfqNum, cotVenc, forn, 'Aço Forte Ltda (DEMO)', 'Aprovado', 140000, 12000, 'Menor preço com prazo adequado (DEMO)', emp)
+
+  // ── Recebimento (conferência de NF do 1º PC demo) ──
+  const pcDemo = db.prepare(`SELECT id FROM pedidos_compra WHERE empresa_id = ? ORDER BY id DESC LIMIT 1`).get(emp)
+  if (pcDemo) db.prepare(`INSERT INTO recebimentos(pc_id, nf_numero, valor_nf, status, conferente, observacoes) VALUES(?,?,?,?,?,?)`)
+    .run(pcDemo.id, '000012345', 30000, 'Conforme', uidNome, 'Recebimento conforme (DEMO)')
+
+  // ── Nota fiscal (fiscal) ──
+  db.prepare(`INSERT INTO notas_fiscais(tipo, numero, serie, status, valor, destinatario, descricao, pedido_id, emitido_por, fonte, empresa_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run('nfe', '000012345', '1', 'autorizada', 90000, 'Fraser Alexander do Brasil', 'NF de serviço de manutenção (DEMO)', pcDemo ? pcDemo.id : null, uidNome, 'manual', emp)
+
+  // ── Contas a receber (financeiro — entradas) ──
+  const insCR = db.prepare(`INSERT INTO contas_receber(numero, contrato_id, cliente, descricao, valor, data_emissao, data_vencimento, status, empresa_id) VALUES(?,?,?,?,?,?,?,?,?)`)
+  insCR.run(nextCR(emp), contrato, 'Exército Brasileiro', 'Medição 01 — lote piloto Guarani (DEMO)', 2400000, hoje, `${ano}-08-30`, 'A Receber', emp)
+  insCR.run(nextCR(emp), contrato, 'Exército Brasileiro', 'Adiantamento contratual (DEMO)', 1200000, `${ano}-01-10`, `${ano}-02-10`, 'Recebida', emp)
+
+  // ── Proposta comercial (fecha o ciclo CRM → Custos → Proposta) ──
+  if (lead) db.prepare(`INSERT INTO propostas(numero, lead_id, cliente, objeto, custo_estimado, margem, valor_total, status, empresa_id) VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(nextProposta(), lead, 'Minera Serra Azul S.A.', 'Manutenção de frota de mineração', 620000, 27, 850000, 'Em Elaboração', emp)
+
+  // ── Projetos (Gantt) ──
+  const insProj = db.prepare(`INSERT INTO projetos(nome, descricao, status, data_inicio, data_fim, responsavel_id, responsavel_nome, progresso, valor_orcado, empresa_id) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+  insProj.run('Lote Piloto Guarani II', 'Produção das 5 primeiras viaturas', 'Em andamento', `${ano}-01-15`, `${ano}-06-30`, uid, uidNome, 40, 12000000, emp)
+  insProj.run('Homologação de Blindagem N3+', 'PPAP e testes balísticos', 'Em andamento', `${ano}-02-01`, `${ano}-05-31`, uid, uidNome, 60, 800000, emp)
+  return true
+}
+
 // O roteiro de demonstração — os 4 momentos de valor, com onde clicar.
 function _demoRoteiro() {
   return [
