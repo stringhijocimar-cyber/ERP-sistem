@@ -659,12 +659,26 @@ if (!IS_TEST) console.log('✅ Banco de dados inicializado')
 const app = express()
 // CORS restrito: só responde para origens conhecidas. Requisições sem header
 // Origin (curl, mesmo host) são permitidas para não quebrar a SPA local.
-app.use(cors({
-  origin(origin, cb) {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
-    cb(new Error('Origem não permitida pelo CORS'))
-  },
-  credentials: true,
+// SAME-ORIGIN — a SPA servida pelo próprio backend — é SEMPRE permitida: não é
+// uma requisição cross-origin, logo nunca é uma violação de CORS. Sem isto, uma
+// implantação cujo domínio não esteja em ALLOWED_ORIGINS veria TODO POST do
+// navegador (criar RC, aprovar, semear demo…) falhar com 500. O allowlist
+// continua valendo para origens de OUTROS hosts (cross-origin real).
+//
+// SEGURANÇA: a detecção de same-origin compara o host da Origin com o header
+// `Host` REAL do request — que o navegador sempre define como o host de destino
+// verdadeiro e o atacante não consegue forjar via fetch/XHR. NUNCA usa
+// X-Forwarded-Host nem outros headers de proxy (esses seriam controláveis pelo
+// atacante). Atrás de um proxy que reescreve o Host, use ALLOWED_ORIGINS.
+function _corsSameOrigin(origin, req) {
+  try { return new URL(origin).host === req.headers['host'] } catch (e) { return false }
+}
+app.use(cors((req, cb) => {
+  const origin = req.headers['origin']
+  if (!origin || ALLOWED_ORIGINS.includes(origin) || _corsSameOrigin(origin, req)) {
+    return cb(null, { origin: true, credentials: true })
+  }
+  cb(new Error('Origem não permitida pelo CORS'))
 }))
 // Upload de arquivo (base64) precisa de corpo grande: parser dedicado ANTES
 // do global (o global vê req.body já preenchido e não re-parseia). O cap de
