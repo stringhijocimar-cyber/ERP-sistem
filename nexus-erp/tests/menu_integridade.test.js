@@ -54,7 +54,7 @@ describe('integridade do menu de navegação', () => {
       'SSMA & Compliance', 'Relatórios & Análises', 'Administração', 'SaaS / Negócio',
     ])
     const itensDeSecao = [...navBloco.matchAll(/class="nav-item"[^>]*onclick="navigate/g)].length
-    expect(itensDeSecao).toBe(69) // 69 nas seções (o atalho de perfil fica no rodapé)
+    expect(itensDeSecao).toBe(70) // 70 nas seções (o atalho de perfil fica no rodapé)
   })
 
     it('rotas fora do menu são as intencionais (acessíveis por outros caminhos)', () => {
