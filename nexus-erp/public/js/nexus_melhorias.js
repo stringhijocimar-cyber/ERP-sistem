@@ -89,9 +89,19 @@
   // -- apiAuth — chamada autenticada usando o token do db.js -----------------
   window.apiAuth = async function (path, opts = {}) {
     const token = (window.DB && DB.token && DB.token.get && DB.token.get()) || '';
+    // Serializa o body quando vem como objeto simples. Sem isto, o fetch envia
+    // "[object Object]" e o servidor responde 400 (JSON inválido). Bodies que já
+    // são string (JSON.stringify), FormData ou Blob passam intactos.
+    const o = { ...opts };
+    if (o.body != null && typeof o.body !== 'string'
+        && !(typeof FormData !== 'undefined' && o.body instanceof FormData)
+        && !(typeof Blob !== 'undefined' && o.body instanceof Blob)
+        && !(typeof ArrayBuffer !== 'undefined' && o.body instanceof ArrayBuffer)) {
+      o.body = JSON.stringify(o.body);
+    }
     const res = await fetch(path, {
-      ...opts,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, ...(opts.headers || {}) }
+      ...o,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, ...(o.headers || {}) }
     });
     let json = null;
     try { json = await res.json(); } catch (_) {}

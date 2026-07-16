@@ -3076,6 +3076,38 @@ app.post('/api/rfq', requireAuth, (req, res) => {
   res.status(201).json(ok(rfq))
 })
 
+// Convida fornecedores para uma RFQ já existente (o fluxo da tela cria a RFQ e
+// depois seleciona os fornecedores). Isolado por tenant; não duplica convite.
+app.post('/api/rfq/:id/fornecedores', requireAuth, (req, res) => {
+  const rfq = rowScoped('rfq', req)
+  if (!rfq) return res.status(404).json(err('RFQ não encontrada'))
+  const { fornecedor_ids = [] } = req.body
+  if (!Array.isArray(fornecedor_ids) || !fornecedor_ids.length) return res.status(400).json(err('Informe ao menos um fornecedor'))
+  const emp = empresaDoReq(req)
+  // Todos os convidados precisam ser fornecedores DESTE tenant.
+  for (const fid of fornecedor_ids) {
+    if (!db.prepare(`SELECT 1 FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(fid, emp)) {
+      return res.status(400).json(err(`Fornecedor ${fid} não pertence a esta empresa`))
+    }
+  }
+  let convidados = 0
+  for (const fid of fornecedor_ids) {
+    const ja = db.prepare(`SELECT 1 FROM rfq_fornecedores WHERE rfq_id = ? AND fornecedor_id = ?`).get(rfq.id, fid)
+    if (ja) continue // idempotente: não reconvida
+    const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fid)
+    db.prepare(`INSERT INTO rfq_fornecedores(rfq_id, fornecedor_id, fornecedor_nome) VALUES(?,?,?)`).run(rfq.id, fid, f?.nome || '')
+    convidados++
+    notificarFornecedor(fid, {
+      titulo: `Nova cotação: ${rfq.numero}`,
+      mensagem: `${rfq.titulo}${rfq.prazo_resposta ? ' — responda até ' + rfq.prazo_resposta : ''}. Acesse o portal para cotar.`,
+      tipo: 'rfq', ref_tipo: 'rfq', ref_id: String(rfq.id), email: true, empresa: emp,
+    })
+  }
+  log(req.user.usuario_id, req.user.nome, 'Convidar', 'rfq', `${convidados} fornecedor(es) convidado(s) para ${rfq.numero}`)
+  const fornecedores = db.prepare(`SELECT rf.*, f.nome FROM rfq_fornecedores rf JOIN fornecedores f ON f.id = rf.fornecedor_id WHERE rf.rfq_id = ?`).all(rfq.id)
+  res.status(201).json(ok({ convidados, fornecedores }))
+})
+
 app.post('/api/rfq/:id/cotacoes', requireAuth, (req, res) => {
   if (!rowScoped('rfq', req)) return res.status(404).json(err('RFQ não encontrada'))
   const { fornecedor_id, valor_total, prazo_entrega, condicao_pagamento, observacoes, itens = [] } = req.body

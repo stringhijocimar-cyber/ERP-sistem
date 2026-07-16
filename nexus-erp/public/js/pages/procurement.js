@@ -6,7 +6,8 @@
 
 // ─── STORAGE ───
 function _getRFQs()   { try { return JSON.parse(localStorage.getItem('fa_rfqs') || '[]'); } catch(e) { return []; } }
-function _saveRFQs(d) { localStorage.setItem('fa_rfqs', JSON.stringify(d)); }
+// Nunca persiste linhas da API no localStorage (duplicaria no próximo merge).
+function _saveRFQs(d) { localStorage.setItem('fa_rfqs', JSON.stringify((d||[]).filter(r => r.origem !== 'api'))); }
 
 /**
  * _mergeRFQs – mesclagem centralizada e robusta de fa_rfqs + fa_rfq_flow
@@ -187,6 +188,36 @@ async function _procCarregarMapasAPI() {
   try { window._procMapasAPICache = (await apiAuth('/api/mapas')).map(_mapaAdaptarAPI); return true; }
   catch (e) { window._procMapasAPICache = null; return false; }
 }
+// Cria a RFQ no SERVIDOR (fonte de verdade). Retorna a RFQ criada; null quando
+// não há servidor (o chamador cai no fluxo local/demo); { erro:true } quando o
+// servidor REJEITOU por validação (não salva local algo inválido). Mesmo padrão
+// de _reqCriarRCViaAPI (emissão de RC).
+async function _rfqCriarViaAPI({ titulo, descricao, valor_estimado, rc_id, rc_numero, prazo_resposta }) {
+  if (typeof apiAuth !== 'function') return null;
+  try {
+    return await apiAuth('/api/rfq', { method: 'POST', body: {
+      titulo, descricao: descricao || null, valor_estimado: valor_estimado || 0,
+      rc_id: rc_id || null, rc_numero: rc_numero || null, prazo_resposta: prazo_resposta || null,
+      fornecedor_ids: [],
+    } });
+  } catch (e) {
+    const msg = (e && e.message) || '';
+    if (msg && !/fetch|network|load failed/i.test(msg)) { if (typeof showToast === 'function') showToast(msg, 'error'); return { erro: true }; }
+    return null; // sem servidor → modo local
+  }
+}
+// Convida fornecedores para uma RFQ da API. Retorna o resultado; null offline;
+// { erro:true } quando rejeitado pelo servidor.
+async function _rfqConvidarViaAPI(apiId, fornecedorIds) {
+  if (typeof apiAuth !== 'function') return null;
+  try {
+    return await apiAuth(`/api/rfq/${apiId}/fornecedores`, { method: 'POST', body: { fornecedor_ids: fornecedorIds || [] } });
+  } catch (e) {
+    const msg = (e && e.message) || '';
+    if (msg && !/fetch|network|load failed/i.test(msg)) { if (typeof showToast === 'function') showToast(msg, 'error'); return { erro: true }; }
+    return null;
+  }
+}
 window._rfqAdaptarAPI = _rfqAdaptarAPI;
 window._mapaAdaptarAPI = _mapaAdaptarAPI;
 window._procCarregarRFQAPI = _procCarregarRFQAPI;
@@ -194,6 +225,8 @@ window._procCarregarMapasAPI = _procCarregarMapasAPI;
 window._mergeRFQs = _mergeRFQs;
 window._getMatrizes = _getMatrizes;
 window._saveMatrizes = _saveMatrizes;
+window._rfqCriarViaAPI = _rfqCriarViaAPI;
+window._rfqConvidarViaAPI = _rfqConvidarViaAPI;
 
 // ─── ALÇADA DE APROVAÇÃO ────────────────────────────────────────────────────
 // Config padrão: limite USD 10.000, gerente aprova abaixo, General Manager acima
@@ -1791,7 +1824,7 @@ function _confirmarDevolucaoRC(rcId) {
 
 // ─── SELECIONAR FORNECEDORES ───
 function selecionarFornecedoresRFQ(rfqId) {
-  const rfqs = _getRFQs();
+  const rfqs = _mergeRFQs(); // inclui RFQs da API (fonte de verdade) + locais
   const rfq = rfqs.find(r => r.id === rfqId);
   if (!rfq) return;
 
@@ -2131,8 +2164,8 @@ function _sfrCriarCard(id, nome, email, tipo) {
   lista.appendChild(card);
 }
 
-function salvarFornecedoresRFQ(rfqId) {
-  const rfqs = _getRFQs();
+async function salvarFornecedoresRFQ(rfqId) {
+  const rfqs = _mergeRFQs(); // inclui RFQs da API + locais
   const rfqIdx = rfqs.findIndex(r => r.id === rfqId);
   if (rfqIdx < 0) return;
   const rfq = rfqs[rfqIdx];
@@ -2176,6 +2209,23 @@ function salvarFornecedoresRFQ(rfqId) {
     fornecedoresConvidados.push(id);
     fornecedoresDetalhes.push({ id, nome, email, tipo });
   });
+
+  // RFQ do SERVIDOR: convida os fornecedores cadastrados via API (o servidor
+  // valida o tenant e notifica o portal). Convite ad-hoc (não cadastrado) fica
+  // fora da API. Não cai no fluxo local (evita duplicar a RFQ da API).
+  if (rfq.origem === 'api') {
+    const ids = fornecedoresConvidados.map(x => Number(x)).filter(x => Number.isInteger(x) && x > 0);
+    if (!ids.length) { showToast('Selecione fornecedores cadastrados para convidar pelo sistema.', 'warning'); return; }
+    const r = await _rfqConvidarViaAPI(rfq._apiId, ids);
+    if (r && r.erro) return;                       // servidor rejeitou (toast já exibido)
+    if (r === null) { showToast('Servidor indisponível para convidar fornecedores. Tente novamente.', 'error'); return; }
+    await _procCarregarRFQAPI();
+    logAction('Convidar', 'RFQ', `${r.convidados ?? ids.length} fornecedor(es) convidado(s) para ${rfq.numero}`);
+    closeModal();
+    showToast(`${r.convidados ?? ids.length} fornecedor(es) convidado(s)! Cotação iniciada.`, 'success');
+    renderRFQ();
+    return;
+  }
 
   rfq.fornecedores_convidados = fornecedoresConvidados;
   rfq.fornecedores_detalhes   = fornecedoresDetalhes;
@@ -5881,6 +5931,23 @@ async function salvarNovoRFQ() {
     if (desc) itens.push({ descricao: desc, qtd, unidade: un });
   });
 
+  // Descrição a partir dos itens a cotar (o servidor guarda a RFQ como cabeçalho).
+  const descricao = itens.length ? itens.map(i => `${i.qtd} ${i.unidade} — ${i.descricao}`).join('; ') : '';
+
+  // 1º tenta criar no SERVIDOR (fonte de verdade multi-tenant).
+  const viaApi = await _rfqCriarViaAPI({ titulo, descricao, valor_estimado: valor });
+  if (viaApi && viaApi.erro) return;               // servidor rejeitou (toast já exibido)
+  if (viaApi && viaApi.numero) {
+    await _procCarregarRFQAPI();
+    logAction('Criar', 'RFQ', `Processo ${viaApi.numero} criado (API)`);
+    closeModal();
+    showToast(`Processo ${viaApi.numero} criado! Selecione os fornecedores para cotar.`, 'success');
+    renderRFQ();
+    setTimeout(() => selecionarFornecedoresRFQ(viaApi.numero), 600); // id da tela = número
+    return;
+  }
+
+  // Sem servidor → fluxo local/demo (comportamento anterior preservado).
   const rfqNum = await _numAtomico('RFQ', () => 'RFQ-' + new Date().getFullYear() + '-' + String(_getRFQs().length + 1).padStart(4,'0'));
   const rfq = {
     id: gerarId('RFQ'),
