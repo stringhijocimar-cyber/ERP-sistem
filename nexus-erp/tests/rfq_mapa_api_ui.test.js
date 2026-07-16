@@ -131,3 +131,40 @@ describe('loaders _procCarregar*API', () => {
     expect(window._procMapasAPICache).toBeNull()
   })
 })
+
+describe('emissão de RFQ pela API (_rfqCriarViaAPI / _rfqConvidarViaAPI)', () => {
+  it('cria a RFQ no servidor com o payload mapeado', async () => {
+    window.apiAuth = vi.fn(async () => ({ id: 9, numero: 'RFQ-2026-009' }))
+    const rfq = await window._rfqCriarViaAPI({ titulo: 'Compra X', descricao: '2 PC — parafuso', valor_estimado: 1200 })
+    expect(rfq.numero).toBe('RFQ-2026-009')
+    const [url, opts] = window.apiAuth.mock.calls[0]
+    expect(url).toBe('/api/rfq')
+    expect(opts.method).toBe('POST')
+    expect(opts.body.titulo).toBe('Compra X')
+    expect(opts.body.valor_estimado).toBe(1200)
+    expect(opts.body.fornecedor_ids).toEqual([])
+  })
+  it('criar: validação do servidor → { erro:true } + toast', async () => {
+    const toasts = []
+    window.showToast = m => toasts.push(m)
+    window.apiAuth = vi.fn(async () => { throw new Error('Título obrigatório') })
+    expect(await window._rfqCriarViaAPI({ titulo: '' })).toEqual({ erro: true })
+    expect(toasts.join(' ')).toMatch(/obrigatório/i)
+  })
+  it('criar: sem servidor (rede) → null (chamador cai no modo local)', async () => {
+    window.apiAuth = vi.fn(async () => { throw new TypeError('Failed to fetch') })
+    expect(await window._rfqCriarViaAPI({ titulo: 'X' })).toBeNull()
+  })
+  it('convida fornecedores da RFQ da API', async () => {
+    window.apiAuth = vi.fn(async () => ({ convidados: 2, fornecedores: [{}, {}] }))
+    const r = await window._rfqConvidarViaAPI(9, [3, 4])
+    expect(r.convidados).toBe(2)
+    const [url, opts] = window.apiAuth.mock.calls[0]
+    expect(url).toBe('/api/rfq/9/fornecedores')
+    expect(opts.body.fornecedor_ids).toEqual([3, 4])
+  })
+  it('convidar: sem servidor → null', async () => {
+    window.apiAuth = vi.fn(async () => { throw new TypeError('network error') })
+    expect(await window._rfqConvidarViaAPI(9, [3])).toBeNull()
+  })
+})
