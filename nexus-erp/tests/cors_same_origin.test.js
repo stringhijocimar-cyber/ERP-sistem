@@ -53,4 +53,25 @@ describe('CORS — cross-origin real continua bloqueado', () => {
       .set('Origin', 'https://evil.example.com')
     expect(r.status).toBe(500) // Host real != evil.example.com → bloqueado
   })
+
+  it('cross-site (Sec-Fetch-Site: cross-site) fora do allowlist → bloqueado', async () => {
+    const r = await health()
+      .set('Host', 'interno.local').set('Origin', 'https://evil.example.com')
+      .set('Sec-Fetch-Site', 'cross-site')
+    expect(r.status).toBe(500)
+  })
+})
+
+describe('CORS — same-origin atrás de proxy (Sec-Fetch-Site)', () => {
+  it('Sec-Fetch-Site: same-origin permite mesmo com Host reescrito pelo proxy', async () => {
+    // Cenário real: o proxy troca o Host (interno) mas a Origin é o domínio
+    // público. O sinal Sec-Fetch-Site (definido pelo navegador, não-forjável)
+    // prova que é same-origin — libera o POST sem depender de ALLOWED_ORIGINS.
+    const r = await health()
+      .set('Host', 'internal-backend.local')
+      .set('Origin', 'https://meuapp.publico.com')
+      .set('Sec-Fetch-Site', 'same-origin')
+    expect(r.status).toBe(200)
+    expect(r.headers['access-control-allow-origin']).toBe('https://meuapp.publico.com')
+  })
 })

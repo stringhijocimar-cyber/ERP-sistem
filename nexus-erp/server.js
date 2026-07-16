@@ -665,12 +665,18 @@ const app = express()
 // navegador (criar RC, aprovar, semear demo…) falhar com 500. O allowlist
 // continua valendo para origens de OUTROS hosts (cross-origin real).
 //
-// SEGURANÇA: a detecção de same-origin compara o host da Origin com o header
-// `Host` REAL do request — que o navegador sempre define como o host de destino
-// verdadeiro e o atacante não consegue forjar via fetch/XHR. NUNCA usa
-// X-Forwarded-Host nem outros headers de proxy (esses seriam controláveis pelo
-// atacante). Atrás de um proxy que reescreve o Host, use ALLOWED_ORIGINS.
+// SEGURANÇA — a detecção de same-origin usa dois sinais, ambos definidos pelo
+// NAVEGADOR e NÃO-forjáveis por JS (headers proibidos ao fetch/XHR):
+//  1) Sec-Fetch-Site: 'same-origin' — sinal de Fetch Metadata que indica que a
+//     requisição partiu da MESMA origem do alvo. Funciona atrás de proxy (não
+//     depende do Host, que o proxy reescreve) — é o caso do deploy real.
+//  2) Fallback: host da Origin == header Host real (para navegadores/pilhas sem
+//     Sec-Fetch-Site). NUNCA usa X-Forwarded-Host nem outros headers de proxy.
+// O allowlist ALLOWED_ORIGINS continua valendo para cross-origin real (outros
+// hosts). Cross-site (Sec-Fetch-Site: 'cross-site') fora do allowlist é negado.
 function _corsSameOrigin(origin, req) {
+  const sfs = req.headers['sec-fetch-site']
+  if (sfs === 'same-origin') return true
   try { return new URL(origin).host === req.headers['host'] } catch (e) { return false }
 }
 app.use(cors((req, cb) => {
