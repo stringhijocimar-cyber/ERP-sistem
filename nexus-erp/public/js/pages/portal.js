@@ -12,7 +12,21 @@ async function renderPortal() {
     <div class="page-header"><h2><i class="fas fa-store" style="color:var(--fa-teal);margin-right:10px"></i>Portal do Fornecedor</h2>
       <p>Acompanhe seus pedidos, envie a nota fiscal e mantenha seu cadastro atualizado.</p></div>
     <div id="portal_perfil" class="info-card" style="padding:16px;margin-bottom:16px"><i class="fas fa-spinner fa-spin"></i> Carregando...</div>
-    <div id="portal_pedidos" class="info-card" style="padding:16px"></div>`;
+    <div id="portal_dashboard" style="margin-bottom:16px"></div>
+    <div id="portal_rfq" class="info-card" style="padding:16px;margin-bottom:16px"></div>
+    <div id="portal_entregas" class="info-card" style="padding:16px;margin-bottom:16px"></div>
+    <div id="portal_pedidos" class="info-card" style="padding:16px;margin-bottom:16px"></div>
+    <div id="portal_docs" class="info-card" style="padding:16px;margin-bottom:16px"></div>
+    <div id="portal_qualidade" class="info-card" style="padding:16px;margin-bottom:16px"></div>
+    <div id="portal_financeiro" class="info-card" style="padding:16px"></div>`;
+
+  // Módulos server-backed do portal; silenciosos se ausentes.
+  if (typeof window._portalCarregarDashboard === 'function') window._portalCarregarDashboard();
+  if (typeof window._portalCarregarRFQs === 'function') window._portalCarregarRFQs();
+  if (typeof window._portalCarregarEntregas === 'function') window._portalCarregarEntregas();
+  if (typeof window._portalCarregarDocs === 'function') window._portalCarregarDocs();
+  if (typeof window._portalCarregarQualidade === 'function') window._portalCarregarQualidade();
+  if (typeof window._portalCarregarFinanceiro === 'function') window._portalCarregarFinanceiro();
 
   // Perfil
   try {
@@ -21,6 +35,7 @@ async function renderPortal() {
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <strong style="font-size:14px"><i class="fas fa-id-card" style="margin-right:6px"></i>${f.razao_social || f.nome} ${f.cnpj ? '· ' + f.cnpj : ''}</strong>
         <button class="btn btn-secondary btn-sm" onclick="portalEditarPerfil()"><i class="fas fa-pen"></i> Editar contato/banco</button>
+        ${typeof window.portalVerAcessos === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="portalVerAcessos()"><i class="fas fa-shield-alt"></i> Acessos & senha</button>' : ''}
       </div>
       <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Contato: ${f.contato || '—'} · ${f.email || '—'} · ${f.telefone || '—'}${f.banco ? ' · Banco ' + f.banco + ' Ag ' + (f.agencia || '—') + ' C/C ' + (f.conta || '—') : ''}</div>`;
     window._portalPerfil = f;
@@ -43,7 +58,7 @@ async function renderPortal() {
         </tr></thead>
         <tbody>
           ${peds.map(p => `<tr>
-            <td style="padding:6px 8px">${p.numero}</td>
+            <td style="padding:6px 8px"><a href="#" onclick="portalVerPedido(${p.id});return false" style="color:var(--fa-teal);text-decoration:underline">${p.numero}</a></td>
             <td style="padding:6px 8px">${p.status || '—'}</td>
             <td style="padding:6px 8px">${typeof fmt === 'function' ? fmt(p.valor_total) : (p.valor_total || 0)}</td>
             <td style="padding:6px 8px">${p.nf_numero || '—'}</td>
@@ -117,6 +132,69 @@ async function portalSalvarPerfil() {
     renderPortal();
   } catch (e) { showToast('Falha ao salvar: ' + e.message, 'error'); }
 }
+
+// Upload de arquivo real: lê um <input type=file> como base64, POSTa em
+// /api/portal/arquivos e devolve os metadados { id, nome, mime, tamanho }.
+// Compartilhado por documentos e anexos de cotação.
+function _lerArquivoBase64(file) {
+  return new Promise((resolve, reject) => {
+    const rd = new FileReader()
+    rd.onload = () => resolve(String(rd.result || ''))
+    rd.onerror = () => reject(new Error('Falha ao ler o arquivo'))
+    rd.readAsDataURL(file) // data:...;base64,XXXX — o servidor remove o prefixo
+  })
+}
+async function portalUploadArquivo(file) {
+  if (!file) return null
+  const conteudo_base64 = await _lerArquivoBase64(file)
+  return apiAuth('/api/portal/arquivos', { method: 'POST', body: JSON.stringify({ nome: file.name, conteudo_base64 }) })
+}
+window.portalUploadArquivo = portalUploadArquivo
+
+// Link de download de um arquivo binário (fetch autenticado + blob).
+async function portalBaixarArquivo(id, nome, base) {
+  try {
+    const token = (function () { try { return sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '' } catch { return '' } })()
+    const resp = await fetch(`${base || '/api/portal/arquivos'}/${id}`, { headers: { 'Authorization': `Bearer ${token}` } })
+    if (!resp.ok) throw new Error('HTTP ' + resp.status)
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = nome || 'arquivo'
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+  } catch (e) { if (typeof showToast === 'function') showToast('Falha ao baixar o arquivo', 'error') }
+}
+window.portalBaixarArquivo = portalBaixarArquivo
+
+// Detalhe do pedido: itens, entrega e pagamento (read-only).
+async function portalVerPedido(id) {
+  if (typeof openModal !== 'function' || typeof apiAuth !== 'function') return;
+  let p;
+  try { p = await apiAuth(`/api/portal/pedidos/${id}`); } catch (e) { showToast(e.message, 'error'); return; }
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s));
+  const m = v => typeof fmt === 'function' ? fmt(v) : ('R$ ' + Number(v || 0).toLocaleString('pt-BR'));
+  const itens = (p.itens || []).map(i => `<tr>
+      <td style="padding:4px 8px">${esc(i.descricao)}</td>
+      <td style="padding:4px 8px;text-align:right">${i.quantidade} ${esc(i.unidade || '')}</td>
+      <td style="padding:4px 8px;text-align:right">${m(i.valor_unitario)}</td>
+      <td style="padding:4px 8px;text-align:right">${m(i.valor_total)}</td>
+    </tr>`).join('') || '<tr><td colspan="4" style="padding:6px;color:var(--text-muted)">Sem itens detalhados.</td></tr>';
+  openModal(`Pedido ${esc(p.numero)}`, `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">
+      Status: <b>${esc(p.status || '—')}</b> · Valor: <b>${m(p.valor_total)}</b>
+      ${p.condicao_pagamento ? ' · Pagamento: ' + esc(p.condicao_pagamento) : ''}
+      ${p.local_entrega ? ' · Entrega: ' + esc(p.local_entrega) : ''}
+    </div>
+    <table class="table" style="width:100%;font-size:12px;border-collapse:collapse">
+      <thead><tr style="color:var(--text-muted);text-align:left">
+        <th style="padding:4px 8px">Item</th><th style="padding:4px 8px;text-align:right">Qtd</th>
+        <th style="padding:4px 8px;text-align:right">Unitário</th><th style="padding:4px 8px;text-align:right">Total</th>
+      </tr></thead><tbody>${itens}</tbody>
+    </table>
+    ${p.entrega ? `<p style="font-size:12px;margin-top:8px">Entrega: <b>${esc(p.entrega.status_efetivo)}</b> — prometida ${esc(p.entrega.data_prometida || '—')}${p.entrega.data_confirmada ? ', confirmada ' + esc(p.entrega.data_confirmada) : ''}${p.entrega.data_entregue ? ', entregue ' + esc(p.entrega.data_entregue) : ''}</p>` : ''}
+    ${p.pagamento ? `<p style="font-size:12px">Pagamento: <b style="color:${p.pagamento.status === 'Pago' ? '#16a34a' : '#d97706'}">${esc(p.pagamento.status)}</b> — ${m(p.pagamento.valor)}${p.pagamento.data_pagamento ? ' em ' + esc(p.pagamento.data_pagamento) : (p.pagamento.data_vencimento ? ', vence ' + esc(p.pagamento.data_vencimento) : '')}</p>` : ''}
+  `, `<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>`);
+}
+window.portalVerPedido = portalVerPedido;
 
 window.renderPortal = renderPortal;
 window.portalEnviarNF = portalEnviarNF;

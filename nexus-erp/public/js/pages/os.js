@@ -279,6 +279,9 @@ function renderOS() {
           <i class="fas fa-file-excel"></i> Excel
         </button>
         ${hasPermission('os', 'create') ? `
+        <button class="btn btn-secondary btn-sm" onclick="nexusBaixarXLSX('/api/os/export.xlsx', event)" title="Gera um arquivo .xlsx com as ordens de serviço">
+          <i class="fas fa-file-excel" style="color:#16a34a"></i> Exportar para Excel
+        </button>
         <button class="btn btn-primary btn-sm" onclick="openNovaOS()">
           <i class="fas fa-plus"></i> Nova OS
         </button>` : ''}
@@ -665,8 +668,33 @@ function verDetalheOS(id) {
     <button class="btn btn-primary" onclick="closeModal();abrirAcaoMaterialOS('${os.id}','${os.descricao.replace(/'/g,"\\'").replace(/"/g,"&quot;")}')" title="Comprar Material ou contratar Serviço Externo" style="background:linear-gradient(135deg,var(--orange),#e67e22)">
       <i class="fas fa-shopping-cart"></i> Compras/RC
     </button>
+    ${os.status !== 'Concluída' ? `<button class="btn btn-success" onclick="concluirOSLancarCusto('${os.id}')" title="Concluir e lançar o custo realizado na linha WBS">
+      <i class="fas fa-flag-checkered"></i> Concluir (lançar custo)
+    </button>` : ''}
   `);
 }
+
+// Conclui a OS no servidor lançando o custo realizado na linha WBS.
+async function concluirOSLancarCusto(frontOsId) {
+  const os = _getOSList().find(o => o.id === frontOsId);
+  if (!os) return;
+  if (!os.os_backend_id) { showToast('Esta OS não está no servidor (criada antes da integração). Crie uma nova OS para usar o lançamento de custo.', 'warning', 8000); return; }
+  const custo = parseFloat(prompt('Custo realizado desta OS (R$) a lançar na linha WBS:', String(os.custo_realizado || 0)));
+  if (isNaN(custo)) return;
+  if (typeof apiAuth !== 'function') { showToast('Indisponível offline.', 'error'); return; }
+  try {
+    const r = await apiAuth(`/api/os/${os.os_backend_id}/concluir`, { method: 'POST', body: JSON.stringify({ custo_realizado: custo }) });
+    // Atualiza o cache local
+    const lista = _getOSList(); const idx = lista.findIndex(o => o.id === frontOsId);
+    if (idx >= 0) { lista[idx].status = 'Concluída'; lista[idx].custo_realizado = custo; _saveOSList(lista); }
+    const w = r && r.wbs_linha;
+    const msg = w ? `OS concluída. WBS ${w.codigo || ''}: realizado R$ ${Number(w.custo_real).toLocaleString('pt-BR')} de R$ ${Number(w.valor_total_est).toLocaleString('pt-BR')} estimado.` : 'OS concluída.';
+    showToast(msg, 'success', 8000);
+    closeModal();
+    if (typeof renderOS === 'function') renderOS();
+  } catch (e) { showToast('Falha ao concluir: ' + e.message, 'error', 7000); }
+}
+window.concluirOSLancarCusto = concluirOSLancarCusto;
 
 function openNovaOS() {
   if (!hasPermission('os', 'create')) { showToast('Sem permissão para criar OS', 'error'); return; }
@@ -747,6 +775,7 @@ function openNovaOS() {
         <select class="form-control" id="nos_wbs_id" style="font-size:12px" onchange="_nosWBSChange()">
           <option value="">— Selecione o contrato primeiro —</option>
         </select>
+        <button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px;font-size:11px;padding:3px 9px" onclick="_nosCriarLinhaWBS()"><i class="fas fa-plus"></i> Nova linha WBS no contrato</button>
         <div style="font-size:10px;color:var(--text-muted);margin-top:4px">
           <i class="fas fa-info-circle" style="margin-right:3px"></i>O custo real desta OS será lançado automaticamente na linha WBS selecionada ao concluir.
           <span style="color:#ef4444;margin-left:6px">Se não encontrar a linha, selecione <b>⚠ Item Não Previsto</b>.</span>
@@ -773,12 +802,15 @@ function openNovaOS() {
     <!-- NECESSIDADE DE COMPRA / SERVIÇO EXTERNO -->
     <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:14px;margin-top:10px">
       <div style="font-size:12px;font-weight:600;color:#f59e0b;margin-bottom:10px"><i class="fas fa-shopping-cart"></i> Necessidade de Compra ou Serviço Externo</div>
-      <div style="display:flex;gap:16px;margin-bottom:10px">
+      <div style="display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)">
           <input type="checkbox" id="nos_compra_material" style="accent-color:var(--orange)"> Compra de Material
         </label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)">
           <input type="checkbox" id="nos_servico_externo" style="accent-color:var(--orange)"> Serviço Externo / Locação
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)" title="Sem compra/almoxarifado — aloca mão de obra na linha do contrato">
+          <input type="checkbox" id="nos_mao_obra" style="accent-color:var(--fa-teal)" onchange="if(this.checked){document.getElementById('nos_compra_material').checked=false;document.getElementById('nos_servico_externo').checked=false;}"> Somente Mão de Obra
         </label>
       </div>
       <div id="nos_itens_compra_wrap" style="display:none">
@@ -834,8 +866,8 @@ function openNovaOS() {
   }, 100);
 }
 
-// Atualiza o select WBS quando o contrato muda
-function _nosContratoChange() {
+// Atualiza o select WBS quando o contrato muda — agora LÊ DO BACKEND (/api/wbs).
+async function _nosContratoChange() {
   const contrato = document.getElementById('nos_contrato')?.value;
   const selWbs = document.getElementById('nos_wbs_id');
   const info   = document.getElementById('nos_wbs_info');
@@ -845,14 +877,69 @@ function _nosContratoChange() {
     if (info) info.style.display = 'none';
     return;
   }
-  // Usa wbs_manager se disponível (filtrado por contrato)
-  if (typeof wbsGetOptionsForContrato === 'function') {
-    selWbs.innerHTML = wbsGetOptionsForContrato(contrato, '');
+  selWbs.innerHTML = '<option value="">Carregando linhas WBS…</option>';
+  let linhas = [];
+  try { if (typeof apiAuth === 'function') linhas = await apiAuth(`/api/wbs?contrato_id=${encodeURIComponent(contrato)}`) || []; } catch (e) {}
+  if (linhas.length) {
+    // value = id da linha WBS no backend (wbs_linha_id) → dispara a validação A2.
+    selWbs.innerHTML = '<option value="">— Selecione a linha WBS —</option>' +
+      linhas.map(l => `<option value="${l.id}" data-codigo="${l.codigo || l.id}" data-desc="${(l.descricao || '').replace(/"/g, '&quot;')}">${l.codigo ? l.codigo + ' · ' : ''}${l.descricao || '(sem descrição)'}${l.valor_total_est ? ' — R$ ' + Number(l.valor_total_est).toLocaleString('pt-BR') : ''}</option>`).join('') +
+      '<option value="NP">⚠ Item Não Previsto</option>';
   } else {
-    selWbs.innerHTML = _osWBSOptions('', contrato);
+    // Sem linhas no backend para este contrato: oferece criar (fallback ao localStorage se houver).
+    const fallback = (typeof wbsGetOptionsForContrato === 'function') ? wbsGetOptionsForContrato(contrato, '') : _osWBSOptions('', contrato);
+    selWbs.innerHTML = '<option value="">— Nenhuma linha WBS neste contrato. Clique em “Nova linha WBS”. —</option>' + (fallback || '');
   }
   if (info) info.style.display = 'none';
 }
+
+// Cria uma linha WBS no backend para o contrato selecionado (alimenta o seletor).
+async function _nosCriarLinhaWBS() {
+  const contrato = document.getElementById('nos_contrato')?.value;
+  if (!contrato) { showToast('Selecione o contrato primeiro.', 'warning'); return; }
+  if (typeof apiAuth !== 'function') { showToast('Indisponível offline.', 'error'); return; }
+  const codigo = prompt('Código da linha WBS (ex.: 1.1):', '');
+  if (codigo === null) return;
+  const descricao = prompt('Descrição da linha (ex.: Mão de obra mecânica):', '');
+  if (!descricao) { showToast('Descrição obrigatória.', 'warning'); return; }
+  const valor = parseFloat(prompt('Valor estimado da linha (R$):', '0')) || 0;
+  try {
+    await apiAuth('/api/wbs', { method: 'POST', body: JSON.stringify({ codigo, descricao, contrato_id: contrato, origem: 'contrato', valor_total_est: valor }) });
+    showToast('Linha WBS criada no contrato.', 'success');
+    await _nosContratoChange();
+  } catch (e) { showToast('Falha ao criar linha WBS: ' + e.message, 'error'); }
+}
+window._nosCriarLinhaWBS = _nosCriarLinhaWBS;
+
+// A2.1: persiste a OS no backend e dispara as validações (contrato/overhead/WBS).
+async function _osSalvarNoBackend(novaOS, contrato) {
+  if (typeof apiAuth !== 'function') return;
+  const sel = document.getElementById('nos_wbs_id');
+  const raw = novaOS.wbs_id;
+  const wbs_linha_id = (raw && /^\d+$/.test(String(raw))) ? Number(raw) : null;
+  let codigo = null;
+  try { const o = sel && sel.options[sel.selectedIndex]; codigo = (o && o.dataset && o.dataset.codigo) || (raw && raw !== 'NP' ? raw : null); } catch (e) {}
+  const payload = {
+    titulo: novaOS.descricao || ('OS ' + (novaOS.id || '')),
+    descricao: novaOS.descricao || '',
+    contrato_id: contrato || null,
+    tipo_recurso: novaOS.tipo_recurso || 'material',
+    wbs: codigo || 'NP',
+    wbs_linha_id: wbs_linha_id,
+    valor_estimado: novaOS.custo_estimado || 0,
+  };
+  try {
+    const resp = await apiAuth('/api/os', { method: 'POST', body: JSON.stringify(payload) });
+    // Guarda o id do backend para permitir concluir/lançar custo depois.
+    if (resp && resp.id) {
+      const lista = _getOSList(); const item = lista.find(o => o.id === novaOS.id);
+      if (item) { item.os_backend_id = resp.id; _saveOSList(lista); }
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Atenção: o servidor não aceitou a OS (' + e.message + '). Salva localmente.', 'warning', 7000);
+  }
+}
+window._osSalvarNoBackend = _osSalvarNoBackend;
 
 // Exibe info da linha WBS selecionada no form Nova OS
 function _nosWBSChange() {
@@ -1026,6 +1113,10 @@ function salvarNovaOS() {
     // Vínculo WBS
     wbs_id: wbsIdFinal || null,
     wbs: wbsIdFinal || null, // campo canônico exigido pelo backend (compliance)
+    // Tipo de recurso (A2): mão de obra não gera compra/almoxarifado.
+    tipo_recurso: document.getElementById('nos_mao_obra')?.checked ? 'mao_obra'
+      : (document.getElementById('nos_servico_externo')?.checked ? 'servico'
+      : (document.getElementById('nos_compra_material')?.checked ? 'material' : 'mao_obra')),
     wbs_nao_previsto: isNaoP,
     wbs_descricao: wbsItemFinal ? `${wbsItemFinal.id} – ${wbsItemFinal.descricao}` : null,
     wbs_natureza: wbsItemFinal ? wbsItemFinal.natureza : null,
@@ -1076,6 +1167,9 @@ function salvarNovaOS() {
   const lista = _getOSList();
   lista.unshift(novaOS);
   _saveOSList(lista);
+
+  // A2.1: persiste a OS no backend (dispara a validação contrato/overhead/WBS).
+  _osSalvarNoBackend(novaOS, contrato);
 
   // Se custo realizado foi informado na criação, já lança no WBS
   if (novaOS.wbs_id && novaOS.custo_realizado > 0) {

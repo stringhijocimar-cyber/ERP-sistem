@@ -27,11 +27,37 @@ function getEmpresas() {
 
 function saveEmpresas(list) { localStorage.setItem(EMPRESAS_KEY, JSON.stringify(list)); }
 
+// Empresa REAL do backend (tenant do usuário logado), cacheada no boot pelo
+// db.js em 'fa_empresa_atual'. A identidade do tenant vem do SERVIDOR — o
+// seletor local não muda de tenant (isolamento), só personalização visual.
+function _empresaServidor() {
+  try {
+    const e = JSON.parse(localStorage.getItem('fa_empresa_atual') || 'null');
+    if (!e || e.id == null) return null;
+    return {
+      id: String(e.id),
+      nome: e.razao_social || e.nome || 'Empresa',
+      fantasia: e.nome_fantasia || e.razao_social || e.nome || 'Empresa',
+      cnpj: e.cnpj || '',
+      _servidor: true,
+    };
+  } catch { return null; }
+}
+
 function getEmpresaAtiva() {
+  const srv = _empresaServidor();
+  if (srv) {
+    // Identidade (nome/CNPJ) do servidor; personalização visual local
+    // (logo/cor) é preservada quando existir empresa local com o mesmo id.
+    const local = getEmpresas().find(x => String(x.id) === srv.id) || {};
+    return { ...local, ...srv };
+  }
   const id  = localStorage.getItem(EMPRESA_ATIVA_KEY);
   const all = getEmpresas();
   return all.find(e => e.id === id) || all[0];
 }
+window.getEmpresaAtiva = getEmpresaAtiva;
+window._empresaServidor = _empresaServidor;
 
 function setEmpresaAtiva(id) {
   localStorage.setItem(EMPRESA_ATIVA_KEY, id);
@@ -103,7 +129,7 @@ function _renderEmpresaSidebarLogo() {
            <div style="width:36px;height:36px;border-radius:8px;background:${cor};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:#fff;flex-shrink:0">${ini}</div>
            <div style="min-width:0">
              <div style="font-size:13px;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:155px">${emp.fantasia || emp.nome}</div>
-             <div style="font-size:10px;color:var(--text-muted)">ERP · Gestão Integrada</div>
+             <div style="font-size:10px;color:var(--text-muted)">Horus · Governança</div>
            </div>
          </div>`;
   }
@@ -287,6 +313,104 @@ function _salvarEmpresa(id) {
 }
 
 // ── Tela gerenciar empresas ──────────────────────
+// ── Tenants REAIS do servidor (backend multi-tenant) ─────────────
+// O mestre (empresa 1) lista e provisiona todos; os demais enxergam só a
+// própria. Resiliente: sem servidor/token, a seção simplesmente não aparece.
+async function listarEmpresasServidor() {
+  if (!window.NexusAPI) return [];
+  const r = await NexusAPI.get('/api/empresas');
+  return Array.isArray(r) ? r : [];
+}
+async function criarEmpresaServidor(dados) {
+  if (!window.NexusAPI) return { ok: false, error: 'API indisponível' };
+  return await NexusAPI.post('/api/empresas', dados);
+}
+function _souTenantMestre() {
+  const srv = typeof _empresaServidor === 'function' ? _empresaServidor() : null;
+  return !!srv && srv.id === '1';
+}
+async function novaEmpresaServidor() {
+  const razao = prompt('Razão social do novo tenant (empresa cliente):');
+  if (!razao || !razao.trim()) return;
+  const fantasia = prompt('Nome fantasia (opcional):') || null;
+  const cnpj = prompt('CNPJ (opcional):') || null;
+  const r = await criarEmpresaServidor({ razao_social: razao.trim(), nome_fantasia: fantasia, cnpj });
+  if (r && r.id != null) {
+    if (typeof showToast === 'function') showToast(`Tenant "${razao.trim()}" criado (id ${r.id})`, 'success');
+    if (typeof closeModal === 'function') closeModal();
+    abrirGerenciarEmpresas();
+  } else if (typeof showToast === 'function') {
+    showToast(r && r.error ? r.error : 'Não foi possível criar (apenas o tenant mestre provisiona empresas)', 'error');
+  }
+}
+function _renderEmpresasServidor(list) {
+  const box = document.getElementById('empServerList');
+  if (!box) return;
+  const esc = v => (window.NexusAPI ? NexusAPI.escapeHtml(v) : String(v ?? ''));
+  const atual = typeof _empresaServidor === 'function' ? _empresaServidor() : null;
+  box.innerHTML = `
+    <div style="margin-top:18px;padding-top:14px;border-top:1px dashed var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-size:13px;font-weight:800;color:var(--text-primary)">
+          <i class="fas fa-server" style="color:var(--fa-teal)"></i> Tenants no servidor (isolamento real)
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" onclick="semearDemoComercial()" title="Popula o seu tenant com um cenário de demonstração"><i class="fas fa-wand-magic-sparkles"></i> Cenário demo</button>
+          ${_souTenantMestre() ? `<button class="btn btn-primary btn-sm" onclick="novaEmpresaServidor()"><i class="fas fa-plus"></i> Novo tenant</button>` : ''}
+        </div>
+      </div>
+      ${list.length ? `<div style="display:grid;gap:8px">${list.map(e => `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px">
+          <span style="width:26px;height:26px;border-radius:6px;background:var(--fa-teal);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff">${esc(String(e.id))}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:700">${esc(e.nome_fantasia || e.razao_social)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${esc(e.razao_social)}${e.cnpj ? ' · CNPJ ' + esc(e.cnpj) : ''} · plano ${esc(e.plano || 'padrao')}</div>
+          </div>
+          ${atual && String(e.id) === atual.id ? '<span class="badge badge-success">Seu tenant</span>' : ''}
+        </div>`).join('')}</div>`
+      : '<div style="font-size:12px;color:var(--text-muted)">Nenhum tenant visível para o seu usuário.</div>'}
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px">
+        Os dados de cada tenant são isolados no servidor — o seu tenant vem do login, não deste seletor.
+      </div>
+    </div>`;
+}
+// Semeia o cenário de demonstração no tenant atual e mostra o roteiro dos
+// 4 momentos de valor (para apresentação comercial).
+async function semearDemoComercial() {
+  if (!window.NexusAPI) { if (typeof showToast === 'function') showToast('Servidor indisponível.', 'error'); return; }
+  const r = await NexusAPI.post('/api/demo/seed', {});
+  const roteiro = r && r.roteiro;
+  if (!Array.isArray(roteiro)) { if (typeof showToast === 'function') showToast('Não foi possível semear (apenas admin).', 'error'); return; }
+  const esc = v => (window.NexusAPI ? NexusAPI.escapeHtml(v) : String(v ?? ''));
+  const passos = roteiro.map(p => `
+    <div style="display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--border)">
+      <span style="width:26px;height:26px;border-radius:50%;background:var(--fa-teal);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex-shrink:0">${p.passo}</span>
+      <div><div style="font-weight:700;font-size:13px">${esc(p.titulo)}</div>
+        <div style="font-size:12px;color:var(--text-muted)"><b>Onde:</b> ${esc(p.onde)}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${esc(p.valor)}</div></div>
+    </div>`).join('');
+  // Estado da semeadura: novo, já existia, ou já existia mas os módulos
+  // industriais (MM/PP/WMS/SSMA) acabaram de ser completados (top-up).
+  const intro = !r.ja_existia
+    ? 'Cenário semeado no seu tenant — todos os módulos foram populados com dados de demonstração.'
+    : (r.modulos_completados
+        ? 'O roteiro já existia; agora completamos os módulos industriais (Materiais/MM, Produção/PP, Almoxarifado/WMS, SSMA, Compras e Financeiro) que estavam vazios.'
+        : 'O cenário já existia neste tenant e todos os módulos já estão populados.');
+  if (typeof openModalWide === 'function') {
+    openModalWide('Cenário de demonstração pronto', `
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:6px">${esc(intro)} Siga o roteiro dos 4 momentos de valor:</p>
+      ${passos}`, `<button class="btn btn-primary" onclick="closeModal()">Entendi</button>`);
+  } else if (typeof showToast === 'function') {
+    showToast(!r.ja_existia ? 'Cenário demo semeado!' : (r.modulos_completados ? 'Módulos completados com dados demo!' : 'Cenário demo já existia.'), 'success', 6000);
+  }
+}
+
+window.listarEmpresasServidor = listarEmpresasServidor;
+window.criarEmpresaServidor = criarEmpresaServidor;
+window.novaEmpresaServidor = novaEmpresaServidor;
+window._souTenantMestre = _souTenantMestre;
+window.semearDemoComercial = semearDemoComercial;
+
 function abrirGerenciarEmpresas() {
   const emps  = getEmpresas();
   const ativa = getEmpresaAtiva();
@@ -322,8 +446,11 @@ function abrirGerenciarEmpresas() {
             </div>
           </div>`;
       }).join('')}
-    </div>`,
+    </div>
+    <div id="empServerList"></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">Fechar</button>`);
+  // Seção assíncrona: tenants reais do servidor (só aparece se houver resposta).
+  listarEmpresasServidor().then(list => { if (list.length || _souTenantMestre()) _renderEmpresasServidor(list) }).catch(() => {});
 }
 
 function _confirmarDeletarEmpresa(id) {

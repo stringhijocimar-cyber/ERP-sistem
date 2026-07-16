@@ -7,7 +7,7 @@ const I18N = {
   // ── PORTUGUÊS ──────────────────────────────────────
   pt: {
     // Sistema / Login
-    system_name:        'Sistema de Gestão Integrado',
+    system_name:        'Horus',
     sys_name:           'Sistema de Gestão Integrado',
     sys_subtitle:       'Gestão Operacional, Financeira e de Contratos',
     sys_login_title:    'Acessar o sistema',
@@ -116,7 +116,7 @@ const I18N = {
 
   // ── ENGLISH ────────────────────────────────────────
   en: {
-    system_name:        'Integrated Management System',
+    system_name:        'Horus',
     sys_name:           'Integrated Management System',
     sys_subtitle:       'Operational, Financial and Contract Management',
     sys_login_title:    'Sign in',
@@ -220,7 +220,7 @@ const I18N = {
 
   // ── ESPAÑOL ────────────────────────────────────────
   es: {
-    system_name:        'Sistema de Gestión Integrado',
+    system_name:        'Horus',
     sys_name:           'Sistema de Gestión Integrado',
     sys_subtitle:       'Gestión Operacional, Financiera y de Contratos',
     sys_login_title:    'Iniciar sesión',

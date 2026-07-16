@@ -1,3 +1,15 @@
+// Guarda: idf.js carrega DEPOIS deste arquivo; garante _idfClassificacao para
+// evitar ReferenceError no render (idf.js sobrescreve com a versão completa).
+if (typeof window !== 'undefined' && typeof window._idfClassificacao !== 'function') {
+  window._idfClassificacao = function (nota) {
+    const n = Number(nota) || 0;
+    if (n >= 85) return { color: '#16a34a', bg: 'rgba(22,163,74,.12)', label: 'A — Excelente', icon: 'fa-star' };
+    if (n >= 70) return { color: '#2563eb', bg: 'rgba(37,99,235,.12)', label: 'B — Bom', icon: 'fa-thumbs-up' };
+    if (n >= 50) return { color: '#d97706', bg: 'rgba(217,119,6,.12)', label: 'C — Regular', icon: 'fa-exclamation' };
+    return { color: '#6b7280', bg: 'rgba(107,114,128,.12)', label: '— Sem dados', icon: 'fa-circle' };
+  };
+}
+
 // =====================================================
 // Fraser Alexander – Módulo Fornecedores
 // CRUD completo via /api/fornecedores (D1)
@@ -123,7 +135,9 @@ function _normalizarFornecedor(f) {
 // ─── CARREGAR FORNECEDORES DA API D1 ────────────────────────
 async function loadFornecedores() {
   try {
-    const res = await fetch('/api/fornecedores?ativo=todos');
+    const token = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
+    // Timeout para a chamada não pendurar a tela indefinidamente.
+    const res = await fetch('/api/fornecedores?ativo=todos', { headers: { 'Authorization': `Bearer ${token}` }, signal: AbortSignal.timeout(12000) });
     const json = await res.json();
     if (json.success && Array.isArray(json.data)) {
       FA_FORNECEDORES = json.data.map(_normalizarFornecedor);
@@ -226,6 +240,18 @@ function renderFornecedores() {
       <!-- Top fornecedores por IDF -->
       ${_renderTopFornecedoresIDF()}
     `;
+  }).catch((e) => {
+    console.error('[Fornecedores] falha ao renderizar:', e);
+    main.innerHTML = `
+      <div class="empty-state" style="padding:60px 24px;text-align:center">
+        <i class="fas fa-triangle-exclamation" style="font-size:42px;color:#d97706;opacity:.6"></i>
+        <p style="font-size:15px;font-weight:600;margin-top:12px">Não foi possível carregar os fornecedores</p>
+        <p style="font-size:12px;color:var(--text-muted)">${(e && e.message) || 'Erro inesperado'}</p>
+        <div style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-sm" onclick="renderFornecedores()"><i class="fas fa-rotate-right"></i> Tentar novamente</button>
+          <button class="btn btn-primary btn-sm" onclick="openNovoFornecedor()"><i class="fas fa-plus"></i> Novo Fornecedor</button>
+        </div>
+      </div>`;
   });
 }
 
@@ -381,6 +407,74 @@ function filterFornecedores() {
 }
 
 // ─── DETALHE DO FORNECEDOR ───────────────────────────────────
+// Painel de homologação (dupla aprovação Financeiro + Compliance) no detalhe.
+function _homologacaoPanel(f) {
+  const homologado = f.status === 'Homologado' || (f.aprovado_financeiro_por && f.aprovado_compliance_por);
+  const role = (currentUser && (currentUser.profile || currentUser.role)) || '';
+  const podeFin = ['admin', 'financeiro'].includes(role);
+  const podeComp = ['admin', 'diretor', 'compliance'].includes(role);
+  const etapa = (ok, quem) => ok
+    ? `<span style="color:#16a34a;font-weight:600"><i class="fas fa-check-circle"></i> ${quem}</span>`
+    : `<span style="color:#d97706"><i class="fas fa-clock"></i> pendente</span>`;
+  const btn = (cond, etp, label) => cond && !homologado
+    ? `<button class="btn btn-primary btn-sm" onclick="homologarFor('${f.id}','${etp}')"><i class="fas fa-check"></i> ${label}</button>` : '';
+  return `
+    <div style="border:1px solid ${homologado ? 'rgba(22,163,74,.3)' : 'rgba(217,119,6,.3)'};background:${homologado ? 'rgba(22,163,74,.05)' : 'rgba(217,119,6,.05)'};border-radius:10px;padding:12px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <strong style="font-size:13px"><i class="fas fa-user-shield" style="margin-right:6px"></i>Homologação de cadastro
+          ${homologado ? '<span class="badge badge-success" style="margin-left:6px">HOMOLOGADO</span>' : '<span class="badge badge-warning" style="margin-left:6px">não pode ser usado em pedidos</span>'}
+        </strong>
+        <div style="display:flex;gap:6px">
+          ${btn(podeFin, 'financeiro', 'Aprovar (Financeiro)')}
+          ${btn(podeComp, 'compliance', 'Aprovar (Compliance)')}
+          ${!homologado && (podeFin || podeComp) ? `<button class="btn btn-secondary btn-sm" onclick="reprovarHomologacaoFor('${f.id}')">Reprovar</button>` : ''}
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:8px;display:flex;gap:20px;flex-wrap:wrap">
+        <span>Financeiro: ${etapa(f.aprovado_financeiro_por, f.aprovado_financeiro_por)}</span>
+        <span>Compliance: ${etapa(f.aprovado_compliance_por, f.aprovado_compliance_por)}</span>
+        <span id="idf_srv_${f.id}" style="color:var(--text-muted)"><i class="fas fa-gauge"></i> IDF: <span style="opacity:.6">carregando…</span></span>
+      </div>
+    </div>`;
+}
+
+// Carrega o IDF autoritativo do servidor (OTD + avaliações) no painel do detalhe.
+async function _carregarIdfServer(id) {
+  const el = document.getElementById(`idf_srv_${id}`);
+  if (!el || !(window.DB && typeof DB.idfFornecedor === 'function')) return;
+  try {
+    const idf = await DB.idfFornecedor(id);
+    if (!idf) { el.innerHTML = '<i class="fas fa-gauge"></i> IDF: —'; return; }
+    const cor = idf.classificacao === 'A' ? '#16a34a' : idf.classificacao === 'B' ? '#2563eb' : idf.classificacao === 'C' ? '#d97706' : (idf.classificacao === 'D' ? '#dc2626' : 'var(--text-muted)');
+    const scoreTxt = idf.score != null ? `${idf.score}/100` : 'sem dados';
+    const otdTxt = idf.otd_pct != null ? ` · OTD ${idf.otd_pct}%` : '';
+    el.innerHTML = `<i class="fas fa-gauge"></i> IDF: <strong style="color:${cor}">${idf.classificacao}</strong> (${scoreTxt})${otdTxt}`;
+  } catch (e) { el.innerHTML = '<i class="fas fa-gauge"></i> IDF: —'; }
+}
+
+async function homologarFor(id, etapa) {
+  try {
+    const r = await DB.homologarFornecedor(id, etapa);
+    const item = FA_FORNECEDORES.find(x => String(x.id) === String(id));
+    if (item && r) Object.assign(item, r);
+    showToast(`Aprovação ${etapa} registrada${r && r.status === 'Homologado' ? ' · fornecedor HOMOLOGADO' : ''}.`, 'success');
+    closeModal(); setTimeout(() => abrirDetalheFor(id), 150);
+  } catch (e) {
+    showToast('Falha ao aprovar: ' + (e.message || 'verifique seu perfil'), 'error');
+  }
+}
+
+async function reprovarHomologacaoFor(id) {
+  const motivo = prompt('Motivo da reprovação (opcional):') || '';
+  try {
+    const r = await DB.reprovarHomologacao(id, motivo);
+    const item = FA_FORNECEDORES.find(x => String(x.id) === String(id));
+    if (item && r) Object.assign(item, r);
+    showToast('Homologação reprovada.', 'warning');
+    closeModal(); setTimeout(() => abrirDetalheFor(id), 150);
+  } catch (e) { showToast('Falha: ' + (e.message || ''), 'error'); }
+}
+
 function abrirDetalheFor(id) {
   const f = FA_FORNECEDORES.find(x => x.id === id);
   if (!f) return;
@@ -409,6 +503,8 @@ function abrirDetalheFor(id) {
         <div style="font-size:11px;color:var(--text-muted)">Total histórico</div>
       </div>
     </div>
+
+    ${_homologacaoPanel(f)}
 
     <!-- Bloco IDF destacado -->
     ${idf ? `
@@ -511,6 +607,7 @@ function abrirDetalheFor(id) {
       <i class="fas fa-shopping-cart"></i> Novo Pedido
     </button>
   `);
+  setTimeout(() => _carregarIdfServer(id), 60);
 }
 
 // ─── CONSULTA CNPJ via Receita Federal (PUBLICA API) ─────────────
@@ -762,7 +859,8 @@ async function consultarCNPJBusca() {
 async function _fetchCNPJ(clean) {
   // PRIMEIRO: tenta proxy backend (sem CORS)
   try {
-    const res = await fetch(`/api/cnpj/${clean}`, { signal: AbortSignal.timeout(12000) });
+    const _tk = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
+    const res = await fetch(`/api/cnpj/${clean}`, { signal: AbortSignal.timeout(12000), headers: { 'Authorization': `Bearer ${_tk}` } });
     if (res.ok) {
       const json = await res.json();
       if (json?.success && json?.data) return json.data;
@@ -923,8 +1021,12 @@ function openNovoFornecedor() {
       <button type="button" id="btn_receita" onclick="consultarReceitaNoCadastro()" class="btn btn-secondary btn-sm" style="margin-left:6px">
         <i class="fas fa-id-card"></i> Situação cadastral
       </button>
+      <button type="button" id="btn_analise" onclick="analiseFinanceiraNoCadastro()" class="btn btn-secondary btn-sm" style="margin-left:6px;background:rgba(37,99,235,.1);border-color:#2563eb;color:#2563eb">
+        <i class="fas fa-scale-balanced"></i> Análise financeira
+      </button>
       <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Score interno + consulta externa (bureau/Receita) por CNPJ.</span>
       <div id="credito_result" style="display:none;margin-top:10px"></div>
+      <div id="analise_result" style="display:none;margin-top:10px"></div>
     </div>
 
     <div style="margin-top:12px;padding:10px;background:rgba(37,99,235,0.06);border-radius:8px;border:1px solid rgba(37,99,235,0.15)">
@@ -1035,6 +1137,41 @@ async function consultarReceitaNoCadastro() {
   const tipo = r.regular ? 'success' : 'error';
   const aviso = r.regular ? '' : ' — emissão de pedido será bloqueada';
   showToast(`Receita (${r.fonte}): situação ${r.situacao_cadastral}${aviso}`, tipo, 7000);
+}
+
+async function analiseFinanceiraNoCadastro() {
+  const cnpj = document.getElementById('nf_cnpj')?.value || '';
+  if (cnpj.replace(/\D/g, '').length !== 14) { showToast('Informe o CNPJ completo antes da análise financeira', 'warning'); return; }
+  if (!(window.DB && typeof DB.analiseFinanceira === 'function')) { showToast('Análise financeira indisponível.', 'error'); return; }
+  const btn = document.getElementById('btn_analise');
+  const box = document.getElementById('analise_result');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analisando...'; }
+  const r = await DB.analiseFinanceira(cnpj);
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-scale-balanced"></i> Análise financeira'; }
+  if (!r) { showToast('Não foi possível gerar a análise agora.', 'error'); return; }
+  window._analiseResult = r;
+  const cor = r.recomendacao === 'Aprovar' ? '#16a34a' : (r.recomendacao === 'Recusar' ? '#dc2626' : '#d97706');
+  const fatores = (r.fatores || []).map(f => `
+    <li style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;font-size:12px">
+      <span>${f.fator} ${f.detalhe ? `<span style="color:var(--text-muted)">(${f.detalhe})</span>` : ''}</span>
+      <strong style="color:${f.impacto >= 0 ? '#16a34a' : '#dc2626'}">${f.impacto > 0 ? '+' : ''}${f.impacto}</strong>
+    </li>`).join('');
+  if (box) {
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="border:1px solid ${cor}40;background:${cor}0d;border-radius:10px;padding:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div>
+            <span style="font-size:24px;font-weight:800;color:${cor}">${r.score}</span><span style="font-size:11px;color:var(--text-muted)">/100</span>
+            <span style="margin-left:8px;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;background:${cor}1f;color:${cor}">${r.recomendacao} · risco ${r.nivel}</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-muted)">Situação: ${r.situacao_cadastral} · ${r.pendencias} pend. · ${r.protestos} prot.</div>
+        </div>
+        <ul style="list-style:none;padding:0;margin:8px 0 0">${fatores}</ul>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:6px">Parecer automático (bureau + Receita) — apoio à homologação Financeiro/Compliance.</div>
+      </div>`;
+  }
+  showToast(`Análise: ${r.recomendacao} (score ${r.score}/100, risco ${r.nivel})`, r.recomendacao === 'Recusar' ? 'error' : 'info', 6000);
 }
 
 function _renderCreditoResult(res) {
@@ -1331,19 +1468,9 @@ async function salvarEdicaoFornecedor(id) {
 }
 
 // ─── EXPORTAR ────────────────────────────────────────────────
-function exportFornecedores() {
-  showToast('Exportando lista de fornecedores...', 'info');
-  const rows = [['ID','Razão Social','Categoria','CNPJ','Status','Cidade','UF','Score IDF','Total Gasto']];
-  FA_FORNECEDORES.forEach(f => {
-    const idf = _idfDoFornecedor(f.id);
-    rows.push([f.id, f.razao_social, f.categoria, f.cnpj, f.status, f.cidade, f.estado, idf ? idf.score.toFixed(1) : '—', f.total_gasto || 0]);
-  });
-  const csv = rows.map(r => r.join(';')).join('\n');
-  const a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
-  a.download = 'fornecedores_fraser_alexander.csv';
-  a.click();
-}
+// Exportação para Excel (.xlsx real, backend multi-tenant) — substitui o CSV
+// que não neutralizava fórmulas.
+function exportFornecedores(ev) { nexusBaixarXLSX('/api/fornecedores/export.xlsx', ev); }
 
 function openNovoPedidoFor(forId) {
   navigate('pedidos');

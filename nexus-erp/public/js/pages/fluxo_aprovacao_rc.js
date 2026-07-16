@@ -8485,7 +8485,7 @@ function _farcAvulsaCalcTotal() {
   if (el) el.textContent = _fmtVal(total);
 }
 
-function _farcSalvarRCAvulsa() {
+async function _farcSalvarRCAvulsa() {
   const titulo     = document.getElementById('farcAvulsa_titulo')?.value.trim();
   const prazo      = document.getElementById('farcAvulsa_prazo')?.value;
   const urgencia   = document.getElementById('farcAvulsa_urgencia')?.value || 'Normal';
@@ -8531,6 +8531,22 @@ function _farcSalvarRCAvulsa() {
   const diffDias = Math.floor((prazoDt - hoje15) / 86400000);
   if (diffDias >= 0 && diffDias < 5) {
     showToast('⚠️ Atenção: Prazo muito curto. A política recomenda mínimo de 5 dias úteis. Para urgências use "Compra de Emergência".', 'warning', 5000);
+  }
+
+  // Fonte de verdade: cria a RC no servidor; sem servidor cai no fluxo local.
+  if (typeof _reqCriarRCViaAPI === 'function') {
+    const viaApi = await _reqCriarRCViaAPI({
+      tipo: tiposNaRC[0], wbs: itens[0].wbs_codigo || 'GERAL',
+      observacoes: titulo + (obs ? ' — ' + obs : ''),
+      departamento: currentUser?.role || '', prioridade: urgencia, itens,
+    });
+    if (viaApi && viaApi.erro) return; // servidor rejeitou por validação
+    if (viaApi) {
+      closeModal();
+      showToast(`RC ${viaApi.numero} criada no servidor — disponível para aprovação e cotação.`, 'success');
+      if (typeof renderRequisicoes === 'function') { renderRequisicoes(); }
+      return;
+    }
   }
 
   const lista  = _obterRCLocal();

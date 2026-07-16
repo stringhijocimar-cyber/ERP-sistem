@@ -11,6 +11,16 @@ function _dbGetColabs() {
   const ls = _dbGet('fraser_colaboradores');
   return ls.length > 0 ? ls : (ERP_DATA.colaboradores||[]);
 }
+// Contratos REAIS (cache do servidor, tenant-isolado, preenchido pelo boot do
+// db.js) têm precedência; o seed demo ERP_DATA só aparece quando não há dado real.
+function _dashContratos() {
+  const reais = _dbGet('fa_contratos');
+  // Normaliza o shape do servidor (valor_total) para o que os KPIs/tabela/
+  // gráfico esperam (valor) — sem isso, o Valor Total zerava com dados reais.
+  if (reais.length) return reais.map(c => ({ ...c, valor: c.valor ?? c.valor_total ?? 0 }));
+  return (window.ERP_DATA && ERP_DATA.contratos) || [];
+}
+window._dashContratos = _dashContratos;
 function _dbSnapshot() {
   const hoje = Date.now();
   const d7   = hoje + 7*86400000;
@@ -25,7 +35,7 @@ function _dbSnapshot() {
   const projetos  = _dbGet('fa_projetos_gantt');
   const medicoes  = [..._dbGet('fa_medicoes'),..._dbGet('fa_medicoes_v2'),..._dbGet('fraser_medicoes')];
   const treinamentos = _dbGet('fa_treinamentos');
-  const contratos = ERP_DATA.contratos || [];
+  const contratos = _dashContratos();
 
   const dedup = arr => { const s=new Set(); return arr.filter(x=>{if(!x||s.has(x.id))return false;s.add(x.id);return true;}); };
 
@@ -71,7 +81,7 @@ function renderDashboard() {
   const main = document.getElementById('mainContent');
   const d = _dbSnapshot();
 
-  const contratosAtivos = ERP_DATA.contratos.filter(c => !/Encerrado|Suspenso/i.test(c.status||'')).length;
+  const contratosAtivos = d.contratos.filter(c => !/Encerrado|Suspenso/i.test(c.status||'')).length;
   const valorTotal = d.valorContratos;
 
   main.innerHTML = `
@@ -243,7 +253,7 @@ function renderDashboard() {
               </tr>
             </thead>
             <tbody>
-              ${ERP_DATA.contratos.filter(c => !/Encerrado/i.test(c.status||'')).map(c => {
+              ${_dashContratos().filter(c => !/Encerrado/i.test(c.status||'')).map(c => {
                 const pct = c.valor > 0 ? Math.round(((c.medidoAcum||c.valor_medido_acumulado||0)/c.valor)*100) : (c.progress||0);
                 return `
                 <tr onclick="navigate('contratos')" style="cursor:pointer">
@@ -522,7 +532,7 @@ function renderChartContratos() {
   const gc = isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.06)';
 
   // Usa contratos reais
-  const cs = ERP_DATA.contratos.filter(c=>!/Encerrado/i.test(c.status||'')).slice(0,6);
+  const cs = _dashContratos().filter(c=>!/Encerrado/i.test(c.status||'')).slice(0,6);
   ctx._chartInstance = new Chart(ctx, {
     type: 'bar',
     data: {

@@ -86,17 +86,23 @@ function _mergeRFQs() {
     byNum.set(n.numero, n);
   });
 
-  // Resultado final ordenado por data de criação (mais recente primeiro)
-  const merged = Array.from(byId.values()).sort((a,b) =>
+  // Resultado local ordenado por data de criação (mais recente primeiro)
+  const mergedLocal = Array.from(byId.values()).sort((a,b) =>
     new Date(b.data_criacao||0) - new Date(a.data_criacao||0)
   );
 
-  // Sincroniza fa_rfqs com o resultado mesclado para manter consistência
-  try { localStorage.setItem('fa_rfqs', JSON.stringify(merged)); } catch(e) {}
-  // Sincroniza fa_rfq_flow também
-  try { localStorage.setItem('fa_rfq_flow', JSON.stringify(merged)); } catch(e) {}
+  // Sincroniza os storages locais SEM as linhas da API (evita duplicação).
+  try { localStorage.setItem('fa_rfqs', JSON.stringify(mergedLocal)); } catch(e) {}
+  try { localStorage.setItem('fa_rfq_flow', JSON.stringify(mergedLocal)); } catch(e) {}
 
-  return merged;
+  // Injeta as RFQs do servidor (fonte de verdade multi-tenant), dedup por número.
+  const api = window._procRFQAPICache || [];
+  if (!api.length) return mergedLocal;
+  const numsAPI = new Set(api.map(r => r.numero));
+  const locaisSemDup = mergedLocal.filter(r => !numsAPI.has(r.numero));
+  return [...api, ...locaisSemDup].sort((a,b) =>
+    new Date(b.data_criacao||0) - new Date(a.data_criacao||0)
+  );
 }
 function _getMatrizes() {
   try {
@@ -107,18 +113,87 @@ function _getMatrizes() {
     // Recupera backup de mapas do usuário (preservados durante limpeza de cache)
     const backup = JSON.parse(localStorage.getItem('_fa_user_matrizes_backup') || '[]');
     const allExtra = [...comp, ...comp2, ...backup];
-    if (!allExtra.length) return main;
     const ids = new Set(main.map(m => m.id));
     const extras = allExtra.filter(m => !ids.has(m.id));
-    return extras.length ? [...main, ...extras] : main;
-  } catch(e) { return []; }
+    const local = extras.length ? [...main, ...extras] : main;
+    // Injeta os mapas do servidor (fonte de verdade), dedup por número/id.
+    const api = window._procMapasAPICache || [];
+    if (!api.length) return local;
+    const chavesAPI = new Set(api.map(m => m.numero || m.id));
+    const localSemDup = local.filter(m => !chavesAPI.has(m.numero || m.id));
+    return [...api, ...localSemDup];
+  } catch(e) { return (window._procMapasAPICache || []); }
 }
 function _saveMatrizes(d) {
-  localStorage.setItem('fa_matrizes', JSON.stringify(d));
+  // Nunca persiste linhas vindas da API no localStorage (duplicaria no merge).
+  const local = (d || []).filter(m => m.origem !== 'api');
+  localStorage.setItem('fa_matrizes', JSON.stringify(local));
   // Sincroniza fa_mapas_comp e fa_mapas_comparativos para compatibilidade total
-  localStorage.setItem('fa_mapas_comp', JSON.stringify(d));
-  localStorage.setItem('fa_mapas_comparativos', JSON.stringify(d));
+  localStorage.setItem('fa_mapas_comp', JSON.stringify(local));
+  localStorage.setItem('fa_mapas_comparativos', JSON.stringify(local));
 }
+
+// ─── PONTE COM A API (fonte de verdade multi-tenant) ─────────────────────────
+// RFQ e Mapa Comparativo passam a ler do servidor (/api/rfq, /api/mapas),
+// mesclando com as linhas locais legadas (nada some) e degradando em silêncio
+// quando não há servidor (modo demo por máquina). Mesmo padrão da migração de
+// Requisições: adapter servidor→tela + cache + merge + ação real com fallback.
+function _rfqMapStatusAPI(s) {
+  return ({ 'Aberta': 'Em Cotação', 'Em Análise': 'Cotações Recebidas', 'Aprovada': 'Aprovada', 'Cancelada': 'Cancelada' })[s] || (s || 'Em Cotação');
+}
+function _rfqAdaptarAPI(r) {
+  return {
+    id: r.numero || ('RFQ-' + r.id), _apiId: r.id, origem: 'api',
+    numero: r.numero, numero_rfq: r.numero,
+    titulo: r.titulo || r.descricao || 'RFQ', descricao: r.descricao || '',
+    status: _rfqMapStatusAPI(r.status),
+    data_criacao: String(r.created_at || '').slice(0, 10),
+    valor_estimado: r.valor_estimado || 0, rc_numero: r.rc_numero || '',
+    total_cotacoes: r.total_cotacoes || 0,
+    fornecedores: (r.fornecedores || []).map(f => ({
+      id: f.fornecedor_id, fornecedor_id: f.fornecedor_id,
+      nome: f.nome || f.fornecedor_nome || '', status: f.status || 'Convidado',
+    })),
+  };
+}
+function _mapaStatusAPI(s) {
+  const t = String(s || '').toLowerCase();
+  if (t.indexOf('aprov') >= 0) return 'Aprovada';
+  if (t.indexOf('reprov') >= 0) return 'Cancelada';
+  return 'Aguardando Aprovação'; // 'Em Análise'
+}
+function _mapaAdaptarAPI(m) {
+  const aprovado = String(m.status || '').toLowerCase().indexOf('aprov') >= 0;
+  return {
+    id: m.numero || ('MC-' + m.id), _apiId: m.id, origem: 'api',
+    numero: m.numero, numero_rfq: m.rfq_numero || '', rfq_id: m.rfq_id,
+    titulo: m.rfq_titulo || '',
+    forn_recomendado_nome: m.fornecedor_vencedor_nome || m.fornecedor_nome || '',
+    forn_recomendado: m.fornecedor_vencedor_id || null,
+    valor_aprovado: m.valor_aprovado || 0, economia: m.economia_gerada || 0,
+    criterio: 'Menor preço', status: _mapaStatusAPI(m.status),
+    aprovado_por: aprovado ? (m.aprovado_por || '—') : '',
+    criado_em: String(m.created_at || '').slice(0, 10),
+    justificativa: m.justificativa || '',
+  };
+}
+async function _procCarregarRFQAPI() {
+  if (typeof apiAuth !== 'function') { window._procRFQAPICache = null; return false; }
+  try { window._procRFQAPICache = (await apiAuth('/api/rfq')).map(_rfqAdaptarAPI); return true; }
+  catch (e) { window._procRFQAPICache = null; return false; }
+}
+async function _procCarregarMapasAPI() {
+  if (typeof apiAuth !== 'function') { window._procMapasAPICache = null; return false; }
+  try { window._procMapasAPICache = (await apiAuth('/api/mapas')).map(_mapaAdaptarAPI); return true; }
+  catch (e) { window._procMapasAPICache = null; return false; }
+}
+window._rfqAdaptarAPI = _rfqAdaptarAPI;
+window._mapaAdaptarAPI = _mapaAdaptarAPI;
+window._procCarregarRFQAPI = _procCarregarRFQAPI;
+window._procCarregarMapasAPI = _procCarregarMapasAPI;
+window._mergeRFQs = _mergeRFQs;
+window._getMatrizes = _getMatrizes;
+window._saveMatrizes = _saveMatrizes;
 
 // ─── ALÇADA DE APROVAÇÃO ────────────────────────────────────────────────────
 // Config padrão: limite USD 10.000, gerente aprova abaixo, General Manager acima
@@ -252,7 +327,9 @@ function _rfqGetFornecedoresCadastrados() {
   } catch(e) { return []; }
 }
 
-function renderRFQ() {
+async function renderRFQ() {
+  // Carrega as RFQs do servidor para o cache (silencioso: sem API → modo local).
+  await _procCarregarRFQAPI();
   // Perfis que podem gerenciar cotações (criar RFQ, selecionar fornecedores, aprovar mapa)
   const isCompras = currentUser && ['admin','compras','diretor'].includes(currentUser.profile);
   // Perfis que podem visualizar a aba (supervisores e operação também acompanham o processo)
@@ -5838,7 +5915,9 @@ function exportarMatriz(rfqId) {
 }
 
 // ─── MAPA COMPARATIVO (página standalone) ───
-function renderMapaCotacao() {
+async function renderMapaCotacao() {
+  // Carrega os mapas do servidor para o cache (silencioso: sem API → modo local).
+  await _procCarregarMapasAPI();
   const matrizes = _getMatrizes();
   const isCompras = currentUser && ['admin','compras','diretor','financeiro'].includes(currentUser.profile);
 
@@ -6052,6 +6131,21 @@ async function aprovarMatriz(matrizId) {
   const m = matrizes.find(x => x.id === matrizId);
   if (!m) return;
 
+  // Mapa do servidor: aprova via API (o servidor aplica alçada/perfil e concorrência).
+  if (m.origem === 'api' && typeof apiAuth === 'function') {
+    try {
+      await apiAuth(`/api/mapas/${m._apiId}/aprovar`, { method: 'POST', body: {} });
+      if (typeof logAction === 'function') logAction('Aprovar', 'Mapa Comparativo', `Mapa ${matrizId} aprovado (API)`);
+      if (typeof closeModal === 'function') closeModal();
+      showToast(`✅ Mapa <strong>${matrizId}</strong> aprovado! Para emitir o Pedido de Compra, acesse a aba <strong>Pedidos de Compra</strong>.`, 'success', 7000);
+      await _procCarregarMapasAPI();
+      renderMapaCotacao();
+    } catch (e) {
+      showToast((e && e.message) || 'Falha ao aprovar o mapa.', 'error');
+    }
+    return;
+  }
+
   // ── Verificar alçada de aprovação ──
   const alcada = await _verificarAlcada(m.valor_aprovado || 0);
   const cfg    = _getAlcadaConfig();
@@ -6112,10 +6206,23 @@ async function aprovarMatriz(matrizId) {
   }, 500);
 }
 
-function rejeitarMatriz(matrizId) {
+async function rejeitarMatriz(matrizId) {
   const matrizes = _getMatrizes();
   const m = matrizes.find(x => x.id === matrizId);
   if (!m) return;
+  // Mapa do servidor: reprova via API.
+  if (m.origem === 'api' && typeof apiAuth === 'function') {
+    try {
+      await apiAuth(`/api/mapas/${m._apiId}/reprovar`, { method: 'POST', body: {} });
+      if (typeof logAction === 'function') logAction('Reprovar', 'Mapa Comparativo', `Mapa ${matrizId} reprovado (API)`);
+      showToast('Mapa reprovado.', 'warning');
+      await _procCarregarMapasAPI();
+      renderMapaCotacao();
+    } catch (e) {
+      showToast((e && e.message) || 'Falha ao reprovar o mapa.', 'error');
+    }
+    return;
+  }
   m.status = 'Cancelada';
   _saveMatrizes(matrizes);
   showToast('Mapa rejeitado.', 'warning');

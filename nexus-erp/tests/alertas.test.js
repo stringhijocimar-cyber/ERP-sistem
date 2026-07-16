@@ -79,8 +79,8 @@ describe('Central de Alertas', () => {
   it('fornecedor (portal) é barrado na central (403)', async () => {
     const fid = db.prepare(`INSERT INTO fornecedores(nome) VALUES('F Portal')`).run().lastInsertRowid
     await request(app).post('/api/usuarios').set('Authorization', `Bearer ${adminToken}`)
-      .send({ nome: 'P', email: 'p@forn.com', senha: 'P@123456', perfil: 'fornecedor', fornecedor_id: fid })
-    const tok = (await request(app).post('/api/auth/login').send({ email: 'p@forn.com', senha: 'P@123456' })).body?.data?.token
+      .send({ nome: 'P', email: 'p@forn.com', senha: 'Portal@123', perfil: 'fornecedor', fornecedor_id: fid })
+    const tok = (await request(app).post('/api/auth/login').send({ email: 'p@forn.com', senha: 'Portal@123' })).body?.data?.token
     const r = await get(tok)
     expect(r.status).toBe(403)
   })

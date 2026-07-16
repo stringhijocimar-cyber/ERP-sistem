@@ -12,8 +12,15 @@ CREATE TABLE IF NOT EXISTS users (
   scopes        TEXT DEFAULT '[]',
   fornecedor_id TEXT,
   ativo         INTEGER DEFAULT 1,
+  -- Multi-tenant: empresa do usuário (legado → '1'). Em bancos já
+  -- implantados, o Worker adiciona a coluna de forma preguiçosa
+  -- (ALTER idempotente no provisionamento de usuários).
+  empresa_id    TEXT DEFAULT '1',
   created_at    TEXT DEFAULT (datetime('now'))
 );
+
+-- Empresas (tenants) — doc-model como as demais entidades.
+CREATE TABLE IF NOT EXISTS empresas ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 
 -- Entidades "documento" (id + payload JSON). Flexivel e fiel ao que o
 -- front-end ja envia/recebe como objetos.
@@ -35,6 +42,15 @@ CREATE TABLE IF NOT EXISTS projetos     ( id TEXT PRIMARY KEY, payload TEXT NOT 
 CREATE TABLE IF NOT EXISTS ssma         ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 CREATE TABLE IF NOT EXISTS almoxarifado ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 CREATE TABLE IF NOT EXISTS recebimentos ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS notas_fiscais ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS notificacoes ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS wbs_linhas ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS aceites_servico ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS propostas ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS materiais ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS movimentos_estoque ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS emprestimos ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
+CREATE TABLE IF NOT EXISTS inventarios ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) );
 
 CREATE TABLE IF NOT EXISTS permissoes ( user_id TEXT PRIMARY KEY, permissoes TEXT DEFAULT '[]' );
 CREATE TABLE IF NOT EXISTS config     ( chave TEXT PRIMARY KEY, valor TEXT );

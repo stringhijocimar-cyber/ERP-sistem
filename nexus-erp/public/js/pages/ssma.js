@@ -14,7 +14,7 @@ function _ssGetIncidentes() {
   if (a && a.length) return a;
   return JSON.parse(JSON.stringify(ERP_DATA.incidentes || []));
 }
-function _ssSaveIncidentes(list) { _ssSave('fa_incidentes', list); _ssSave('fraser_incidentes', list); }
+function _ssSaveIncidentes(list) { _ssSave('fa_incidentes', list); _ssSave('fraser_incidentes', list); try { window._syncSnapshot && window._syncSnapshot('ssma', list); } catch(e){} }
 
 function _ssGetColabs() {
   const a = _ssGet('fa_colaboradores', null) || _ssGet('fraser_colaboradores', null);
@@ -141,6 +141,18 @@ function renderSSMA() {
       </button>
     </div>
   </div>
+
+  <!-- Indicadores HSE reais do servidor (TF/TG/dias sem acidente) -->
+  <div id="ssmaIndicadores"></div>
+
+  <!-- EPIs por colaborador (NR-6) reais do servidor -->
+  <div id="ssmaEpis"></div>
+
+  <!-- Treinamentos/matriz NR (NR-1 §1.7) reais do servidor -->
+  <div id="ssmaTreinamentos"></div>
+
+  <!-- CAT / eSocial S-2210 (Lei 8.213/91) reais do servidor -->
+  <div id="ssmaCat"></div>
 
   <!-- KPIs Gerais -->
   <div class="ss-kpi-grid">
@@ -319,6 +331,14 @@ function renderSSMA() {
 
   // Carrega Chart.js e renderiza gráficos quando clicar na aba
   window._ssIncidentesData = _ssGetIncidentes();
+  // Indicadores HSE reais do servidor (TF/TG/dias sem acidente).
+  if (typeof window._carregarSsmaIndicadores === 'function') window._carregarSsmaIndicadores();
+  // EPIs por colaborador (NR-6) reais do servidor.
+  if (typeof window._carregarSsmaEpis === 'function') window._carregarSsmaEpis();
+  // Treinamentos/matriz NR (NR-1 §1.7) reais do servidor.
+  if (typeof window._carregarSsmaTreinamentos === 'function') window._carregarSsmaTreinamentos();
+  // CAT / eSocial S-2210 (Lei 8.213/91) reais do servidor.
+  if (typeof window._carregarSsmaCat === 'function') window._carregarSsmaCat();
 }
 
 /* ── Tabela de Incidentes ──────────────────────────── */

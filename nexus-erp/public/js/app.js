@@ -404,6 +404,10 @@ function loginAs(profile, emailLogin) {
     const navBI = document.getElementById('nav-bi');
     if (navBI) navBI.style.display = profile === 'fornecedor' ? 'none' : 'block';
 
+    // Documentos Fiscais (NF-e): interno — oculto para o fornecedor
+    const navNFe = document.getElementById('nav-nfe');
+    if (navNFe) navNFe.style.display = profile === 'fornecedor' ? 'none' : 'block';
+
     // Registra log
     logAction('Login', 'Sistema', `Acesso realizado: ${currentUser.name} (${profile})`);
 
@@ -533,6 +537,8 @@ const PAGE_META = {
   portal: { label: 'Portal do Fornecedor', icon: 'store' },
   alertas: { label: 'Central de Alertas', icon: 'bell' },
   bi: { label: 'Dashboard BI', icon: 'chart-line' },
+  nfe: { label: 'Documentos Fiscais', icon: 'file-invoice-dollar' },
+  notificacoes: { label: 'Notificações', icon: 'bell' },
   meu_painel: { label: 'Meu Painel de Pendências', icon: 'th-large' },
   equipe: { label: 'Equipe / Mobilização', icon: 'users' },
   frota: { label: 'Frota / Equipamentos', icon: 'truck' },
@@ -541,6 +547,7 @@ const PAGE_META = {
   documentos: { label: 'Documentos', icon: 'folder-open' },
   treinamentos: { label: 'Treinamentos', icon: 'graduation-cap' },
   relatorios: { label: 'Relatórios', icon: 'chart-bar' },
+  demo_dados: { label: 'Dados de Demonstração', icon: 'wand-magic-sparkles' },
   admin_usuarios: { label: 'Gestão de Usuários', icon: 'users-cog' },
   admin_config: { label: 'Configurações do Sistema', icon: 'cog' },
   admin_logs: { label: 'Logs do Sistema', icon: 'history' },
@@ -561,8 +568,56 @@ const PAGE_META = {
   benchmark_ia:             { label: 'Benchmark Público de Mercado — IA',           icon: 'trophy' },
   inteligencia_adaptativa:  { label: 'Inteligência Adaptativa ao Negócio',           icon: 'brain' },
   ssma:                     { label: 'SSMA / Qualidade / Compliance',                icon: 'hard-hat' },
+  mm:                       { label: 'MM — Gestão de Materiais (BOM/Engenharia)',    icon: 'sitemap' },
+  pp:                       { label: 'PP — Ordens de Produção',                       icon: 'industry' },
+  wms:                      { label: 'WMS — Endereçamento & Separação',               icon: 'warehouse' },
   custos:                   { label: 'Controle de Custos & Rastreabilidade',         icon: 'chart-area' },
+  // Achados da auditoria do menu: páginas que caíam no breadcrumb genérico.
+  proposta_comercial:       { label: 'Propostas Comerciais',                          icon: 'file-pen' },
+  onboarding_fornecedor:    { label: 'Onboarding de Fornecedor',                      icon: 'user-plus' },
+  painel_executivo:         { label: 'Painel Executivo',                              icon: 'gauge-high' },
+  dashboard_financeiro:     { label: 'Dashboard Financeiro',                          icon: 'chart-column' },
+  conciliacao:              { label: 'Conciliação Bancária',                          icon: 'right-left' },
+  orcamento:                { label: 'Orçamento Anual',                               icon: 'bullseye' },
+  rh:                       { label: 'RH / Colaboradores',                            icon: 'id-badge' },
+  saas_dashboard:           { label: 'Dashboard SaaS',                                icon: 'rocket' },
+  saas_clientes:            { label: 'Clientes / Organizações (SaaS)',                icon: 'city' },
+  saas_leads:               { label: 'Leads / Pipeline (SaaS)',                       icon: 'funnel-dollar' },
+  saas_billing:             { label: 'Billing / Receita (SaaS)',                      icon: 'credit-card' },
+  saas_lgpd:                { label: 'LGPD (SaaS)',                                   icon: 'shield-halved' },
 };
+
+// Enhancements do menu: tooltips (sidebar recolhida) + seções recolhíveis com
+// estado persistido por usuário (localStorage). Progressivo: sem JS, tudo aberto.
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.nav-item').forEach(a => {
+    const label = a.querySelector('.nav-label');
+    if (label && !a.title) a.title = label.textContent.trim();
+  });
+  let colapsadas = [];
+  try { colapsadas = JSON.parse(localStorage.getItem('fa_nav_colapsadas') || '[]'); } catch (e) {}
+  document.querySelectorAll('.nav-section').forEach(sec => {
+    const lbl = sec.querySelector('.nav-section-label');
+    if (!lbl) return;
+    const nome = lbl.textContent.trim();
+    if (colapsadas.includes(nome)) sec.classList.add('collapsed');
+    lbl.setAttribute('role', 'button');
+    lbl.setAttribute('tabindex', '0');
+    lbl.setAttribute('aria-expanded', String(!sec.classList.contains('collapsed')));
+    const toggle = () => {
+      sec.classList.toggle('collapsed');
+      lbl.setAttribute('aria-expanded', String(!sec.classList.contains('collapsed')));
+      let cur = [];
+      try { cur = JSON.parse(localStorage.getItem('fa_nav_colapsadas') || '[]'); } catch (e) {}
+      const i = cur.indexOf(nome);
+      if (sec.classList.contains('collapsed')) { if (i < 0) cur.push(nome); }
+      else if (i >= 0) cur.splice(i, 1);
+      localStorage.setItem('fa_nav_colapsadas', JSON.stringify(cur));
+    };
+    lbl.addEventListener('click', toggle);
+    lbl.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  });
+});
 
 function navigate(page) {
   currentPage = page;
@@ -594,12 +649,16 @@ function navigate(page) {
     medicao: renderMedicao,
     custos: renderCustos,
     financeiro: renderFinanceiro,
+    dashboard_financeiro: function() { if(typeof renderDashboardFinanceiro === 'function') renderDashboardFinanceiro(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Dashboard Financeiro...</p>'; },
+    painel_executivo: function() { if(typeof renderPainelExecutivo === 'function') renderPainelExecutivo(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Painel Executivo...</p>'; },
     faturamento: renderFaturamento,
     contas_pagar: renderContasPagar,
+    conciliacao: function() { if(typeof renderConciliacao === 'function') renderConciliacao(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Conciliação...</p>'; },
     compras: renderCompras,
     fluxo_compras:         function() { if(typeof renderFluxoAprovacaoRC === 'function') renderFluxoAprovacaoRC(); else renderFluxoCompras(); },
     fluxo_aprovacao_rc:    function() { if(typeof renderFluxoAprovacaoRC === 'function') renderFluxoAprovacaoRC(); else renderFluxoCompras(); },
     fornecedores:          renderFornecedores,
+    onboarding_fornecedor: function() { if(typeof renderConvitesFornecedor === 'function') renderConvitesFornecedor(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Onboarding...</p>'; },
     requisicoes:           function() { if(typeof renderRequisicoes === 'function') renderRequisicoes(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Requisições...</p>'; },
     mapa_cotacao: renderMapaCotacao,
     pedidos: renderPedidos,
@@ -618,21 +677,37 @@ function navigate(page) {
     portal: function() { if(typeof renderPortal === 'function') renderPortal(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Portal...</p>'; },
     alertas: function() { if(typeof renderAlertas === 'function') renderAlertas(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Alertas...</p>'; },
     bi: function() { if(typeof renderBI === 'function') renderBI(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando BI...</p>'; },
+    nfe: function() { if(typeof renderNFe === 'function') renderNFe(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Fiscal...</p>'; },
+    notificacoes: function() { if(typeof renderNotificacoes === 'function') renderNotificacoes(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Notificações...</p>'; },
     meu_painel: function() { if(typeof renderMeuPainel === 'function') renderMeuPainel(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Meu Painel...</p>'; },
     equipe: renderEquipe,
+    rh: function() { if(typeof renderRH === 'function') renderRH(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando RH...</p>'; },
     frota: renderFrota,
     estoque: function() { if(typeof renderAlmoxarifado === 'function') renderAlmoxarifado(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Almoxarifado...</p>'; },
     ssma: renderSSMA,
+    mm: function() { if(typeof renderMM === 'function') renderMM(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando MM / Materiais...</p>'; },
+    pp: function() { if(typeof renderPP === 'function') renderPP(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando PP / Produção...</p>'; },
+    wms: function() { if(typeof renderWMS === 'function') renderWMS(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando WMS...</p>'; },
     documentos: renderDocumentos,
     treinamentos: renderTreinamentos,
     relatorios: renderRelatorios,
+    demo_dados: renderDemoDados,
     admin_usuarios: renderAdminUsuarios,
     admin_config: renderAdminConfig,
     admin_logs: renderAdminLogs,
     admin_backup: renderAdminBackup,
     perfil: renderPerfil,
+    // Painel SaaS (admin do negócio): os renders sempre existiram em
+    // saas_admin.js, mas as rotas nunca foram registradas — os 5 itens do
+    // menu caíam em "Módulo em desenvolvimento" (achado da auditoria).
+    saas_dashboard: function() { if(typeof renderSaasDashboard === 'function') renderSaasDashboard(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando SaaS...</p>'; },
+    saas_clientes:  function() { if(typeof renderSaasClientes === 'function') renderSaasClientes(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando clientes...</p>'; },
+    saas_leads:     function() { if(typeof renderSaasLeads === 'function') renderSaasLeads(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando leads...</p>'; },
+    saas_billing:   function() { if(typeof renderSaasBilling === 'function') renderSaasBilling(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando billing...</p>'; },
+    saas_lgpd:      function() { if(typeof renderSaasLgpd === 'function') renderSaasLgpd(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando LGPD...</p>'; },
     projetos_gantt: function() { if(typeof renderProjetosGantt === 'function') renderProjetosGantt(); else document.getElementById('mainContent').innerHTML = '<p style="color:#fff;padding:40px">Módulo Projetos & Gantt carregando...</p>'; },
     dre:        function() { if(typeof renderDRE === 'function') renderDRE(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando DRE...</p>'; },
+    orcamento:  function() { if(typeof renderOrcamento === 'function') renderOrcamento(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Orçamento...</p>'; },
     ativo_fixo: function() { if(typeof renderAtivoFixo === 'function') renderAtivoFixo(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Ativo Fixo...</p>'; },
     kpi_exec:   function() { if(typeof renderKPIExecutivo === 'function') renderKPIExecutivo(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando KPI Executivo...</p>'; },
     fiscal:     function() { if(typeof renderFiscal === 'function') renderFiscal(); else document.getElementById('mainContent').innerHTML = '<p style="padding:40px">Carregando Fiscal...</p>'; },
@@ -645,7 +720,20 @@ function navigate(page) {
   };
 
   if (pages[page]) {
-    pages[page]();
+    // Rede de segurança global: nenhum render pode deixar a tela quebrada
+    // ou presa num spinner. Erros síncronos e assíncronos viram um card de
+    // erro com "Tentar novamente"; um watchdog encerra spinners eternos.
+    // (helpers em js/nav_safety.js)
+    const token = (window.__navToken = (window.__navToken || 0) + 1);
+    try {
+      const out = pages[page]();
+      if (out && typeof out.then === 'function') {
+        out.catch(e => { if (token === window.__navToken) window._renderPageError(main, meta, e, page); });
+      }
+      window._armSpinnerWatchdog(main, meta, page, token);
+    } catch (e) {
+      window._renderPageError(main, meta, e, page);
+    }
   } else {
     main.innerHTML = `
       <div class="empty-state" style="padding-top:80px">

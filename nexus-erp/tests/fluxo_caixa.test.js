@@ -70,8 +70,8 @@ describe('Endpoint /api/fluxo-caixa', () => {
 
   it('bloqueia o fornecedor (403)', async () => {
     const fid = db.prepare(`INSERT INTO fornecedores(nome) VALUES('FFC')`).run().lastInsertRowid
-    await request(app).post('/api/usuarios').set('Authorization', `Bearer ${token}`).send({ nome: 'P', email: 'pfc@forn.com', senha: 'P@123456', perfil: 'fornecedor', fornecedor_id: fid })
-    const tk = (await request(app).post('/api/auth/login').send({ email: 'pfc@forn.com', senha: 'P@123456' })).body?.data?.token
+    await request(app).post('/api/usuarios').set('Authorization', `Bearer ${token}`).send({ nome: 'P', email: 'pfc@forn.com', senha: 'Portal@123', perfil: 'fornecedor', fornecedor_id: fid })
+    const tk = (await request(app).post('/api/auth/login').send({ email: 'pfc@forn.com', senha: 'Portal@123' })).body?.data?.token
     const r = await request(app).get('/api/fluxo-caixa').set('Authorization', `Bearer ${tk}`)
     expect(r.status).toBe(403)
   })

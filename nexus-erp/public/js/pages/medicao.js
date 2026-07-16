@@ -7,7 +7,7 @@
 
 /* ── Storage ────────────────────────────────────────────────────────────── */
 function _getMedicoes()      { try { return JSON.parse(localStorage.getItem('fa_medicoes_v2') || '[]'); } catch { return []; } }
-function _saveMedicoes(d)    { localStorage.setItem('fa_medicoes_v2', JSON.stringify(d)); }
+function _saveMedicoes(d)    { localStorage.setItem('fa_medicoes_v2', JSON.stringify(d)); try { window._syncSnapshot && window._syncSnapshot('medicoes', d); } catch(e){} }
 function _getMedForn()       { try { return JSON.parse(localStorage.getItem('fa_medicoes_forn_v2') || '[]'); } catch { return []; } }
 function _saveMedForn(d)     { localStorage.setItem('fa_medicoes_forn_v2', JSON.stringify(d)); }
 function _getContratosMed()  { return JSON.parse(localStorage.getItem('fa_contratos_cliente') || '[]'); }

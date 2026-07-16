@@ -94,7 +94,9 @@ let _apiOk = null; // null = não testado, true/false
 async function _checkApi() {
   if (_apiOk !== null) return _apiOk;
   try {
-    const r = await fetch('/api/dashboard', { signal: AbortSignal.timeout(3000) });
+    // /api/health é público e leve — detecta online/offline sem token e sem
+    // depender do /api/dashboard (que exige auth e é escopado por tenant).
+    const r = await fetch('/api/health', { signal: AbortSignal.timeout(3000) });
     _apiOk = r.ok;
   } catch { _apiOk = false; }
   return _apiOk;
@@ -497,6 +499,23 @@ window.DB = {
     catch (e) { return null; }
   },
 
+  async analiseFinanceira(cnpj) {
+    try { return await _apiFetch('/api/analise-financeira', { method: 'POST', body: JSON.stringify({ cnpj }) }); }
+    catch (e) { return null; }
+  },
+
+  async idfFornecedor(id) {
+    try { return await _apiFetch(`/api/fornecedores/${id}/idf`); }
+    catch (e) { return null; }
+  },
+
+  async homologarFornecedor(id, etapa) {
+    return await _apiFetch(`/api/fornecedores/${id}/homologar/${etapa}`, { method: 'POST', body: '{}' });
+  },
+  async reprovarHomologacao(id, motivo) {
+    return await _apiFetch(`/api/fornecedores/${id}/reprovar-homologacao`, { method: 'POST', body: JSON.stringify({ motivo: motivo || '' }) });
+  },
+
   // Compatibilidade com código legado que usa logAction()
   log: (acao, modulo, desc) => Logs.registrar(acao, modulo, desc),
 };
@@ -532,6 +551,44 @@ async function _syncEntityToD1(apiPath, lsKey, data) {
     console.debug(`[DB] Sync ${apiPath} adiada (será tentada na próxima sessão):`, e.message);
   }
 }
+
+// ── Helper público: sincroniza um snapshot (array) de qualquer
+//    entidade do allowlist do backend (/api/<entidade>/sync).
+//    Usado por módulos que guardam direto no localStorage
+//    (projetos/contratos/crm). Defensivo: nunca lança.
+window._syncSnapshot = function (entidade, data) {
+  try {
+    if (!entidade || !Array.isArray(data)) return;
+    _queueSync(`snap:${entidade}`, () => _syncEntityToD1(`/api/${entidade}`, null, data));
+  } catch (e) { /* silencioso por design */ }
+};
+
+// ── Reconcile de boot: para entidades só-localStorage, se o servidor
+//    ainda não tem o snapshot, empurra o que está local (one-shot,
+//    last-write-wins). Self-healing depois do fix do /sync no Express.
+window._reconcileSnapshotsOnBoot = async function () {
+  if (!_apiOk) return;
+  const alvos = [
+    { ent: 'projetos',  key: 'fa_projetos_gantt' },
+    { ent: 'contratos', key: 'fa_contratos' },
+    { ent: 'crm',       key: 'fa_crm_data' },
+    { ent: 'ssma',      key: 'fa_incidentes' },
+    { ent: 'medicoes',  key: 'fa_medicoes_v2' },
+  ];
+  for (const { ent, key } of alvos) {
+    try {
+      let local = JSON.parse(localStorage.getItem(key) || '[]');
+      // fa_crm_data é um OBJETO { leads: [...] } — extrai o array de leads
+      // (sem isso, o reconcile de CRM nunca empurrava nada).
+      if (ent === 'crm' && local && !Array.isArray(local)) local = local.leads || [];
+      if (!Array.isArray(local) || local.length === 0) continue;
+      const remoto = await _apiFetch(`/api/${ent}/sync`).catch(() => []);
+      if (!Array.isArray(remoto) || remoto.length === 0) {
+        await _syncEntityToD1(`/api/${ent}`, key, local);
+      }
+    } catch (e) { /* segue para a próxima entidade */ }
+  }
+};
 
 // ─── PEDIDOS ──────────────────────────────────────────────────
 window._getPedidos = () => _lsGet(DB_CONFIG.keys.pedidos);
@@ -639,6 +696,20 @@ window.DB._init = async function() {
     }
   } catch {}
 
+  // Pré-carrega os caches que o Dashboard/KPIs leem — a verdade do SERVIDOR
+  // (tenant-isolada) substitui o cache local, mas SÓ quando o servidor tem
+  // dados (lista vazia não apaga o que o usuário tem localmente).
+  for (const [path, key] of [
+    ['/api/contas-pagar', 'fa_contas_pagar'],
+    ['/api/os', 'fa_ordens_servico'],
+    ['/api/contratos', 'fa_contratos'],
+  ]) {
+    try {
+      const data = await _apiFetch(path)
+      if (Array.isArray(data) && data.length) _lsSet(key, data)
+    } catch { /* offline → dashboard segue com o cache local */ }
+  }
+
   // Verifica sessão de usuário
   try {
     const me = await _apiFetch('/api/auth/me');
@@ -646,6 +717,20 @@ window.DB._init = async function() {
       localStorage.setItem('fa_current_user', JSON.stringify(me));
     }
   } catch {}
+
+  // Empresa REAL do usuário (tenant do servidor) — alimenta o badge
+  // multi-empresa com a identidade verdadeira, não a do seletor local.
+  try {
+    const emp = await _apiFetch('/api/empresas/atual');
+    if (emp && emp.id != null) {
+      localStorage.setItem('fa_empresa_atual', JSON.stringify(emp));
+      if (typeof window._renderEmpresaAtivaBadge === 'function') window._renderEmpresaAtivaBadge();
+    }
+  } catch { /* offline → badge segue com o cache/seletor local */ }
+
+  // Reconcilia snapshots só-localStorage (projetos/contratos/crm) com o D1.
+  // Roda após o fix do /sync no Express; não bloqueia o boot se falhar.
+  try { await window._reconcileSnapshotsOnBoot(); } catch {}
 
   // Dispara evento para notificar módulos que o DB está pronto
   window.dispatchEvent(new CustomEvent('db:ready', { detail: { online: true } }));

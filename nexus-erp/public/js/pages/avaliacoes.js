@@ -6,11 +6,16 @@
 // =====================================================
 
 // ─── AVALIAÇÃO DE FORNECEDORES ───
-function renderAvaliacaoFornecedores() {
-  const isGestor = currentUser && ['admin','compras','diretor','operacao'].includes(currentUser.profile);
+async function renderAvaliacaoFornecedores() {
+  const isGestor = currentUser && ['admin','compras','diretor','operacao'].includes(currentUser.profile || currentUser.role);
   if (!isGestor) {
     document.getElementById('mainContent').innerHTML = `<div class="empty-state"><i class="fas fa-lock"></i><p>Acesso restrito.</p></div>`;
     return;
+  }
+  // Garante os fornecedores carregados (a página pode ser aberta diretamente).
+  if ((typeof FA_FORNECEDORES === 'undefined' || !FA_FORNECEDORES || !FA_FORNECEDORES.length) && typeof loadFornecedores === 'function') {
+    document.getElementById('mainContent').innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin" style="color:var(--fa-teal)"></i><p>Carregando...</p></div>`;
+    try { await loadFornecedores(); } catch (e) {}
   }
 
   const avals = _getAvaliacoesForn();

@@ -353,14 +353,76 @@ function exportarMateriais() {
 // ════════════════════════════════════════════════════════════════════
 
 // helpers locais para fa_rcs (compatíveis com fluxo_aprovacao_rc.js)
-function _reqGetRC()       { try { return JSON.parse(localStorage.getItem('fa_rcs')||'[]'); } catch(e){ return []; } }
-function _reqSaveRC(d)     { localStorage.setItem('fa_rcs', JSON.stringify(d)); }
+// Fonte de verdade: API multi-tenant (/api/rc). RCs locais legadas (demo)
+// continuam visíveis via merge até a migração completa da emissão.
+function _reqGetRCLocais() { try { return JSON.parse(localStorage.getItem('fa_rcs')||'[]'); } catch(e){ return []; } }
+function _reqGetRC() {
+  const api = (window._reqRCsCache && window._reqRCsCache.dados) || null;
+  const locais = _reqGetRCLocais();
+  return api ? [...api, ...locais] : locais;
+}
+// Nunca persistir linhas da API no localStorage (duplicaria no próximo merge).
+function _reqSaveRC(d)     { localStorage.setItem('fa_rcs', JSON.stringify((d||[]).filter(r => r.origem !== 'api'))); }
+// Adapta a RC do servidor para o formato que a tela sempre usou.
+function _reqAdaptarRC(r) {
+  return {
+    id: r.id, numero: r.numero,
+    titulo: r.observacoes || (r.itens && r.itens[0] && r.itens[0].descricao) || r.tipo || 'Requisição',
+    contrato: r.wbs || '', os_vinculada: r.os_numero || '',
+    solicitante: r.solicitante_nome || '', tipo: r.tipo || 'Material',
+    urgencia: r.prioridade || 'Normal', valor_total: r.valor_total || 0,
+    status: r.status, data_criacao: String(r.created_at || '').slice(0, 10),
+    itens: (r.itens || []).map(i => ({ descricao: i.descricao, qtd: i.quantidade, quantidade: i.quantidade, unidade: i.unidade, valor_unit: i.valor_unitario_estimado, preco_unit: i.valor_unitario_estimado })),
+    origem: 'api',
+  };
+}
+// Carrega as RCs do servidor para o cache (silencioso: sem API → modo local).
+// Cria a RC no SERVIDOR (fonte de verdade). Retorna a RC criada; null quando
+// não há servidor (o chamador cai no fluxo local/demo); { erro:true } quando o
+// servidor REJEITOU por validação (não deve salvar local algo inválido).
+async function _reqCriarRCViaAPI({ tipo, wbs, observacoes, departamento, prioridade, itens, os_id, os_numero }) {
+  if (typeof apiAuth !== 'function') return null;
+  try {
+    return await apiAuth('/api/rc', { method: 'POST', body: {
+      tipo, wbs, observacoes: observacoes || null, departamento: departamento || null,
+      prioridade: prioridade || 'Normal', os_id: os_id || null, os_numero: os_numero || null,
+      itens: (itens || []).map(i => ({
+        descricao: i.descricao,
+        quantidade: (i.qtd != null ? i.qtd : i.quantidade) || 1,
+        unidade: i.unidade || 'Un',
+        valor_unitario_estimado: (i.valor_unit != null ? i.valor_unit : i.valor_unitario_estimado) || 0,
+      })),
+    } });
+  } catch (e) {
+    const msg = (e && e.message) || '';
+    if (msg && !/fetch|network|load failed/i.test(msg)) {
+      if (typeof showToast === 'function') showToast(msg, 'error');
+      return { erro: true };
+    }
+    return null; // sem servidor → modo local
+  }
+}
+window._reqCriarRCViaAPI = _reqCriarRCViaAPI;
+
+async function _reqCarregarRCsAPI() {
+  if (typeof apiAuth !== 'function') return false;
+  try {
+    const dados = (await apiAuth('/api/rc')).map(_reqAdaptarRC);
+    window._reqRCsCache = { dados, em: Date.now() };
+    return true;
+  } catch (e) { window._reqRCsCache = null; return false; }
+}
 function _reqGetFluxoOS()  { try { return JSON.parse(localStorage.getItem('fa_fluxo_os')||'[]'); } catch(e){ return []; } }
 
 // badge de status da RC
 function _reqStatusBadge(s) {
   const m = {
     'Aguardando Aprovação':           { bg:'#f59e0b22', c:'#f59e0b' },
+    'Rascunho':                       { bg:'#94a3b822', c:'#64748b' },
+    'Pendente':                       { bg:'#f59e0b22', c:'#f59e0b' },
+    'Aprovada':                       { bg:'#22c55e22', c:'#22c55e' },
+    'Atendida':                       { bg:'#3b82f622', c:'#3b82f6' },
+    'Cancelada':                      { bg:'#ef444422', c:'#ef4444' },
     'Aprovada – Aguardando Comprador':{ bg:'#3b82f622', c:'#3b82f6' },
     'RFQ Criado':                     { bg:'#6366f122', c:'#6366f1' },
     'Em Cotação':                     { bg:'#6366f122', c:'#6366f1' },
@@ -518,8 +580,12 @@ function _reqSeedDemo() {
 // ─────────────────────────────────────────────────────────────────
 // RENDER PRINCIPAL  (layout limpo – estilo imagem de referência)
 // ─────────────────────────────────────────────────────────────────
-function renderRequisicoes() {
+async function renderRequisicoes() {
   if (!hasPermission('requisicoes', 'view')) { renderAcessoNegado(); return; }
+  // Dados reais do servidor (multi-tenant); sem servidor, cai no modo local.
+  const _mainLoading = document.getElementById('mainContent');
+  if (_mainLoading && !window._reqRCsCache) _mainLoading.innerHTML = '<p style="padding:40px;color:#64748b"><i class="fas fa-spinner fa-spin"></i> Carregando requisições…</p>';
+  await _reqCarregarRCsAPI();
 
   // _reqSeedDemo(); // DADOS DEMO DESATIVADOS – uso com dados reais
 
@@ -530,10 +596,10 @@ function renderRequisicoes() {
 
   // KPIs
   const kpiTotal    = rcs.length;
-  const kpiAguard   = rcs.filter(r => r.status === 'Aguardando Aprovação').length;
-  const kpiAprov    = rcs.filter(r => ['Aprovada – Aguardando Comprador','RFQ Criado','Em Cotação','Cotações Recebidas','Mapa Criado','Mapa Aprovado','PC Emitido'].includes(r.status)).length;
+  const kpiAguard   = rcs.filter(r => ['Aguardando Aprovação','Rascunho','Pendente'].includes(r.status)).length;
+  const kpiAprov    = rcs.filter(r => ['Aprovada – Aguardando Comprador','RFQ Criado','Em Cotação','Cotações Recebidas','Mapa Criado','Mapa Aprovado','PC Emitido','Aprovada','Atendida'].includes(r.status)).length;
   const kpiValTotal = rcs.reduce((s, r) => s + (r.valor_total || 0), 0);
-  const aguardMinhas = rcs.filter(r => r.status === 'Aguardando Aprovação');
+  const aguardMinhas = rcs.filter(r => ['Aguardando Aprovação','Rascunho','Pendente'].includes(r.status));
 
   main.innerHTML = `
   <div style="padding:24px 28px;max-width:1400px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
@@ -553,10 +619,11 @@ function renderRequisicoes() {
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <button onclick="_reqExportarRC()"
+        <button id="reqBtnExportar" onclick="_reqExportarRC()"
+          title="Gera um arquivo .xlsx com os registros filtrados (planilha Processos)"
           style="padding:8px 16px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#475569;font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px;transition:border-color .15s;"
           onmouseover="this.style.borderColor='#cbd5e1'" onmouseout="this.style.borderColor='#e2e8f0'">
-          <i class="fas fa-download" style="font-size:12px;"></i> Exportar
+          <i class="fas fa-file-excel" style="font-size:12px;color:#16a34a;"></i> Exportar para Excel
         </button>
         ${podeEmitir ? `
         <button onclick="reqEmitirRCAvulsa()"
@@ -1003,7 +1070,7 @@ function _reqTabelaRC(lista, podeEditar) {
                   onmouseover="this.style.borderColor='#fcd34d';this.style.background='#fffbeb'" onmouseout="this.style.borderColor='#e2e8f0';this.style.background='#fff'">
                   <i class="fas fa-pen" style="font-size:10px;color:#f59e0b;"></i>
                 </button>` : ''}
-                ${r.status === 'Aguardando Aprovação' && podeEditar ? `
+                ${['Aguardando Aprovação','Rascunho','Pendente'].includes(r.status) && podeEditar ? `
                 <button onclick="reqAprovarRC && reqAprovarRC('${r.id}')" title="Aprovar RC"
                   style="width:30px;height:30px;border:1px solid #bbf7d0;border-radius:7px;background:#f0fdf4;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s;"
                   onmouseover="this.style.background='#dcfce7'" onmouseout="this.style.background='#f0fdf4'">
@@ -1026,10 +1093,10 @@ function _reqAplicarFiltros() {
   const podeEditar = (typeof _podeEmitirRC === 'function') ? _podeEmitirRC() : hasPermission('requisicoes','create');
   let f = rcs;
   switch(sel) {
-    case 'aguard_aprv': f = rcs.filter(r => r.status === 'Aguardando Aprovação'); break;
-    case 'aprovada':    f = rcs.filter(r => ['Aprovada – Aguardando Comprador','RFQ Criado','Em Cotação','Cotações Recebidas','Mapa Criado','Mapa Aprovado'].includes(r.status)); break;
+    case 'aguard_aprv': f = rcs.filter(r => ['Aguardando Aprovação','Rascunho','Pendente'].includes(r.status)); break;
+    case 'aprovada':    f = rcs.filter(r => ['Aprovada – Aguardando Comprador','RFQ Criado','Em Cotação','Cotações Recebidas','Mapa Criado','Mapa Aprovado','Aprovada'].includes(r.status)); break;
     case 'em_cotacao':  f = rcs.filter(r => ['RFQ Criado','Em Cotação','Cotações Recebidas'].includes(r.status)); break;
-    case 'concluida':   f = rcs.filter(r => r.status === 'PC Emitido'); break;
+    case 'concluida':   f = rcs.filter(r => ['PC Emitido','Atendida'].includes(r.status)); break;
     case 'rejeitada':   f = rcs.filter(r => r.status === 'Rejeitada'); break;
   }
   if (s) f = f.filter(r =>
@@ -1143,17 +1210,50 @@ function _reqRenderOSCards(lista, rcsDeOS, podeEmitir) {
 function _reqSwitchTab(tab) { renderRequisicoes(); }
 
 // ─── EXPORTAR ────────────────────────────────────────────────────────────────
-function _reqExportarRC() {
-  const lista = _reqGetRC();
-  const csv = [
-    ['Número','Título','Contrato','OS Vinculada','Solicitante','Tipo','Urgência','Valor Total','Status','Data'],
-    ...lista.map(r=>[r.numero,r.titulo,r.contrato||'',r.os_vinculada||'',r.solicitante,r.tipo||'Material',r.urgencia||'Normal',r.valor_total,r.status,r.data_criacao])
-  ].map(row=>row.map(c=>`"${String(c||'').replace(/"/g,'""')}"`).join(',')).join('\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
-  a.download = `RC_${new Date().toISOString().split('T')[0]}.csv`;
-  a.click();
-  if (typeof showToast === 'function') showToast('Exportado com sucesso!','success');
+// Exportação para Excel (.xlsx REAL, gerado no backend a partir dos dados do
+// servidor — multi-tenant e por perfil). Respeita a busca e o filtro de status
+// ativos na tela. Substitui o CSV antigo, que ignorava os filtros e não
+// neutralizava fórmulas (=cmd executava no Excel).
+const _REQ_STATUS_EXPORT = {
+  aguard_aprv: 'Aguardando Aprovação',
+  aprovada: 'Aprovada – Aguardando Comprador|RFQ Criado|Em Cotação|Cotações Recebidas|Mapa Criado|Mapa Aprovado|Aprovada',
+  em_cotacao: 'RFQ Criado|Em Cotação|Cotações Recebidas',
+  concluida: 'PC Emitido|Atendida',
+  rejeitada: 'Rejeitada',
+};
+async function _reqExportarRC() {
+  const btn = document.getElementById('reqBtnExportar');
+  if (btn && btn.disabled) return; // impede cliques simultâneos
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.style.opacity = '.6'; btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="font-size:12px;"></i> Gerando…'; }
+  try {
+    const params = new URLSearchParams();
+    const q = (document.getElementById('reqSearch')?.value || '').trim();
+    const statusKey = document.getElementById('reqStatusSel')?.value || 'todas';
+    if (q) params.set('q', q);
+    if (_REQ_STATUS_EXPORT[statusKey]) params.set('status', _REQ_STATUS_EXPORT[statusKey]);
+    const token = sessionStorage.getItem('fa_token') || localStorage.getItem('fa_token') || '';
+    const resp = await fetch(`/api/rc/export.xlsx?${params}`, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!resp.ok) {
+      let msg = 'Falha na exportação';
+      try { msg = (await resp.json()).error || msg; } catch (e) {}
+      if (typeof showToast === 'function') showToast(msg, resp.status === 404 ? 'warning' : 'error');
+      return;
+    }
+    const nome = (resp.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1]
+      || `processos_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = nome;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    if (typeof showToast === 'function') showToast('Exportação concluída: ' + nome, 'success');
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Erro na exportação: ' + ((e && e.message) || 'rede'), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = original; }
+  }
 }
 
 // ─── VER OS ──────────────────────────────────────────────────────────────────
@@ -1462,8 +1562,15 @@ function reqVerDetalheRC(rcId) {
 // ─── APROVAR RC (Gestor/Comprador aprova RC avulsa) ────────────────────────────
 function reqAprovarRC(rcId) {
   const rcs = _reqGetRC();
-  const r = rcs.find(x => x.id === rcId);
+  const r = rcs.find(x => String(x.id) === String(rcId));
   if (!r) { showToast('RC não encontrada.', 'error'); return; }
+  // RC do servidor: aprovação vai pelo endpoint real (auditada, multi-tenant).
+  if (r.origem === 'api') {
+    if (!['Rascunho', 'Pendente'].includes(r.status)) { showToast(`RC já está com status: ${r.status}`, 'info', 3000); return; }
+    if (typeof aprovarRequisicao !== 'function') { showToast('Ação de aprovação não carregada.', 'error'); return; }
+    aprovarRequisicao(r.id).then(ok => { if (ok) renderRequisicoes(); });
+    return;
+  }
   if (r.status !== 'Aguardando Aprovação') {
     showToast(`RC já está com status: ${r.status}`, 'info', 3000);
     return;
@@ -1638,7 +1745,7 @@ function calcTotalReq() {
   if (el) el.textContent = fmt(total);
 }
 
-function salvarNovaRequisicao() {
+async function salvarNovaRequisicao() {
   const titulo = document.getElementById('nr_titulo').value.trim();
   const prazo = document.getElementById('nr_prazo').value;
   const erroEl = document.getElementById('nr_erro');
@@ -1662,6 +1769,18 @@ function salvarNovaRequisicao() {
     }
   });
   if (!itens.length) { erroEl.textContent = 'Adicione pelo menos um item.'; erroEl.style.display = 'block'; return; }
+
+  // Fonte de verdade: cria no servidor; sem servidor cai no fluxo local (demo).
+  const _obsApi = titulo + ((document.getElementById('nr_obs')?.value || '').trim() ? ' — ' + document.getElementById('nr_obs').value.trim() : '');
+  const viaApi = await _reqCriarRCViaAPI({ tipo, wbs, observacoes: _obsApi, departamento: document.getElementById('nr_depto')?.value?.trim(), prioridade: 'Normal', itens });
+  if (viaApi && viaApi.erro) return; // servidor rejeitou por validação
+  if (viaApi) {
+    logAction('Nova Requisição', 'Suprimentos', `Requisição criada no servidor: ${viaApi.numero} – ${titulo}`);
+    closeModal();
+    showToast(`Requisição ${viaApi.numero} criada no servidor!`, 'success');
+    renderRequisicoes();
+    return;
+  }
 
   const total = itens.reduce((a, i) => a + i.total, 0);
   const lista = _getRequisicoes();
@@ -2663,6 +2782,10 @@ function exportarContratosFor() {
 window.renderRequisicoes      = renderRequisicoes;
 window._reqSwitchTab          = _reqSwitchTab;
 window._reqFiltrarStatus      = _reqFiltrarStatus;
+window._reqAdaptarRC          = _reqAdaptarRC;
+window._reqGetRC              = _reqGetRC;
+window._reqSaveRC             = _reqSaveRC;
+window._reqCarregarRCsAPI     = _reqCarregarRCsAPI;
 window._reqFiltrarTexto       = _reqFiltrarTexto;
 window._reqFiltrarOS          = _reqFiltrarOS;
 window._reqFiltrarOsPanel     = _reqFiltrarOsPanel;

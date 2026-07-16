@@ -131,6 +131,75 @@ function montarFluxoCaixa(contas = [], { semanas = 8, hoje } = {}){
   return { semanas: buckets, por_contrato, resumo: { planejado_total: _r2(planTot), realizado_total: _r2(realTot), desvio_total: _r2(realTot - planTot) } };
 }
 
+// IDF — Índice de Desempenho do Fornecedor (OTD + avaliações). Pura (espelha lib/idf.js).
+const _r1 = n => Math.round(n * 10) / 10;
+function calcularIDF({ pedidos = [], avaliacoes = [] } = {}){
+  let onTime = 0, considerados = 0;
+  for (const p of pedidos){
+    const entrega = String(p.entregue_em || p.data_entrega || '').slice(0, 10);
+    if (!entrega) continue;
+    const base = String(p.enviado_em || p.emitido_em || '').slice(0, 10);
+    const prazo = Number(p.prazo_entrega);
+    if (!base || !prazo) continue;
+    considerados++;
+    if (entrega <= _addDias(base, prazo)) onTime++;
+  }
+  const otd = considerados ? (onTime / considerados) * 100 : null;
+  const notas = avaliacoes.map(a => Number(a.nota_media ?? a.media ?? a.nota) || 0).filter(n => n > 0);
+  const avalMedia = notas.length ? notas.reduce((s, n) => s + n, 0) / notas.length : null;
+  const avalScore = avalMedia != null ? (avalMedia / 5) * 100 : null;
+  let score = null; const componentes = [];
+  if (otd != null) componentes.push({ nome: 'OTD (entrega no prazo)', valor: _r1(otd), peso: avalScore != null ? 0.6 : 1 });
+  if (avalScore != null) componentes.push({ nome: 'Avaliações', valor: _r1(avalScore), peso: otd != null ? 0.4 : 1 });
+  if (otd != null && avalScore != null) score = 0.6 * otd + 0.4 * avalScore;
+  else if (otd != null) score = otd;
+  else if (avalScore != null) score = avalScore;
+  let classificacao = 'Sem dados';
+  if (score != null) classificacao = score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D';
+  return { score: score != null ? _r1(score) : null, classificacao, otd_pct: otd != null ? _r1(otd) : null, entregas_consideradas: considerados, avaliacao_media: avalMedia != null ? _r1(avalMedia) : null, avaliacoes_qtd: notas.length, componentes };
+}
+
+// Serviço só paga com aceite do requisitante. Pura (espelha o Express).
+function exigeAceiteServico(pedido, temAceite){
+  const tipo = String((pedido && pedido.tipo_compra) || 'material').toLowerCase();
+  const ehServico = tipo === 'servico' || tipo === 'serviço' || tipo === 'serviço externo' || tipo === 'servico externo';
+  return ehServico && !temAceite;
+}
+// CRM → Orçamentação: "passou de Qualificação" = Qualificação..Negociação. Pura (espelha o Express).
+const CRM_ETAPAS_ORDEM = ['Prospecção','Qualificação','Reunião Agendada','Proposta Enviada','Negociação','Fechado Ganho','Fechado Perdido'];
+function precisaOrcamentacao(estagio){ const i = CRM_ETAPAS_ORDEM.indexOf(estagio); return i >= 1 && i <= 4; }
+// Comercial só gera proposta com estimativa de custos vinculada. Pura (espelha o Express).
+function podeGerarProposta(lead, temEstimativa){
+  if (!lead) return { ok: false, motivo: 'lead/oportunidade nao encontrado' };
+  if (!temEstimativa) return { ok: false, motivo: 'lead sem estimativa de custos (WBS) - orcamentacao pendente' };
+  return { ok: true };
+}
+// Rollup de custos WBS por contrato (estimado × realizado). Pura (espelha lib/wbs_rollup.js).
+function montarRollupWBS(linhas = []){
+  const _r2 = n => Math.round(n * 100) / 100, _r1 = n => Math.round(n * 10) / 10;
+  const map = {}; let estTot = 0, realTot = 0;
+  for (const l of linhas){
+    if ((l.ativo ?? 1) === 0) continue;
+    const chave = String(l.contrato_id ?? l.centro_custo ?? 'Sem contrato');
+    if (!map[chave]) map[chave] = { chave, estimado: 0, realizado: 0, linhas: 0 };
+    const est = Number(l.valor_total_est) || 0, real = Number(l.custo_real) || 0;
+    map[chave].estimado += est; map[chave].realizado += real; map[chave].linhas++;
+    estTot += est; realTot += real;
+  }
+  const grupos = Object.values(map).map(g => ({ chave: g.chave, estimado: _r2(g.estimado), realizado: _r2(g.realizado), desvio: _r2(g.realizado - g.estimado), pct: g.estimado ? _r1((g.realizado / g.estimado) * 100) : 0, linhas: g.linhas }))
+    .sort((a, b) => Math.abs(b.desvio) - Math.abs(a.desvio));
+  return { grupos, total: { estimado: _r2(estTot), realizado: _r2(realTot), desvio: _r2(realTot - estTot), linhas: linhas.length } };
+}
+// WBS: uma linha pertence a um contrato quando o contrato_id bate. Pura (espelha o Express).
+function wbsPertenceAoContrato(linha, contratoId){
+  return !!linha && String(linha.contrato_id ?? '') === String(contratoId ?? '');
+}
+// Fornecedor homologado = aprovado por Financeiro E Compliance. Pura (espelha o Express).
+function fornecedorHomologado(f){
+  if (!f) return false;
+  if (f.status === 'Homologado') return true;
+  return !!(String(f.aprovado_financeiro_por || '').trim() && String(f.aprovado_compliance_por || '').trim());
+}
 // Dupla aprovação bancária: detecta alteração de banco/agência/conta. Pura (espelha o Express).
 function alteracaoBancariaSolicitada(atual, b){
   const mudou = {};
@@ -303,8 +372,37 @@ const TABLES = {
   'contas-pagar':'contas_pagar',
   // Absorvidos do Express legado (consolidação onto D1):
   contratos:'contratos', crm:'crm', projetos:'projetos', ssma:'ssma', almoxarifado:'almoxarifado', recebimentos:'recebimentos',
+  // Recursos do front de almoxarifado (persistem o objeto do front):
+  materiais:'materiais', 'movimentos-estoque':'movimentos_estoque', emprestimos:'emprestimos', inventarios:'inventarios',
 };
 const sanitizeKey = (k) => String(k).replace(/[^a-zA-Z0-9_]/g,'');
+
+// Política de senha forte (mín. 8, maiúscula, minúscula e dígito).
+// Pura (paridade com o Express).
+function validarSenhaForte(senha){
+  const s = String(senha || '');
+  if (s.length < 8) return { ok:false, motivo:'Senha deve ter no mínimo 8 caracteres' };
+  if (!/[A-Z]/.test(s)) return { ok:false, motivo:'Senha deve conter letra maiúscula' };
+  if (!/[a-z]/.test(s)) return { ok:false, motivo:'Senha deve conter letra minúscula' };
+  if (!/[0-9]/.test(s)) return { ok:false, motivo:'Senha deve conter número' };
+  return { ok:true };
+}
+
+// ===== Multi-tenant (paridade com o Express) =====
+// O escopo vem SEMPRE do JWT do usuário autenticado (nunca do corpo/query).
+// Docs legados sem empresa_id pertencem à empresa 1 (tenant mestre).
+function empresaDoUsuario(user){ return Number(user && user.empresa_id) || 1; }
+function docPertenceEmpresa(doc, empresaId){
+  if (!doc) return false;
+  return (Number(doc.empresa_id) || 1) === (Number(empresaId) || 1);
+}
+// Busca um doc JA verificando o dono (tenant): null p/ doc de outra empresa —
+// usado pelas rotas ESPECIALIZADAS (aprovacoes, gate, emissao), que antes
+// operavam em qualquer doc por id, furando o isolamento do CRUD generico.
+async function getDocDoTenant(env, table, id, user){
+  const d = await getDoc(env, table, id);
+  return (d && docPertenceEmpresa(d, empresaDoUsuario(user))) ? d : null;
+}
 
 async function listDocs(env, table, url){
   let sql = `SELECT payload FROM ${table}`;
@@ -407,10 +505,19 @@ async function itensRecebidosAcumulados(env, pedidoId){
 }
 async function pagarConta(env, id, user){
   requireRole(user, ['financeiro','admin']);            // segregacao de funcoes
-  const conta = await getDoc(env, 'contas_pagar', id);
+  const conta = await getDocDoTenant(env, 'contas_pagar', id, user);
   if (!conta) return E('conta nao encontrada', 404);
 
   const g = gateContaPagar(conta, env);
+  // Serviço: paga com ACEITE do requisitante (não recebimento físico/3-way).
+  const pcId = conta.pedido_id || conta.pc_id;
+  if (pcId){
+    const ped = await getDoc(env, 'pedidos', pcId);
+    const aceites = await listDocs(env, 'aceites_servico', { searchParams: new URLSearchParams() });
+    const temAceite = aceites.some(a => String(a.pedido_id ?? '') === String(pcId) && (a.aceito === 1 || a.aceito === true));
+    if (exigeAceiteServico(ped, temAceite)) g.motivos.push('servico sem aceite do requisitante (checklist de recebimento)');
+    g.ok = g.motivos.length === 0;
+  }
   if (!g.ok){
     await audit(env, user.sub, 'payment_blocked', 'contas_pagar', id, { motivos: g.motivos });
     return E('Pagamento bloqueado: ' + g.motivos.join('; '), 409);
@@ -485,7 +592,7 @@ const sodOn = (env) => (env.ENFORCE_SOD ?? '1') !== '0';
 // --- RC: aprovar estágio atual ---
 async function aprovarEstagioRC(env, id, user){
   const cfg = await getAprovConfig(env);
-  const rc = await getDoc(env, 'rc', id);
+  const rc = await getDocDoTenant(env, 'rc', id, user);
   if (!rc) return E('RC não encontrada', 404);
   if (rc.status === ST_RC_REJEITADA) return E('RC já rejeitada', 409);
   if (rc.status === ST_RC_COMPRADOR || rc.status === ST_RC_ACEITA) return E('RC já aprovada em todos os estágios', 409);
@@ -506,7 +613,7 @@ async function aprovarEstagioRC(env, id, user){
 }
 async function reprovarRCserver(env, id, user, motivo){
   const cfg = await getAprovConfig(env);
-  const rc = await getDoc(env, 'rc', id);
+  const rc = await getDocDoTenant(env, 'rc', id, user);
   if (!rc) return E('RC não encontrada', 404);
   const atual = rc.estagio_atual || 1;
   if (!papelPodeNoEstagio(cfg['estagio'+atual], user)) return E('Seu perfil não pode reprovar este estágio', 403);
@@ -516,7 +623,7 @@ async function reprovarRCserver(env, id, user, motivo){
 }
 async function aceitarCompradorRC(env, id, user){
   const cfg = await getAprovConfig(env);
-  const rc = await getDoc(env, 'rc', id);
+  const rc = await getDocDoTenant(env, 'rc', id, user);
   if (!rc) return E('RC não encontrada', 404);
   if (rc.status !== ST_RC_COMPRADOR) return E('RC não está aguardando o comprador', 409);
   if (!papelPodeNoEstagio(cfg.comprador, user)) return E('Seu perfil não é Comprador', 403);
@@ -528,7 +635,7 @@ async function aceitarCompradorRC(env, id, user){
 // --- MAPA: aprovar estágio atual (2 estágios) ---
 async function aprovarEstagioMapa(env, id, user){
   const cfg = await getAprovConfig(env);
-  const m = await getDoc(env, 'mapas', id);
+  const m = await getDocDoTenant(env, 'mapas', id, user);
   if (!m) return E('Mapa não encontrado', 404);
   if (m.status === ST_MAPA_REPROV) return E('Mapa já reprovado', 409);
   if (m.status === ST_MAPA_APROVADO || m.status === ST_MAPA_PC) return E('Mapa já aprovado', 409);
@@ -549,7 +656,7 @@ async function aprovarEstagioMapa(env, id, user){
 }
 async function reprovarMapaServer(env, id, user, motivo){
   const cfg = await getAprovConfig(env);
-  const m = await getDoc(env, 'mapas', id);
+  const m = await getDocDoTenant(env, 'mapas', id, user);
   if (!m) return E('Mapa não encontrado', 404);
   const atual = m.estagio_atual || 1;
   if (!papelPodeNoEstagio(cfg['mapa_estagio'+atual], user)) return E('Seu perfil não pode reprovar este mapa', 403);
@@ -568,7 +675,7 @@ function _anonimizarCampo(valor, tipo){
 }
 async function anonimizarFornecedor(env, id, user){
   requireRole(user, ['admin']);
-  const f = await getDoc(env, 'fornecedores', id);
+  const f = await getDocDoTenant(env, 'fornecedores', id, user);
   if (!f) return E('Fornecedor não encontrado', 404);
   const patch = {
     contato_nome: _anonimizarCampo(f.contato_nome || f.contato, 'nome'),
@@ -582,7 +689,7 @@ async function anonimizarFornecedor(env, id, user){
 }
 
 // LGPD retenção: fornecedores inativos, além da retenção e não anonimizados.
-async function _fornecedoresVencidosRetencao(env){
+async function _fornecedoresVencidosRetencao(env, empresa = 1){
   const meses = parseInt(env.RETENCAO_FORNECEDOR_MESES) || 60;
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - meses);
   const cut = cutoff.toISOString().slice(0, 19).replace('T', ' ');
@@ -590,18 +697,19 @@ async function _fornecedoresVencidosRetencao(env){
   const out = [];
   for (const row of (rs.results || [])){
     let p; try { p = JSON.parse(row.payload); } catch(e){ continue; }
+    if (!docPertenceEmpresa(p, empresa)) continue; // retencao POR TENANT
     if ((p.ativo === 0 || p.ativo === '0') && !p.anonimizado) out.push({ id: row.id, nome: p.nome, created_at: row.created_at });
   }
   return { meses, vencidos: out };
 }
 async function retencaoPreviewFornecedores(env, user){
   requireRole(user, ['admin']);
-  const r = await _fornecedoresVencidosRetencao(env);
+  const r = await _fornecedoresVencidosRetencao(env, empresaDoUsuario(user));
   return J({ politica_meses: r.meses, total: r.vencidos.length, fornecedores: r.vencidos });
 }
 async function retencaoExecutarFornecedores(env, user){
   requireRole(user, ['admin']);
-  const r = await _fornecedoresVencidosRetencao(env);
+  const r = await _fornecedoresVencidosRetencao(env, empresaDoUsuario(user));
   let n = 0;
   for (const v of r.vencidos){
     const f = await getDoc(env, 'fornecedores', v.id);
@@ -619,14 +727,13 @@ async function retencaoExecutarFornecedores(env, user){
 }
 
 // Consulta a bureau de crédito (provedor por env; mock determinístico padrão).
-function consultarCreditoBureau(cnpjRaw, provider){
+// Bureau mock determinístico (mesma fórmula da lib/credit_bureau.js do Express).
+function bureauMock(cnpjRaw){
   const cnpj = String(cnpjRaw||'').replace(/\D/g,'');
-  if (cnpj.length !== 14) return E('CNPJ inválido (14 dígitos)', 400);
-  const prov = String(provider||'mock').toLowerCase();
-  if (prov !== 'mock') return E('Provedor de bureau não configurado: ' + prov, 400);
+  if (cnpj.length !== 14) return null;
   let h = 0; for (const ch of cnpj) h = (h*31 + (ch.charCodeAt(0)-48)) % 1000003;
   const score = 300 + (h % 700);
-  return J({
+  return {
     cnpj, fonte:'mock',
     situacao: (h % 13 === 0) ? 'INAPTA' : 'ATIVA',
     score_externo: score,
@@ -634,7 +741,38 @@ function consultarCreditoBureau(cnpjRaw, provider){
     pendencias: (h % 7 === 0) ? (1 + (h % 3)) : 0,
     protestos: (h % 11 === 0) ? 1 : 0,
     faturamento_estimado: 120000 * (1 + (h % 60)),
-  });
+  };
+}
+function consultarCreditoBureau(cnpjRaw, provider){
+  const prov = String(provider||'mock').toLowerCase();
+  if (prov !== 'mock') return E('Provedor de bureau não configurado: ' + prov, 400);
+  const d = bureauMock(cnpjRaw);
+  return d ? J(d) : E('CNPJ inválido (14 dígitos)', 400);
+}
+
+// Parecer financeiro prévio (espelha lib/analise_financeira.js do Express). Pura.
+function analisarFinanceiro({ bureau = {}, receita = {} } = {}){
+  const fatores = [];
+  let score = Number(bureau.score_0_100);
+  if (!isFinite(score)) score = 50;
+  fatores.push({ fator: 'Score de crédito (bureau)', impacto: 0, detalhe: `${bureau.score_externo ?? '—'} (${isFinite(Number(bureau.score_0_100)) ? bureau.score_0_100 : '—'}/100)` });
+  const pend = Number(bureau.pendencias) || 0;
+  if (pend > 0){ const p = Math.min(pend * 8, 30); score -= p; fatores.push({ fator: 'Pendências financeiras', impacto: -p, detalhe: `${pend} pendência(s)` }); }
+  const prot = Number(bureau.protestos) || 0;
+  if (prot > 0){ const p = Math.min(prot * 12, 30); score -= p; fatores.push({ fator: 'Protestos', impacto: -p, detalhe: `${prot} protesto(s)` }); }
+  const sit = receita.situacao_cadastral || bureau.situacao || 'ATIVA';
+  const regular = receita.regular !== undefined ? !!receita.regular : (sit === 'ATIVA');
+  let recusaCadastral = false;
+  if (!regular){ score -= 40; recusaCadastral = true; fatores.push({ fator: 'Situação cadastral', impacto: -40, detalhe: sit }); }
+  else fatores.push({ fator: 'Situação cadastral', impacto: 0, detalhe: sit });
+  const fat = Number(bureau.faturamento_estimado) || 0;
+  if (fat >= 1000000){ score += 5; fatores.push({ fator: 'Faturamento estimado', impacto: +5, detalhe: `R$ ${Math.round(fat).toLocaleString('pt-BR')}` }); }
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  let nivel, recomendacao;
+  if (recusaCadastral || score < 40){ nivel = 'Alto'; recomendacao = 'Recusar'; }
+  else if (score < 65){ nivel = 'Médio'; recomendacao = 'Aprovar com ressalvas'; }
+  else { nivel = 'Baixo'; recomendacao = 'Aprovar'; }
+  return { score, nivel, recomendacao, fatores, situacao_cadastral: sit, regular, score_bureau: bureau.score_externo ?? null, pendencias: pend, protestos: prot, faturamento_estimado: fat };
 }
 
 // Situação cadastral (Receita/SEFAZ) — mock determinístico (mesma distribuição
@@ -646,6 +784,100 @@ function situacaoReceitaMock(cnpjRaw){
   let h = 0; for (const ch of cnpj) h = (h*31 + (ch.charCodeAt(0)-48)) % 1000003;
   const situacao_cadastral = _RECEITA_SITU[h % _RECEITA_SITU.length];
   return { cnpj, fonte:'mock', situacao_cadastral, regular: situacao_cadastral === 'ATIVA' };
+}
+
+// Cadastro completo por CNPJ (estilo Omie) — mock determinístico, mesmo
+// resultado da lib/receita.js do Express (preenche o formulário sem CORS).
+const _UFS = ['SP','RJ','MG','PR','RS','SC','BA','PE','CE','GO','ES','DF'];
+const _CIDADES = { SP:'São Paulo', RJ:'Rio de Janeiro', MG:'Belo Horizonte', PR:'Curitiba', RS:'Porto Alegre', SC:'Joinville', BA:'Salvador', PE:'Recife', CE:'Fortaleza', GO:'Goiânia', ES:'Serra', DF:'Brasília' };
+const _BAIRROS = ['Centro','Distrito Industrial','Jardim América','Vila Nova','Boa Vista','São José','Santa Mônica','Industrial'];
+const _LOGRAD = ['Rua das Indústrias','Av. Brasil','Av. das Nações','Rua XV de Novembro','Av. Industrial','Rua do Comércio','Rod. BR-101'];
+const _ATIV = ['Comércio atacadista de materiais de construção','Transporte rodoviário de carga','Fabricação de peças e acessórios','Manutenção e reparação de máquinas','Comércio varejista de equipamentos','Serviços de engenharia','Locação de máquinas e equipamentos','Comércio de produtos químicos'];
+const _PORTES = ['ME','EPP','Demais','MEI'];
+const _NATUREZAS = ['Sociedade Empresária Limitada','Empresário (Individual)','Sociedade Anônima Fechada','EIRELI'];
+const _RAMOS = ['Metalúrgica','Comercial','Transportes','Engenharia','Industrial','Construtora','Distribuidora','Serviços'];
+const _MARCAS = ['Aliança','Horizonte','Progresso','União','Pioneira','Atlas','Vértice','Primus'];
+const _SUFIXOS = ['LTDA','S.A.','ME','EIRELI'];
+const _pick = (arr, h) => arr[h % arr.length];
+function cadastroCNPJMock(cnpjRaw){
+  const cnpj = String(cnpjRaw||'').replace(/\D/g,'');
+  if (cnpj.length !== 14) return null;
+  let h = 0; for (const ch of cnpj) h = (h*31 + (ch.charCodeAt(0)-48)) % 1000003;
+  const ramo = _pick(_RAMOS, h), marca = _pick(_MARCAS, Math.floor(h/7)), sufixo = _pick(_SUFIXOS, Math.floor(h/13));
+  const uf = _pick(_UFS, Math.floor(h/3));
+  const ano = 1990 + (h % 33), mes = String(1 + (h % 12)).padStart(2,'0'), dia = String(1 + (h % 27)).padStart(2,'0');
+  const ddd = 11 + (h % 80);
+  const sit = _RECEITA_SITU[h % _RECEITA_SITU.length];
+  return {
+    cnpj, cnpj_fmt: `${cnpj.slice(0,2)}.${cnpj.slice(2,5)}.${cnpj.slice(5,8)}/${cnpj.slice(8,12)}-${cnpj.slice(12,14)}`,
+    razao: `${ramo} ${marca} ${sufixo}`, fantasia: `${marca} ${ramo}`,
+    situacao: sit, regular: sit === 'ATIVA',
+    logradouro: _pick(_LOGRAD, Math.floor(h/5)), numero: String(50 + (h % 1950)), bairro: _pick(_BAIRROS, Math.floor(h/11)),
+    cidade: _CIDADES[uf], uf, cep: `${String(10000 + (h % 89999)).slice(0,5)}-${String(100 + (h % 899)).slice(0,3)}`,
+    email: `contato@${marca.toLowerCase()}${(h % 90) + 10}.com.br`,
+    telefone: `(${ddd}) ${String(90000 + (h % 9999)).slice(0,5)}-${String(1000 + (h % 8999)).slice(0,4)}`,
+    porte: _pick(_PORTES, Math.floor(h/17)), atividade: _pick(_ATIV, Math.floor(h/19)),
+    abertura: `${ano}-${mes}-${dia}`, capital: 50000 * (1 + (h % 200)), natureza: _pick(_NATUREZAS, Math.floor(h/23)),
+    fonte: 'mock', ok: true,
+  };
+}
+
+// ── Notificações + e-mail (espelha lib/email.js + escopo do Express) ──
+const _emailValido = e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(e || '').trim());
+async function enviarEmail({ to, assunto, corpo } = {}, opts = {}){
+  const provider = (opts.provider || 'mock').toLowerCase();
+  if (!_emailValido(to)) return { status:'erro', to, provider, motivo:'destinatário inválido' };
+  if (!assunto) return { status:'erro', to, provider, motivo:'assunto obrigatório' };
+  if (provider === 'mock') return { status:'simulado', to, assunto, provider, corpo_len: String(corpo || '').length };
+  throw new Error('Provedor de e-mail não configurado: ' + provider);
+}
+// Uma notificação está no escopo do usuário se: é dele, do seu perfil, ou global.
+function notificacaoNoEscopo(n, user){
+  if (!n || !user) return false;
+  if (n.usuario_id != null && n.usuario_id !== '' && String(n.usuario_id) === String(user.sub)) return true;
+  if (n.perfil && n.perfil === user.role) return true;
+  if ((n.usuario_id == null || n.usuario_id === '') && !n.perfil) return true;
+  return false;
+}
+async function notificarWorker(env, { usuario_id = null, perfil = null, titulo, mensagem = '', tipo = 'info', ref_tipo = null, ref_id = null, empresa = 1 } = {}){
+  if (!titulo) return;
+  await createDoc(env, 'notificacoes', { usuario_id, perfil, titulo, mensagem, tipo, ref_tipo, ref_id, lida: 0, empresa_id: Number(empresa) || 1, created_at: new Date().toISOString() });
+}
+
+// ── Emissão fiscal NF-e/NFS-e/CT-e (mock determinístico, espelha lib/nfe.js) ──
+const _NFE_TIPOS = { nfe:'NF-e', nfse:'NFS-e', cte:'CT-e' };
+const _nfeDigits = s => String(s||'').replace(/\D/g,'');
+function _nfeValidar(tipo, d){
+  const erros = [];
+  if (!_NFE_TIPOS[tipo]) erros.push('tipo inválido (nfe|nfse|cte)');
+  if (_nfeDigits(d.cnpj_emitente).length !== 14) erros.push('CNPJ do emitente inválido');
+  if (_nfeDigits(d.cnpj_destinatario).length !== 14 && _nfeDigits(d.cpf_destinatario).length !== 11) erros.push('documento do destinatário inválido');
+  if (!(Number(d.valor) > 0)) erros.push('valor deve ser maior que zero');
+  if (!d.descricao && !(Array.isArray(d.itens) && d.itens.length)) erros.push('informe itens ou descrição');
+  return erros;
+}
+function _nfeChave(d, numero){
+  const base = _nfeDigits(d.cnpj_emitente) + _nfeDigits(String(numero)) + _nfeDigits(String(Math.round(Number(d.valor) * 100)));
+  let seed = 0; for (const c of base) seed = (seed * 31 + c.charCodeAt(0)) % 1000000007;
+  return (String(seed) + base + '0'.repeat(44)).replace(/\D/g, '').slice(0, 44);
+}
+async function emitirNotaFiscal(dados = {}, opts = {}){
+  const tipo = String(dados.tipo || 'nfe').toLowerCase();
+  const erros = _nfeValidar(tipo, dados);
+  if (erros.length) return { status:'rejeitada', tipo, motivo: erros.join('; ') };
+  const provider = (opts.provider || 'mock').toLowerCase();
+  if (provider !== 'mock') throw new Error('Provedor de NF-e não configurado: ' + provider);
+  const numero = Number(dados.numero) || 1, serie = Number(dados.serie) || 1;
+  const chave = _nfeChave(dados, numero);
+  return { status:'autorizada', tipo, tipo_label:_NFE_TIPOS[tipo], numero, serie, chave, protocolo:'1'+chave.slice(0,14), danfe_url:`/danfe/${chave}.pdf`, valor:Number(dados.valor), fonte:'mock' };
+}
+function cancelarNotaFiscal(chave, justificativa, opts = {}){
+  const ch = _nfeDigits(chave);
+  if (ch.length !== 44) return { status:'erro', motivo:'chave inválida (44 dígitos)' };
+  if (String(justificativa || '').trim().length < 15) return { status:'rejeitada', motivo:'justificativa de cancelamento exige no mínimo 15 caracteres (regra SEFAZ)' };
+  const provider = (opts.provider || 'mock').toLowerCase();
+  if (provider !== 'mock') throw new Error('Provedor de NF-e não configurado: ' + provider);
+  return { status:'cancelada', chave: ch, protocolo:'2'+ch.slice(0,14) };
 }
 
 // Numeração atômica por tipo/ano (UPSERT + RETURNING numa instrução).
@@ -664,12 +896,13 @@ async function proximaSequencia(env, tipoRaw, anoRaw){
 
 async function emitirPCdoMapa(env, id, user){
   const cfg = await getAprovConfig(env);
-  const m = await getDoc(env, 'mapas', id);
+  const m = await getDocDoTenant(env, 'mapas', id, user);
   if (!m) return E('Mapa não encontrado', 404);
   if (m.status !== ST_MAPA_APROVADO) return E('Mapa não está aprovado para emissão de PC', 409);
   if (!papelPodeNoEstagio(cfg.emissor_pc, user)) return E('Seu perfil não pode emitir PC', 403);
   const pc = await createDoc(env, 'pedidos', {
     id: 'PED-' + new Date().getFullYear() + '-' + Date.now().toString().slice(-6),
+    empresa_id: empresaDoUsuario(user),
     origem_mapa: id, rc_id: m.rc_id || null,
     fornecedor: m.fornecedor_vencedor || m.fornecedor || null,   // ⚠️ confirmar campo
     valor: m.valor_vencedor || m.valor || null,                  // ⚠️ confirmar campo
@@ -690,6 +923,9 @@ let _userColsReady = false;
 async function ensureUserCols(env){
   if (_userColsReady) return;
   try { await env.DB.prepare('ALTER TABLE users ADD COLUMN fornecedor_id TEXT').run(); } catch(_){ /* já existe */ }
+  // Multi-tenant: sem esta coluna, TODO login caia no tenant 1 em bancos já
+  // implantados (o ALTER só rodava no provisionamento de usuários).
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN empresa_id TEXT DEFAULT '1'").run(); } catch(_){ /* já existe */ }
   _userColsReady = true;
 }
 async function ensureSeed(env){
@@ -749,17 +985,24 @@ export default {
           await audit(env, null, 'login_failed', 'users', email, {});
           return E('credenciais invalidas', 401);
         }
-        const token = await signJWT({ sub:u.id, role:u.role, name:u.name, email:u.email, fornecedor_id:u.fornecedor_id||null, scopes:JSON.parse(u.scopes||'[]'), exp: Math.floor(Date.now()/1000)+8*3600 }, getSecret(env));
+        const token = await signJWT({ sub:u.id, role:u.role, name:u.name, email:u.email, fornecedor_id:u.fornecedor_id||null, empresa_id: Number(u.empresa_id)||1, scopes:JSON.parse(u.scopes||'[]'), exp: Math.floor(Date.now()/1000)+8*3600 }, getSecret(env));
         await audit(env, u.id, 'login_ok', 'users', u.id, {});
         return J({ token, user:{ id:u.id, name:u.name, email:u.email, role:u.role } });
       }
-      if (seg[0]==='dashboard' && method==='GET'){
-        const cnt = async (t)=>{ try { const r=await env.DB.prepare(`SELECT COUNT(*) n FROM ${t}`).first(); return r?r.n:0; } catch { return 0; } };
-        return J({ ok:true, pedidos: await cnt('pedidos'), rc: await cnt('rc'), contas_pagar: await cnt('contas_pagar') });
-      }
+      // Health-check público e leve: só diz que a API está de pé, sem dados.
+      // (usado pelo front para detectar online/offline sem precisar de token)
+      if (seg[0]==='health' && method==='GET') return J({ ok:true });
 
       // ---- Daqui em diante exige token valido ----
       const user = await requireAuth(request, env);
+
+      // Dashboard exige auth e conta SÓ o tenant do usuário (antes era
+      // público e vazava contadores globais — paridade com o Express).
+      if (seg[0]==='dashboard' && method==='GET'){
+        const emp = empresaDoUsuario(user);
+        const cnt = async (t)=>{ try { const r=await env.DB.prepare(`SELECT COUNT(*) n FROM ${t} WHERE COALESCE(json_extract(payload,'$.empresa_id'),1) = ?`).bind(emp).first(); return r?r.n:0; } catch { return 0; } };
+        return J({ ok:true, pedidos: await cnt('pedidos'), rc: await cnt('rc'), contas_pagar: await cnt('contas_pagar') });
+      }
 
       if (seg[0]==='auth' && seg[1]==='me'){
         const u = await env.DB.prepare('SELECT id,name,email,role FROM users WHERE id=?').bind(user.sub).first();
@@ -773,14 +1016,49 @@ export default {
         const { nome, email, senha, perfil, fornecedor_id } = body;
         if (!nome || !email) return E('Nome e email obrigatorios', 400);
         if (perfil === 'fornecedor' && !fornecedor_id) return E('Usuario fornecedor exige fornecedor_id', 400);
+        // Política de senha forte quando informada (omitida → SEED_PASSWORD).
+        if (senha !== undefined){
+          const pol = validarSenhaForte(senha);
+          if (!pol.ok) return E(pol.motivo, 400);
+        }
+        // Multi-tenant: novo usuário herda a empresa do criador; só o tenant
+        // mestre (empresa 1) pode provisionar em outra empresa.
+        const criador = empresaDoUsuario(user);
+        const empresaId = (criador === 1 && body.empresa_id) ? Number(body.empresa_id) : criador;
+        // Migração preguiçosa e idempotente para bancos já implantados.
+        try { await env.DB.exec("ALTER TABLE users ADD COLUMN empresa_id TEXT DEFAULT '1'"); } catch(e){ /* já existe */ }
         const { hash, salt } = await hashPassword(String(senha || env.SEED_PASSWORD || genRandomPassword()));
         const id = 'u-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
         try {
-          await env.DB.prepare('INSERT INTO users (id,email,username,name,role,password_hash,salt,scopes,fornecedor_id,ativo) VALUES (?,?,?,?,?,?,?,?,?,1)')
-            .bind(id, String(email).toLowerCase().trim(), String(email).split('@')[0], nome, perfil||'operacao', hash, salt, '[]', fornecedor_id||null).run();
+          await env.DB.prepare('INSERT INTO users (id,email,username,name,role,password_hash,salt,scopes,fornecedor_id,ativo,empresa_id) VALUES (?,?,?,?,?,?,?,?,?,1,?)')
+            .bind(id, String(email).toLowerCase().trim(), String(email).split('@')[0], nome, perfil||'operacao', hash, salt, '[]', fornecedor_id||null, String(empresaId)).run();
         } catch(e){ return E('Email ja cadastrado', 400); }
-        await audit(env, user.sub, 'usuario_criar', 'users', id, { perfil: perfil||'operacao' });
-        return J({ id, nome, email, perfil: perfil||'operacao', fornecedor_id: fornecedor_id||null }, 201);
+        await audit(env, user.sub, 'usuario_criar', 'users', id, { perfil: perfil||'operacao', empresa_id: empresaId });
+        return J({ id, nome, email, perfil: perfil||'operacao', fornecedor_id: fornecedor_id||null, empresa_id: empresaId }, 201);
+      }
+
+      // ---- Empresas (tenants): mestre gerencia todas; demais veem a própria ----
+      if (seg[0]==='empresas'){
+        try { await env.DB.exec("CREATE TABLE IF NOT EXISTS empresas ( id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')) )"); } catch(e){ /* já existe */ }
+        const emp = empresaDoUsuario(user);
+        if (seg[1]==='atual' && method==='GET'){
+          const e0 = await getDoc(env, 'empresas', String(emp));
+          return J(e0 || { id: emp, razao_social: emp === 1 ? 'Empresa Padrão' : `Empresa ${emp}` });
+        }
+        if (!seg[1] && method==='GET'){
+          const todas = await listDocs(env, 'empresas', { searchParams: new URLSearchParams() });
+          return J(emp === 1 ? todas : todas.filter(e0 => (Number(e0.id)||0) === emp));
+        }
+        if (!seg[1] && method==='POST'){
+          requireRole(user, ['admin']);
+          if (emp !== 1) return E('Apenas o tenant mestre pode criar empresas', 403);
+          if (!body.razao_social || !String(body.razao_social).trim()) return E('Razão social obrigatória', 400);
+          const todas = await listDocs(env, 'empresas', { searchParams: new URLSearchParams() });
+          const novoId = String(Math.max(1, ...todas.map(e0 => Number(e0.id)||1)) + 1);
+          const nova = await createDoc(env, 'empresas', { id: novoId, razao_social: String(body.razao_social).trim(), nome_fantasia: body.nome_fantasia||null, cnpj: body.cnpj||null, plano: body.plano||'padrao', ativo: 1 });
+          await audit(env, user.sub, 'empresa_criar', 'empresas', novoId, {});
+          return J(nova, 201);
+        }
       }
 
       // ---- Portal do fornecedor (self-service, escopo isolado) ----
@@ -834,11 +1112,13 @@ export default {
         const dias = Math.max(1, Math.min(parseInt(url.searchParams.get('dias')) || 7, 90));
         const isAdmin = user.role === 'admin';
         const all = { searchParams: new URLSearchParams() };
-        const contas = await listDocs(env, 'contas_pagar', all);
-        const pedidos = await listDocs(env, 'pedidos', all);
-        const contratos = await listDocs(env, 'contratos', all);
+        const empA = empresaDoUsuario(user);
+        const soTenant = (arr) => arr.filter(d => docPertenceEmpresa(d, empA));
+        const contas = soTenant(await listDocs(env, 'contas_pagar', all));
+        const pedidos = soTenant(await listDocs(env, 'pedidos', all));
+        const contratos = soTenant(await listDocs(env, 'contratos', all));
         let vencidosLGPD = [], meses = 60;
-        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env); vencidosLGPD = r.vencidos; meses = r.meses; }
+        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env, empA); vencidosLGPD = r.vencidos; meses = r.meses; }
         const alertas = montarAlertasWorker({ contas, pedidos, contratos, vencidosLGPD, dias, isAdmin, meses });
         const resumo = { total: alertas.length, alta: 0, media: 0, baixa: 0 };
         for (const a of alertas) resumo[a.severidade] = (resumo[a.severidade] || 0) + 1;
@@ -851,15 +1131,17 @@ export default {
         const dias = Math.max(1, Math.min(parseInt(url.searchParams.get('dias')) || 30, 365));
         const isAdmin = user.role === 'admin';
         const all = { searchParams: new URLSearchParams() };
-        const contas = await listDocs(env, 'contas_pagar', all);
-        const pedidos = await listDocs(env, 'pedidos', all);
-        const fornecedores = await listDocs(env, 'fornecedores', all);
-        const contratos = await listDocs(env, 'contratos', all);
+        const empB = empresaDoUsuario(user);
+        const soTenantBI = (arr) => arr.filter(d => docPertenceEmpresa(d, empB));
+        const contas = soTenantBI(await listDocs(env, 'contas_pagar', all));
+        const pedidos = soTenantBI(await listDocs(env, 'pedidos', all));
+        const fornecedores = soTenantBI(await listDocs(env, 'fornecedores', all));
+        const contratos = soTenantBI(await listDocs(env, 'contratos', all));
         const cnt = async (acao) => { const r = await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action=?").bind(acao).first(); return r ? r.n : 0; };
         const bloqueios = await cnt('payment_blocked');
         const liberados = await cnt('payment_release');
         let vencidosLGPD = [], meses = 60;
-        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env); vencidosLGPD = r.vencidos; meses = r.meses; }
+        if (isAdmin){ const r = await _fornecedoresVencidosRetencao(env, empresaDoUsuario(user)); vencidosLGPD = r.vencidos; meses = r.meses; }
         return J(montarKPIsWorker({ contas, pedidos, fornecedores, contratos, bloqueios, liberados, vencidosLGPD, dias, isAdmin, meses }));
       }
 
@@ -951,18 +1233,30 @@ export default {
       if (seg[0]==='fluxo' && seg[2]==='reprovar' && method==='POST'){ requireRole(user,['admin','diretor','financeiro','supervisor']); const r=await updateDoc(env,'fluxo',seg[1],{ status:'Reprovado', motivo:body.motivo }); await audit(env,user.sub,'fluxo_reprovar','fluxo',seg[1],{}); return r?J({reprovado:true,_rec:r}):E('nao encontrado',404); }
       if (seg[0]==='rfq' && seg[2]==='cotacoes' && method==='POST'){ const cur=await getDoc(env,'rfq',seg[1]); if(!cur) return E('nao encontrado',404); cur.cotacoes=cur.cotacoes||[]; const cot={ id:'cot-'+Date.now(), ...body }; cur.cotacoes.push(cot); await updateDoc(env,'rfq',seg[1],{ cotacoes:cur.cotacoes }); await audit(env,user.sub,'rfq_cotacao','rfq',seg[1],{}); return J(cot); }
       // (handlers mapa estágio único removidos — substituídos pelas rotas multi-estágio abaixo)
-      if (seg[0]==='pedidos' && seg[2]==='envio' && method==='POST'){ const r=await updateDoc(env,'pedidos',seg[1],{ status: body.agendado?'Aguardando Envio':'Enviado ao Fornecedor', envio_canal:body.canal, envio_email:body.email }); await audit(env,user.sub,'pedido_envio','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
-      if (seg[0]==='pedidos' && seg[2]==='entrega' && method==='POST'){ const r=await updateDoc(env,'pedidos',seg[1],{ status: body.status||'Entregue', data_entrega:body.data_entrega }); await audit(env,user.sub,'pedido_entrega','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
-      if (seg[0]==='pedidos' && seg[2]==='cancelar' && method==='POST'){ const r=await updateDoc(env,'pedidos',seg[1],{ status:'Cancelado', motivo_cancelamento:body.motivo }); await audit(env,user.sub,'pedido_cancelar','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
-      if (seg[0]==='fornecedores' && seg[2]==='avaliacoes' && method==='POST'){ const cur=await getDoc(env,'fornecedores',seg[1]); if(!cur) return E('nao encontrado',404); cur.avaliacoes=cur.avaliacoes||[]; cur.avaliacoes.push({ id:'av-'+Date.now(), ...body }); await updateDoc(env,'fornecedores',seg[1],{ avaliacoes:cur.avaliacoes }); await audit(env,user.sub,'fornecedor_avaliar','fornecedores',seg[1],{}); return J({ ok:true }); }
+      if (seg[0]==='pedidos' && seg[2]==='envio' && method==='POST'){ if (!(await getDocDoTenant(env,'pedidos',seg[1],user))) return E('nao encontrado',404); const r=await updateDoc(env,'pedidos',seg[1],{ status: body.agendado?'Aguardando Envio':'Enviado ao Fornecedor', envio_canal:body.canal, envio_email:body.email }); await audit(env,user.sub,'pedido_envio','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
+      if (seg[0]==='pedidos' && seg[2]==='entrega' && method==='POST'){ if (!(await getDocDoTenant(env,'pedidos',seg[1],user))) return E('nao encontrado',404); const r=await updateDoc(env,'pedidos',seg[1],{ status: body.status||'Entregue', data_entrega:body.data_entrega }); await audit(env,user.sub,'pedido_entrega','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
+      if (seg[0]==='pedidos' && seg[2]==='cancelar' && method==='POST'){ if (!(await getDocDoTenant(env,'pedidos',seg[1],user))) return E('nao encontrado',404); const r=await updateDoc(env,'pedidos',seg[1],{ status:'Cancelado', motivo_cancelamento:body.motivo }); await audit(env,user.sub,'pedido_cancelar','pedidos',seg[1],{}); return r?J(r):E('nao encontrado',404); }
+      if (seg[0]==='fornecedores' && seg[2]==='avaliacoes' && method==='POST'){ const cur=await getDocDoTenant(env,'fornecedores',seg[1],user); if(!cur) return E('nao encontrado',404); cur.avaliacoes=cur.avaliacoes||[]; cur.avaliacoes.push({ id:'av-'+Date.now(), ...body }); await updateDoc(env,'fornecedores',seg[1],{ avaliacoes:cur.avaliacoes }); await audit(env,user.sub,'fornecedor_avaliar','fornecedores',seg[1],{}); return J({ ok:true }); }
 
-      // Sync generico (UPSERT por id — nao apaga itens que o cliente nao mandou)
+      // Sync generico (UPSERT por id/numero — nao apaga itens que o cliente nao
+      // mandou). Escopado por tenant: carimba a empresa do usuário em cada item.
       if (seg[1]==='sync' && method==='POST' && TABLES[seg[0]]){
         const table = TABLES[seg[0]];
+        const emp = empresaDoUsuario(user);
         const arr = Array.isArray(body.data) ? body.data : [];
-        for (const item of arr){ if (item && item.id) await createDoc(env, table, item); }
+        for (let i = 0; i < arr.length; i++){
+          const item = arr[i];
+          if (!item) continue;
+          const id = item.id ?? item.numero ?? `i-${i}`;
+          await createDoc(env, table, { ...item, id, empresa_id: emp });
+        }
         await audit(env, user.sub, 'sync', table, null, { count: arr.length });
         return J({ synced: arr.length });
+      }
+      // GET /api/<entidade>/sync — paridade com o Express: snapshot do tenant.
+      if (seg[1]==='sync' && method==='GET' && TABLES[seg[0]]){
+        const emp = empresaDoUsuario(user);
+        return J((await listDocs(env, TABLES[seg[0]], { searchParams: new URLSearchParams() })).filter(d => docPertenceEmpresa(d, emp)));
       }
 
       // RC — aprovação multi-estágio
@@ -988,6 +1282,220 @@ export default {
         return s ? J(s) : E('CNPJ invalido (14 digitos)', 400);
       }
 
+      // Recebimento — liga à conta a pagar do pedido e anexa a NF (B1, espelha o Express)
+      if (seg[0]==='recebimentos' && !seg[1] && method==='POST'){
+        const r = await createDoc(env, 'recebimentos', { ...body, empresa_id: empresaDoUsuario(user) });
+        let contas = [];
+        const pc = body.pc_id || body.pedido_id;
+        if (pc){
+          const all = await listDocs(env, 'contas_pagar', { searchParams: new URLSearchParams() });
+          contas = all.filter(c => String(c.pedido_id ?? c.pc_id ?? '') === String(pc));
+          if (body.nf_numero){
+            for (const c of contas){
+              if (!c.nota_fiscal || c.nota_fiscal === '' || c.nota_fiscal === '—'){
+                await updateDoc(env, 'contas_pagar', c.id, { nota_fiscal: body.nf_numero });
+                c.nota_fiscal = body.nf_numero;
+              }
+            }
+          }
+        }
+        await audit(env, user.sub, 'create', 'recebimentos', r.id, {});
+        return J({ ...r, contas_pagar: contas }, 201);
+      }
+
+      // Aceite de serviço (B2) — requisitante atesta a prestação
+      if (seg[0]==='aceites-servico' && method==='GET'){
+        const all = await listDocs(env, 'aceites_servico', { searchParams: new URLSearchParams() });
+        let rows = all;
+        for (const k of ['pedido_id', 'os_id']) if (url.searchParams.get(k)) rows = rows.filter(x => String(x[k] ?? '') === String(url.searchParams.get(k)));
+        return J(rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))));
+      }
+      if (seg[0]==='pedidos' && seg[2]==='aceite-servico' && method==='POST'){
+        const ped = await getDocDoTenant(env, 'pedidos', seg[1], user);
+        if (!ped) return E('Pedido nao encontrado', 404);
+        const checklist = Array.isArray(body.checklist) ? body.checklist : [];
+        if (!checklist.length) return E('Informe o checklist de recebimento do servico (especificacao tecnica)', 400);
+        const todosConformes = checklist.every(c => c && (c.conforme === true || c.conforme === 1));
+        if (body.aceitar !== false && !todosConformes) return E('Aceite bloqueado: ha itens nao conformes no checklist', 409);
+        const aceito = body.aceitar === false ? 0 : (todosConformes ? 1 : 0);
+        const r = await createDoc(env, 'aceites_servico', { empresa_id: empresaDoUsuario(user), pedido_id: seg[1], os_id: body.os_id ?? null, checklist, aceito, aceito_por: user.name, aceito_em: new Date().toISOString(), especificacao: body.especificacao ?? null, observacoes: body.observacoes ?? null });
+        await updateDoc(env, 'pedidos', seg[1], { tipo_compra: 'servico' });
+        await audit(env, user.sub, aceito ? 'aceite_servico' : 'aceite_servico_recusado', 'pedidos', seg[1], {});
+        return J(r, 201);
+      }
+
+      // CRM → Orçamentação (C1): leads pendentes + gatilho ao passar de Qualificação
+      if (seg[0]==='crm' && seg[1]==='orcamentacao' && method==='GET'){
+        const status = url.searchParams.get('status') || 'pendente';
+        const all = await listDocs(env, 'crm', { searchParams: new URLSearchParams() });
+        return J(all.filter(x => (x.orcamentacao_status || 'nao_iniciada') === status));
+      }
+      if (seg[0]==='crm' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
+        const cur = await getDoc(env, 'crm', seg[1]);
+        if (!cur) return E('Oportunidade nao encontrada', 404);
+        await updateDoc(env, 'crm', seg[1], { ...body });
+        if (precisaOrcamentacao(body.estagio) && (cur.orcamentacao_status || 'nao_iniciada') === 'nao_iniciada'){
+          await updateDoc(env, 'crm', seg[1], { orcamentacao_status: 'pendente', orcamentacao_em: new Date().toISOString() });
+          await notificarWorker(env, { perfil: 'orcamentista', titulo: 'Lead para precificar', mensagem: `Crie a estimativa de custos (WBS) do lead "${body.titulo || cur.titulo}".`, tipo: 'orcamentacao', ref_tipo: 'crm', ref_id: String(seg[1]), empresa: empresaDoUsuario(user) });
+        }
+        await audit(env, user.sub, 'update', 'crm', seg[1], {});
+        const fin = await getDoc(env, 'crm', seg[1]);
+        return fin ? J(fin) : E('nao encontrado', 404);
+      }
+
+      // Propostas comerciais (C2) — só com estimativa de custos (WBS) do lead
+      if (seg[0]==='propostas'){
+        if (method==='GET' && !seg[1]){
+          const all = await listDocs(env, 'propostas', { searchParams: new URLSearchParams() });
+          const lead = url.searchParams.get('lead_id');
+          return J(lead ? all.filter(p => String(p.lead_id) === String(lead)) : all);
+        }
+        if (method==='POST' && !seg[1]){
+          const b = body || {};
+          const lead = b.lead_id ? await getDocDoTenant(env, 'crm', b.lead_id, user) : null;
+          const wbs = await listDocs(env, 'wbs_linhas', { searchParams: new URLSearchParams() });
+          const linhas = wbs.filter(w => docPertenceEmpresa(w, empresaDoUsuario(user)) && String(w.lead_id ?? '') === String(b.lead_id) && (w.ativo ?? 1) !== 0);
+          const custo = linhas.reduce((s, w) => s + (Number(w.valor_total_est) || 0), 0);
+          const gate = podeGerarProposta(lead, linhas.length > 0);
+          if (!gate.ok) return E('Proposta bloqueada: ' + gate.motivo, 409);
+          const margem = Number(b.margem) || 0;
+          const valor_total = b.valor_total != null ? Number(b.valor_total) : custo * (1 + margem / 100);
+          const all = await listDocs(env, 'propostas', { searchParams: new URLSearchParams() });
+          const numero = `PROP-${new Date().getFullYear()}-${String(all.length + 1).padStart(3, '0')}`;
+          const r = await createDoc(env, 'propostas', { empresa_id: empresaDoUsuario(user), numero, lead_id: b.lead_id, cliente: b.cliente ?? (lead && lead.cliente), objeto: b.objeto ?? (lead && lead.titulo), custo_estimado: custo, margem, valor_total, status: 'Em Elaboração' });
+          await updateDoc(env, 'crm', b.lead_id, { orcamentacao_status: 'concluida' });
+          await audit(env, user.sub, 'proposta_criada', 'propostas', r.id, {});
+          return J(r, 201);
+        }
+      }
+
+      // WBS — linhas de custo (entidade) com vínculo a contrato/projeto/lead
+      if (seg[0]==='wbs'){
+        if (seg[1]==='rollup' && method==='GET'){
+          const all = await listDocs(env, 'wbs_linhas', { searchParams: new URLSearchParams() });
+          const cid = url.searchParams.get('contrato_id');
+          const linhas = (cid ? all.filter(l => String(l.contrato_id ?? '') === String(cid)) : all).filter(l => (l.ativo ?? 1) !== 0);
+          return J(montarRollupWBS(linhas));
+        }
+        if (method==='GET' && !seg[1]){
+          const all = await listDocs(env, 'wbs_linhas', { searchParams: new URLSearchParams() });
+          const q = url.searchParams;
+          let rows = all;
+          for (const k of ['contrato_id', 'projeto_id', 'lead_id']) if (q.get(k)) rows = rows.filter(x => String(x[k] ?? '') === String(q.get(k)));
+          const ativo = q.get('ativo');
+          if (ativo !== 'todos') rows = rows.filter(x => (x.ativo ?? 1) === (ativo === '0' ? 0 : 1));
+          rows.sort((a, b) => String(a.codigo || '').localeCompare(String(b.codigo || '')));
+          return J(rows);
+        }
+        if (method==='POST' && !seg[1]){
+          const b = body || {};
+          if (!b.descricao && !b.codigo) return E('Informe ao menos codigo ou descricao', 400);
+          const qtd = Number(b.quantidade) || 0, vUnit = Number(b.valor_unit_est) || 0;
+          const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit;
+          const r = await createDoc(env, 'wbs_linhas', { empresa_id: empresaDoUsuario(user), codigo: b.codigo ?? null, descricao: b.descricao ?? null, natureza: b.natureza ?? null, tipo: b.tipo || 'OPEX', contrato_id: b.contrato_id ?? null, projeto_id: b.projeto_id ?? null, centro_custo: b.centro_custo ?? null, lead_id: b.lead_id ?? null, origem: b.origem || 'contrato', unidade: b.unidade ?? null, quantidade: qtd, valor_unit_est: vUnit, valor_total_est: vTotal, custo_real: 0, nao_previsto: b.nao_previsto ? 1 : 0, ativo: 1 });
+          // C1: WBS de orçamentação vinculada a um lead → estimativa em andamento.
+          if (b.lead_id){
+            const lead = await getDoc(env, 'crm', b.lead_id);
+            if (lead && ['pendente', 'nao_iniciada'].includes(lead.orcamentacao_status || 'nao_iniciada')) await updateDoc(env, 'crm', b.lead_id, { orcamentacao_status: 'em_andamento' });
+          }
+          await audit(env, user.sub, 'create', 'wbs_linhas', r.id, {});
+          return J(r, 201);
+        }
+        if ((method==='PUT' || method==='PATCH') && seg[1]){
+          const cur = await getDoc(env, 'wbs_linhas', seg[1]);
+          if (!cur) return E('Linha WBS nao encontrada', 404);
+          const b = body || {}; const v = k => b[k] !== undefined ? b[k] : cur[k];
+          const qtd = Number(v('quantidade')) || 0, vUnit = Number(v('valor_unit_est')) || 0;
+          const vTotal = b.valor_total_est != null ? Number(b.valor_total_est) : qtd * vUnit;
+          const r = await updateDoc(env, 'wbs_linhas', seg[1], { codigo: v('codigo'), descricao: v('descricao'), natureza: v('natureza'), tipo: v('tipo'), contrato_id: v('contrato_id'), projeto_id: v('projeto_id'), centro_custo: v('centro_custo'), lead_id: v('lead_id'), origem: v('origem'), unidade: v('unidade'), quantidade: qtd, valor_unit_est: vUnit, valor_total_est: vTotal, custo_real: Number(v('custo_real')) || 0, nao_previsto: b.nao_previsto != null ? (b.nao_previsto ? 1 : 0) : cur.nao_previsto });
+          await audit(env, user.sub, 'update', 'wbs_linhas', seg[1], {});
+          return r ? J(r) : E('nao encontrado', 404);
+        }
+        if (method==='DELETE' && seg[1]){
+          const cur = await getDoc(env, 'wbs_linhas', seg[1]);
+          if (!cur) return E('Linha WBS nao encontrada', 404);
+          const r = await updateDoc(env, 'wbs_linhas', seg[1], { ativo: 0 });
+          await audit(env, user.sub, 'delete', 'wbs_linhas', seg[1], {});
+          return r ? J({ ok: true }) : E('nao encontrado', 404);
+        }
+      }
+
+      // Notificações (in-app) — escopo por usuário/perfil/global
+      if (seg[0]==='notificacoes'){
+        const all = { searchParams: new URLSearchParams() };
+        if (seg[1]==='contagem' && method==='GET'){
+          const docs = await listDocs(env, 'notificacoes', all);
+          return J({ nao_lidas: docs.filter(x => !x.lida && notificacaoNoEscopo(x, user)).length });
+        }
+        if (seg[1]==='ler-todas' && method==='POST'){
+          const docs = await listDocs(env, 'notificacoes', all);
+          for (const x of docs) if (!x.lida && notificacaoNoEscopo(x, user)) await updateDoc(env, 'notificacoes', x.id, { lida: 1 });
+          return J({ ok: true });
+        }
+        if (seg[2]==='lida' && method==='POST'){
+          const x = await getDoc(env, 'notificacoes', seg[1]);
+          if (!x || !notificacaoNoEscopo(x, user)) return E('Notificacao nao encontrada', 404);
+          const r = await updateDoc(env, 'notificacoes', seg[1], { lida: 1 });
+          return r ? J({ ok: true }) : E('nao encontrado', 404);
+        }
+        if (method==='POST' && !seg[1]){
+          requireRole(user, ['admin','diretor','financeiro','compliance']);
+          if (!body.titulo) return E('Titulo obrigatorio', 400);
+          await notificarWorker(env, { usuario_id: body.usuario_id || null, perfil: body.perfil || null, titulo: body.titulo, mensagem: body.mensagem || '', tipo: body.tipo || 'info', empresa: empresaDoUsuario(user) });
+          return J({ ok: true }, 201);
+        }
+        if (method==='GET' && !seg[1]){
+          const docs = await listDocs(env, 'notificacoes', all);
+          return J(docs.filter(x => notificacaoNoEscopo(x, user)).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 100));
+        }
+      }
+
+      // Fiscal — NF-e/NFS-e/CT-e
+      if (seg[0]==='nfe'){
+        if (method==='GET' && !seg[1]) return J(await listDocs(env, 'notas_fiscais', url));
+        if (method==='GET' && seg[1] && seg[1] !== 'emitir'){ const d = await getDoc(env, 'notas_fiscais', seg[1]); return d ? J(d) : E('Nota nao encontrada', 404); }
+        if (seg[1]==='emitir' && method==='POST'){
+          requireRole(user, ['admin','financeiro','fiscal']);
+          const serie = Number(body.serie) || 1;
+          const existentes = await listDocs(env, 'notas_fiscais', { searchParams: new URLSearchParams() });
+          const numero = Number(body.numero) || (existentes.filter(n => Number(n.serie) === serie).length + 1);
+          let r; try { r = await emitirNotaFiscal({ ...body, numero, serie }, { provider: env.NFE_PROVIDER }); } catch(e){ return E(e.message, 400); }
+          if (r.status !== 'autorizada') return E('Emissao rejeitada: ' + (r.motivo || 'dados invalidos'), 422);
+          const destinatario = body.cnpj_destinatario || body.cpf_destinatario || body.destinatario || '';
+          const doc = await createDoc(env, 'notas_fiscais', { ...r, empresa_id: empresaDoUsuario(user), cnpj_emitente: body.cnpj_emitente || '', destinatario, descricao: body.descricao || '', pedido_id: body.pedido_id || null, emitido_por: user.name });
+          await audit(env, user.sub, 'nfe_emitir', 'notas_fiscais', doc.id, { chave: r.chave });
+          return J(doc, 201);
+        }
+        if (seg[2]==='cancelar' && method==='POST'){
+          requireRole(user, ['admin','financeiro','fiscal']);
+          const n = await getDoc(env, 'notas_fiscais', seg[1]);
+          if (!n) return E('Nota nao encontrada', 404);
+          if (n.status === 'cancelada') return E('Nota ja cancelada', 409);
+          let r; try { r = cancelarNotaFiscal(n.chave, body && body.justificativa, { provider: env.NFE_PROVIDER }); } catch(e){ return E(e.message, 400); }
+          if (r.status !== 'cancelada') return E(r.motivo || 'cancelamento rejeitado', 400);
+          const upd = await updateDoc(env, 'notas_fiscais', seg[1], { status:'cancelada', justificativa_cancel: String(body.justificativa).trim() });
+          await audit(env, user.sub, 'nfe_cancelar', 'notas_fiscais', seg[1], {});
+          return upd ? J(upd) : E('nao encontrado', 404);
+        }
+      }
+
+      // Análise financeira prévia: POST /api/analise-financeira { cnpj }
+      if (seg[0]==='analise-financeira' && method==='POST'){
+        const bureau = bureauMock(body && body.cnpj);
+        if (!bureau) return E('CNPJ invalido (14 digitos)', 400);
+        const receita = situacaoReceitaMock(body && body.cnpj) || {};
+        const parecer = analisarFinanceiro({ bureau, receita });
+        return J({ ...parecer, bureau, receita });
+      }
+
+      // Cadastro completo por CNPJ (proxy server-side): GET /api/cnpj/:cnpj
+      if (seg[0]==='cnpj' && seg[1] && method==='GET'){
+        const prov = String(env.RECEITA_PROVIDER||'mock').toLowerCase();
+        if (prov !== 'mock') return E('Provedor de cadastro CNPJ nao configurado: ' + prov, 400);
+        const d = cadastroCNPJMock(seg[1]);
+        return d ? J(d) : E('CNPJ invalido (14 digitos)', 400);
+      }
+
       // Relatório de duplicatas: GET /api/duplicatas (fornecedor por CNPJ / NF)
       if (seg[0]==='duplicatas' && method==='GET'){
         const all = { searchParams: new URLSearchParams() };
@@ -1011,7 +1519,7 @@ export default {
         const tipo = normalizarTipoRC(body.tipo);
         if (!tipo) return E('Tipo da RC obrigatorio: Material, Servico ou Equipamento', 400);
         if (!body.wbs || !String(body.wbs).trim()) return E('Vinculo WBS obrigatorio na RC (rastreabilidade de custo)', 400);
-        const r = await createDoc(env, 'rc', { ...body, tipo, wbs: String(body.wbs).trim() });
+        const r = await createDoc(env, 'rc', { ...body, tipo, wbs: String(body.wbs).trim(), empresa_id: empresaDoUsuario(user) });
         await audit(env, user.sub, 'create', 'rc', r.id, {});
         return J(r);
       }
@@ -1026,13 +1534,48 @@ export default {
         return r ? J(r) : E('nao encontrado', 404);
       }
 
-      // OS — criação/edição com WBS obrigatória (compliance, espelha o Express)
+      // Centros de custo de overhead (OS administrativa). Lista fixa por env.
+      if (seg[0]==='overhead-centros' && method==='GET'){
+        return J((env.OVERHEAD_CENTROS || 'Administrativo,TI,RH,Comercial,Financeiro,SSMA,Diretoria,Manutenção Interna').split(',').map(s => s.trim()).filter(Boolean));
+      }
+      // OS — criação com WBS + amarração a Contrato/Overhead (A2, espelha o Express)
       if (seg[0]==='os' && !seg[1] && method==='POST'){
         if (!body.titulo) return E('Titulo obrigatorio', 400);
         if (!body.wbs || !String(body.wbs).trim()) return E('Vinculo WBS obrigatorio na OS (rastreabilidade de custo)', 400);
-        const r = await createDoc(env, 'os', { ...body, wbs: String(body.wbs).trim() });
+        const centros = (env.OVERHEAD_CENTROS || 'Administrativo,TI,RH,Comercial,Financeiro,SSMA,Diretoria,Manutenção Interna').split(',').map(s => s.trim());
+        const tiposRec = ['material', 'servico', 'locacao', 'mao_obra'];
+        if (!body.contrato_id && !body.centro_custo_overhead) return E('Informe o Contrato ou o centro de custo de overhead (OS administrativa)', 400);
+        if (body.centro_custo_overhead && !centros.includes(body.centro_custo_overhead)) return E('Centro de custo de overhead invalido', 400);
+        const tipo = body.tipo_recurso ? String(body.tipo_recurso).toLowerCase() : 'material';
+        if (!tiposRec.includes(tipo)) return E('Tipo de recurso invalido (material, servico, locacao, mao_obra)', 400);
+        if (body.wbs_linha_id){
+          const linha = await getDoc(env, 'wbs_linhas', body.wbs_linha_id);
+          if (!linha) return E('Linha WBS informada nao existe', 400);
+          if (body.contrato_id && !wbsPertenceAoContrato(linha, body.contrato_id)) return E('A linha WBS nao pertence ao contrato da OS', 409);
+        }
+        const r = await createDoc(env, 'os', { ...body, wbs: String(body.wbs).trim(), tipo_recurso: tipo, empresa_id: empresaDoUsuario(user) });
         await audit(env, user.sub, 'create', 'os', r.id, {});
         return J(r);
+      }
+      // OS — concluir e lançar custo realizado na linha WBS (espelha o Express)
+      if (seg[0]==='os' && seg[2]==='concluir' && method==='POST'){
+        const os = await getDoc(env, 'os', seg[1]);
+        if (!os) return E('OS nao encontrada', 404);
+        if (os.status === 'Concluída') return E('OS ja concluida', 409);
+        const custo = Number(body && body.custo_realizado) || 0;
+        await updateDoc(env, 'os', seg[1], { status: 'Concluída' });
+        let wbs_linha = null;
+        if (os.wbs_linha_id && custo > 0){
+          const linha = await getDoc(env, 'wbs_linhas', os.wbs_linha_id);
+          if (linha){
+            const novo = (Number(linha.custo_real) || 0) + custo;
+            await updateDoc(env, 'wbs_linhas', os.wbs_linha_id, { custo_real: novo });
+            wbs_linha = { id: linha.id, codigo: linha.codigo, descricao: linha.descricao, valor_total_est: linha.valor_total_est, custo_real: novo };
+          }
+        }
+        await audit(env, user.sub, 'os_concluir', 'os', seg[1], {});
+        const fin = await getDoc(env, 'os', seg[1]);
+        return J({ os: fin, wbs_linha });
       }
       if (seg[0]==='os' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
         const cur = await getDoc(env, 'os', seg[1]);
@@ -1067,7 +1610,7 @@ export default {
           valorMin: parseFloat(env.CONCORRENCIA_VALOR_MIN) || 10000, minCotacoes: parseInt(env.CONCORRENCIA_MIN_COTACOES) || 3,
         });
         if (!conc.ok){ await audit(env, user.sub, 'concorrencia_bloqueada', 'mapas', null, { motivo: conc.motivo }); return E(conc.motivo, 409); }
-        const r = await createDoc(env, 'mapas', { ...body, status: 'Em análise' });
+        const r = await createDoc(env, 'mapas', { ...body, status: 'Em análise', empresa_id: empresaDoUsuario(user) });
         if (conc.excecao) await audit(env, user.sub, 'concorrencia_excecao', 'mapas', r.id, { numCotacoes, justificativa: body.justificativa });
         await audit(env, user.sub, 'create', 'mapas', r.id, {});
         return J(r);
@@ -1082,14 +1625,50 @@ export default {
           const dup = existentes.find(f => normalizarCNPJ(f.cnpj) === dig);
           if (dup) return E(`CNPJ ja cadastrado no fornecedor "${dup.nome}" (#${dup.id}) - duplicata`, 409);
         }
-        const r = await createDoc(env, 'fornecedores', body);
+        const r = await createDoc(env, 'fornecedores', { ...body, empresa_id: empresaDoUsuario(user) });
         await audit(env, user.sub, 'create', 'fornecedores', r.id, {});
+        // Notifica Financeiro e Compliance: novo fornecedor a homologar.
+        const msg = `${body.nome || ''} aguarda aprovacao Financeiro + Compliance.`;
+        await notificarWorker(env, { perfil: 'financeiro', titulo: 'Novo fornecedor a homologar', mensagem: msg, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(r.id), empresa: empresaDoUsuario(user) });
+        await notificarWorker(env, { perfil: 'compliance', titulo: 'Novo fornecedor a homologar', mensagem: msg, tipo: 'homologacao', ref_tipo: 'fornecedor', ref_id: String(r.id), empresa: empresaDoUsuario(user) });
         return J(r);
+      }
+      // Fornecedor — IDF (índice de desempenho): GET /api/fornecedores/:id/idf
+      if (seg[0]==='fornecedores' && seg[2]==='idf' && method==='GET'){
+        const f = await getDoc(env, 'fornecedores', seg[1]);
+        if (!f) return E('Fornecedor nao encontrado', 404);
+        const pedidos = await listDocs(env, 'pedidos', { searchParams: new URLSearchParams({ fornecedor_id: String(seg[1]) }) });
+        const avaliacoes = Array.isArray(f.avaliacoes) ? f.avaliacoes : [];
+        return J({ fornecedor_id: f.id, nome: f.nome, ...calcularIDF({ pedidos, avaliacoes }) });
+      }
+
+      // Fornecedor — homologação de cadastro (Financeiro + Compliance)
+      if (seg[0]==='fornecedores' && seg[2]==='homologar' && (seg[3]==='financeiro' || seg[3]==='compliance') && method==='POST'){
+        const etapa = seg[3];
+        requireRole(user, etapa === 'financeiro' ? ['admin','financeiro'] : ['admin','diretor','compliance']);
+        const f = await getDocDoTenant(env, 'fornecedores', seg[1], user);
+        if (!f) return E('Fornecedor nao encontrado', 404);
+        if (f.status === 'Homologado') return E('Fornecedor ja homologado', 409);
+        const patch = etapa === 'financeiro'
+          ? { aprovado_financeiro_por: user.name, aprovado_financeiro_em: new Date().toISOString() }
+          : { aprovado_compliance_por: user.name, aprovado_compliance_em: new Date().toISOString() };
+        if (({ ...f, ...patch }).aprovado_financeiro_por && ({ ...f, ...patch }).aprovado_compliance_por) patch.status = 'Homologado';
+        const r = await updateDoc(env, 'fornecedores', seg[1], patch);
+        await audit(env, user.sub, `homologacao_${etapa}`, 'fornecedores', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
+      }
+      if (seg[0]==='fornecedores' && seg[2]==='reprovar-homologacao' && method==='POST'){
+        requireRole(user, ['admin','diretor','compliance','financeiro']);
+        const f = await getDocDoTenant(env, 'fornecedores', seg[1], user);
+        if (!f) return E('Fornecedor nao encontrado', 404);
+        const r = await updateDoc(env, 'fornecedores', seg[1], { status: 'Reprovado', aprovado_financeiro_por: null, aprovado_financeiro_em: null, aprovado_compliance_por: null, aprovado_compliance_em: null });
+        await audit(env, user.sub, 'homologacao_reprovada', 'fornecedores', seg[1], {});
+        return r ? J(r) : E('nao encontrado', 404);
       }
       // Fornecedor — aprovação/rejeição de alteração bancária (dupla aprovação)
       if (seg[0]==='fornecedores' && seg[2]==='aprovar-banco' && method==='POST'){
         requireRole(user, ['admin','diretor','financeiro']);
-        const f = await getDoc(env, 'fornecedores', seg[1]);
+        const f = await getDocDoTenant(env, 'fornecedores', seg[1], user);
         if (!f) return E('Fornecedor nao encontrado', 404);
         if (!f.banco_solicitado_por) return E('Nao ha alteracao bancaria pendente', 400);
         if (f.banco_solicitado_por === user.name) return E('A aprovacao deve ser feita por outro usuario (segregacao)', 403);
@@ -1099,7 +1678,7 @@ export default {
       }
       if (seg[0]==='fornecedores' && seg[2]==='rejeitar-banco' && method==='POST'){
         requireRole(user, ['admin','diretor','financeiro']);
-        const f = await getDoc(env, 'fornecedores', seg[1]);
+        const f = await getDocDoTenant(env, 'fornecedores', seg[1], user);
         if (!f) return E('Fornecedor nao encontrado', 404);
         if (!f.banco_solicitado_por) return E('Nao ha alteracao bancaria pendente', 400);
         const r = await updateDoc(env, 'fornecedores', seg[1], { banco_pendente: null, agencia_pendente: null, conta_pendente: null, banco_solicitado_por: null, banco_solicitado_em: null });
@@ -1108,7 +1687,7 @@ export default {
       }
       // Fornecedor — PUT: dados bancários ficam pendentes de 2ª aprovação
       if (seg[0]==='fornecedores' && seg[1] && !seg[2] && (method==='PUT' || method==='PATCH')){
-        const atual = await getDoc(env, 'fornecedores', seg[1]);
+        const atual = await getDocDoTenant(env, 'fornecedores', seg[1], user);
         if (!atual) return E('nao encontrado', 404);
         const bankChange = alteracaoBancariaSolicitada(atual, body);
         const patch = { ...body };
@@ -1125,11 +1704,16 @@ export default {
         return r ? J(r) : E('nao encontrado', 404);
       }
 
-      // Pedido — situação cadastral do fornecedor antes da emissão (compliance)
+      // Pedido — homologação + situação cadastral do fornecedor antes da emissão
       if (seg[0]==='pedidos' && !seg[1] && method==='POST'){
-        if (body.fornecedor_id && (env.ENFORCE_RECEITA_PO ?? '1') !== '0'){
+        if (body.fornecedor_id){
           const f = await getDoc(env, 'fornecedores', body.fornecedor_id);
-          if (f && f.cnpj){
+          // Compliance: fornecedor precisa estar HOMOLOGADO (Financeiro + Compliance).
+          if (f && (env.ENFORCE_HOMOLOGACAO_PO ?? '1') !== '0' && !fornecedorHomologado(f)){
+            await audit(env, user.sub, 'po_bloqueada_homologacao', 'pedidos', null, {});
+            return E('Emissao bloqueada: fornecedor nao homologado (pendente de aprovacao Financeiro/Compliance)', 409);
+          }
+          if (f && f.cnpj && (env.ENFORCE_RECEITA_PO ?? '1') !== '0'){
             const s = situacaoReceitaMock(f.cnpj);
             if (s && !s.regular){
               await audit(env, user.sub, 'po_bloqueada_receita', 'pedidos', null, { situacao: s.situacao_cadastral });
@@ -1137,19 +1721,33 @@ export default {
             }
           }
         }
-        const r = await createDoc(env, 'pedidos', body);
+        const r = await createDoc(env, 'pedidos', { ...body, empresa_id: empresaDoUsuario(user) });
         await audit(env, user.sub, 'create', 'pedidos', r.id, {});
         return J(r);
       }
 
-      // CRUD generico
+      // CRUD generico — escopado por tenant: o create carimba a empresa do
+      // usuário (spoof no corpo é sobrescrito), listas filtram, e operações
+      // por id devolvem 404 quando o doc pertence a outra empresa.
       if (TABLES[seg[0]]){
         const table = TABLES[seg[0]];
-        if (method==='GET' && !seg[1]) return J(await listDocs(env, table, url));
-        if (method==='GET' && seg[1]){ const d=await getDoc(env,table,seg[1]); return d?J(d):E('nao encontrado',404); }
-        if (method==='POST'){ const r=await createDoc(env,table,body); await audit(env,user.sub,'create',table,r.id,{}); return J(r); }
-        if ((method==='PUT'||method==='PATCH') && seg[1]){ const r=await updateDoc(env,table,seg[1],body); await audit(env,user.sub,'update',table,seg[1],{}); return r?J(r):E('nao encontrado',404); }
-        if (method==='DELETE' && seg[1]){ await audit(env,user.sub,'delete',table,seg[1],{}); return J(await deleteDoc(env,table,seg[1])); }
+        const emp = empresaDoUsuario(user);
+        if (method==='GET' && !seg[1]) return J((await listDocs(env, table, url)).filter(d => docPertenceEmpresa(d, emp)));
+        if (method==='GET' && seg[1]){ const d=await getDoc(env,table,seg[1]); return (d && docPertenceEmpresa(d, emp))?J(d):E('nao encontrado',404); }
+        if (method==='POST'){ const r=await createDoc(env,table,{ ...body, empresa_id: emp }); await audit(env,user.sub,'create',table,r.id,{}); return J(r); }
+        if ((method==='PUT'||method==='PATCH') && seg[1]){
+          const cur=await getDoc(env,table,seg[1]);
+          if (!cur || !docPertenceEmpresa(cur, emp)) return E('nao encontrado',404);
+          const r=await updateDoc(env,table,seg[1],{ ...body, empresa_id: Number(cur.empresa_id)||1 });
+          await audit(env,user.sub,'update',table,seg[1],{});
+          return J(r);
+        }
+        if (method==='DELETE' && seg[1]){
+          const cur=await getDoc(env,table,seg[1]);
+          if (!cur || !docPertenceEmpresa(cur, emp)) return E('nao encontrado',404);
+          await audit(env,user.sub,'delete',table,seg[1],{});
+          return J(await deleteDoc(env,table,seg[1]));
+        }
       }
 
       return E('rota nao encontrada: ' + path, 404);
@@ -1161,4 +1759,4 @@ export default {
 };
 
 // Exporta as regras puras (isolamento, alertas, KPIs, tipo RC) p/ teste unitário.
-export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa };
+export { portalScope, pedidoPertence, montarAlertasWorker, montarKPIsWorker, normalizarTipoRC, classificarVencimentoContrato, avaliarConcorrencia, rcaCompleto, alcadaPendente, situacaoReceitaMock, normalizarCNPJ, detectarDuplicatas, alteracaoBancariaSolicitada, montarFluxoCaixa, cadastroCNPJMock, fornecedorHomologado, analisarFinanceiro, bureauMock, calcularIDF, emitirNotaFiscal, cancelarNotaFiscal, enviarEmail, notificacaoNoEscopo, wbsPertenceAoContrato, exigeAceiteServico, precisaOrcamentacao, podeGerarProposta, montarRollupWBS, empresaDoUsuario, docPertenceEmpresa, validarSenhaForte };

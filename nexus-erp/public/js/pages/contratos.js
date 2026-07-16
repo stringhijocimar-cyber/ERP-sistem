@@ -26,19 +26,49 @@ function _ctrTiposOpts(selected) {
   ).join('');
 }
 
+
+// ── Contratos REAIS (cache do servidor via boot do db.js) ─────────────────
+// Normaliza o shape do backend (titulo/valor_total/objeto/responsavel_nome)
+// para o que a página usa, e mescla com o seed demo (reais primeiro).
+function _ctrContratos() {
+  let reais = [];
+  try { reais = JSON.parse(localStorage.getItem('fa_contratos') || '[]'); } catch (e) {}
+  if (!Array.isArray(reais)) reais = Array.isArray(reais && reais.items) ? reais.items : []; // JSON não-array não quebra
+  const norm = reais.map(c => ({
+    id: c.id, numero: c.numero || String(c.id),
+    cliente: c.cliente || c.titulo || c.fornecedor_nome || '—',
+    descricao: c.descricao || c.objeto || '',
+    tipo: c.tipo || 'Serviço',
+    valor: c.valor ?? c.valor_total ?? 0,
+    medidoAcum: c.medidoAcum ?? c.valor_medido_acumulado ?? 0,
+    status: c.status || 'Ativo',
+    inicio: c.inicio || c.data_inicio || '', fim: c.fim || c.data_fim || '',
+    gestor: c.gestor || c.responsavel_nome || '—', unidade: c.unidade || '—',
+    margem: c.margem ?? 0, progress: c.progress ?? 0, ssmaStatus: c.ssmaStatus || 'N/A',
+    _servidor: !c._local, _local: !!c._local,
+  }));
+  const seed = (window.ERP_DATA && ERP_DATA.contratos) || [];
+  if (!norm.length) return seed;
+  const ids = new Set(norm.map(c => String(c.id)));
+  return [...norm, ...seed.filter(c => !ids.has(String(c.id)))];
+}
+function _ctrById(id) { return _ctrContratos().find(x => String(x.id) === String(id)) || null; }
+window._ctrContratos = _ctrContratos;
+
 function renderContratos() {
   const main = document.getElementById('mainContent');
 
-  const ativos = ERP_DATA.contratos.filter(c => c.status === 'Ativo').length;
-  const valorTotal = ERP_DATA.contratos.filter(c => c.status !== 'Encerrado').reduce((a, b) => a + b.valor, 0);
-  const medidoTotal = ERP_DATA.contratos.filter(c => c.status !== 'Encerrado').reduce((a, b) => a + b.medidoAcum, 0);
+  const contratos = _ctrContratos();
+  const ativos = contratos.filter(c => c.status === 'Ativo').length;
+  const valorTotal = contratos.filter(c => c.status !== 'Encerrado').reduce((a, b) => a + (b.valor || 0), 0);
+  const medidoTotal = contratos.filter(c => c.status !== 'Encerrado').reduce((a, b) => a + (b.medidoAcum || 0), 0);
   const saldoTotal = valorTotal - medidoTotal;
 
   main.innerHTML = `
     <div class="page-header">
       <div class="page-title">
         <h2>Gestão de Contratos</h2>
-        <p>${ERP_DATA.contratos.length} contratos cadastrados · ${ativos} ativos</p>
+        <p>${contratos.length} contratos cadastrados · ${ativos} ativos</p>
       </div>
       <div class="page-actions">
         <button class="btn btn-secondary btn-sm" onclick="showToast('Exportando contratos...','info')">
@@ -101,7 +131,7 @@ function renderContratos() {
       </div>
 
       <div class="table-wrapper" id="tabelaContratos">
-        ${renderTabelaContratos(ERP_DATA.contratos)}
+        ${renderTabelaContratos(contratos)}
       </div>
     </div>
 
@@ -230,7 +260,7 @@ function _confirmarExclusaoContrato(id) {
 
 // Editar contrato
 function editarContrato(id) {
-  const c = ERP_DATA.contratos.find(x => x.id === id);
+  const c = _ctrById(id);
   if (!c) return;
   const canEdit = currentUser && ['admin','diretor','operacao'].includes(currentUser.profile);
   if (!canEdit) { showToast('Sem permissão para editar contratos.', 'error'); return; }
@@ -290,19 +320,38 @@ function editarContrato(id) {
   `);
 }
 
-function salvarEdicaoContrato(id) {
-  const c = ERP_DATA.contratos.find(x => x.id === id);
+async function salvarEdicaoContrato(id) {
+  const seed = (window.ERP_DATA && ERP_DATA.contratos || []).find(x => x.id === id);
+  const c = seed || _ctrById(id);
   if (!c) return;
-  c.cliente = document.getElementById('ecCliente')?.value || c.cliente;
-  c.tipo = document.getElementById('ecTipo')?.value || c.tipo;
-  c.descricao = document.getElementById('ecDescricao')?.value || c.descricao;
-  c.valor = parseFloat(document.getElementById('ecValor')?.value || c.valor);
-  c.margem = parseFloat(document.getElementById('ecMargem')?.value || c.margem);
-  c.gestor = document.getElementById('ecGestor')?.value || c.gestor;
-  c.unidade = document.getElementById('ecUnidade')?.value || c.unidade;
-  c.status = document.getElementById('ecStatus')?.value || c.status;
-  c.ssmaStatus = document.getElementById('ecSsma')?.value || c.ssmaStatus;
-  c.progress = parseInt(document.getElementById('ecProgress')?.value || c.progress);
+  const val = (el, cur) => document.getElementById(el)?.value ?? cur;
+  c.cliente = val('ecCliente', c.cliente);
+  c.tipo = val('ecTipo', c.tipo);
+  c.descricao = val('ecDescricao', c.descricao);
+  c.valor = parseFloat(val('ecValor', c.valor)) || 0;
+  c.margem = parseFloat(val('ecMargem', c.margem)) || 0;
+  c.gestor = val('ecGestor', c.gestor);
+  c.unidade = val('ecUnidade', c.unidade);
+  c.status = val('ecStatus', c.status);
+  c.ssmaStatus = val('ecSsma', c.ssmaStatus);
+  c.progress = parseInt(val('ecProgress', c.progress)) || 0;
+  // Contrato REAL (cache do servidor): persiste via PUT e atualiza o cache.
+  if (!seed) {
+    try {
+      if (window.NexusAPI) {
+        await NexusAPI.put(`/api/contratos/${id}`, {
+          titulo: c.cliente, tipo: c.tipo, status: c.status,
+          valor_total: c.valor, data_inicio: c.inicio || null, data_fim: c.fim || null,
+          objeto: c.descricao,
+        });
+      }
+    } catch (e) { /* offline → mantém só o cache local */ }
+    try {
+      const cache = JSON.parse(localStorage.getItem('fa_contratos') || '[]');
+      const i = cache.findIndex(x => String(x.id) === String(id));
+      if (i >= 0) { cache[i] = { ...cache[i], titulo: c.cliente, tipo: c.tipo, status: c.status, valor_total: c.valor, objeto: c.descricao, gestor: c.gestor, unidade: c.unidade, margem: c.margem, progress: c.progress, ssmaStatus: c.ssmaStatus }; localStorage.setItem('fa_contratos', JSON.stringify(cache)); }
+    } catch (e) {}
+  }
   logAction('Editar', 'Contratos', `Contrato ${id} editado`);
   closeModal();
   showToast(`Contrato ${id} atualizado com sucesso!`, 'success');
@@ -314,10 +363,11 @@ function filterContratos() {
   const status = document.getElementById('filterStatus').value;
   const tipo = document.getElementById('filterTipo').value;
 
-  let filtered = ERP_DATA.contratos.filter(c => {
-    const matchSearch = !search || c.cliente.toLowerCase().includes(search) ||
-      c.id.toLowerCase().includes(search) || c.gestor.toLowerCase().includes(search) ||
-      c.descricao.toLowerCase().includes(search);
+  let filtered = _ctrContratos().filter(c => {
+    // String(...) blinda contra id numérico de contrato real (server) e nulos.
+    const matchSearch = !search || String(c.cliente||'').toLowerCase().includes(search) ||
+      String(c.id||'').toLowerCase().includes(search) || String(c.gestor||'').toLowerCase().includes(search) ||
+      String(c.descricao||'').toLowerCase().includes(search);
     const matchStatus = !status || c.status === status;
     const matchTipo = !tipo || c.tipo === tipo;
     return matchSearch && matchStatus && matchTipo;
@@ -327,7 +377,7 @@ function filterContratos() {
 }
 
 function verDetalheContrato(id) {
-  const c = ERP_DATA.contratos.find(x => x.id === id);
+  const c = _ctrById(id);
   if (!c) return;
 
   const detalhe = document.getElementById('detalheContrato');
@@ -370,6 +420,8 @@ function verDetalheContrato(id) {
       </div>
     </div>
 
+    <div style="padding:0 20px"><div id="margemContratoReal"></div></div>
+
     <div id="tabContentContrato" style="padding:20px">
       ${renderTabVisaoContrato(c, saldo, lucro)}
     </div>
@@ -380,6 +432,47 @@ function verDetalheContrato(id) {
   window._contratoAtivo = c;
   window._contratoSaldo = saldo;
   window._contratoLucro = lucro;
+  // Margem real do servidor (P&L: receita − pedidos − mão de obra). Silencioso
+  // se o contrato não existir no backend (modelo local pode ter id diferente).
+  carregarMargemContrato(c.id);
+}
+
+// Renderiza o card de margem real (puro/testável).
+function _margemContratoHTML(m) {
+  if (!m) return '';
+  const esc = (window.NexusAPI && NexusAPI.escapeHtml) ? NexusAPI.escapeHtml : (s => String(s == null ? '' : s));
+  const cor = (m.resultado || 0) >= 0 ? '#16a34a' : '#dc2626';
+  const linhas = (m.linhas || []).map(l => {
+    const isTotal = l.tipo === 'total';
+    const c = l.valor < 0 ? '#dc2626' : (isTotal ? cor : '#0f172a');
+    return `<tr style="${isTotal ? 'font-weight:700;border-top:2px solid #e5e7eb' : ''}">
+      <td style="padding:6px 8px">${esc(l.label)}</td>
+      <td style="padding:6px 8px;text-align:right;color:${c}">${fmt(l.valor)}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="card" style="margin:12px 0;border-left:4px solid ${cor}">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h4 style="margin:0"><i class="fas fa-coins" style="color:var(--orange)"></i> Margem real do contrato</h4>
+        <div style="text-align:right">
+          <div style="font-size:12px;color:var(--text-muted)">Margem</div>
+          <div style="font-size:22px;font-weight:800;color:${cor}">${m.margem_pct}%</div>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px">${linhas}</table>
+      <small style="color:var(--text-muted)">Mão de obra: ${fmt(m.custo_mao_obra)} (${m.horas_mao_obra || 0}h apontadas) • deriva de contas a receber/pagar + apontamentos do contrato.</small>
+    </div>`;
+}
+
+async function carregarMargemContrato(id) {
+  const box = document.getElementById('margemContratoReal');
+  if (!box) return;
+  try {
+    const m = await apiAuth(`/api/contratos/${id}/margem`);
+    box.innerHTML = _margemContratoHTML(m);
+  } catch (e) {
+    box.innerHTML = ''; // sem margem no backend para este contrato — silencioso
+  }
 }
 
 function switchTabContrato(tab) {
@@ -765,7 +858,7 @@ function openNovoContrato() {
     <div class="form-row">
       <div class="form-group">
         <label>Cliente</label>
-        <input class="form-control" type="text" placeholder="Razão social do cliente">
+        <input class="form-control" type="text" id="ctr_novo_cliente" placeholder="Razão social do cliente">
       </div>
       <div class="form-group">
         <label>Tipo de Serviço</label>
@@ -777,31 +870,31 @@ function openNovoContrato() {
     </div>
     <div class="form-group">
       <label>Objeto do Contrato</label>
-      <input class="form-control" type="text" placeholder="Descrição resumida dos serviços">
+      <input class="form-control" type="text" id="ctr_novo_objeto" placeholder="Descrição resumida dos serviços">
     </div>
     <div class="form-row">
       <div class="form-group">
         <label>Data de Início</label>
-        <input class="form-control" type="date">
+        <input class="form-control" type="date" id="ctr_novo_inicio">
       </div>
       <div class="form-group">
         <label>Data de Término</label>
-        <input class="form-control" type="date">
+        <input class="form-control" type="date" id="ctr_novo_fim">
       </div>
     </div>
     <div class="form-row">
       <div class="form-group">
         <label>Valor Total (R$)</label>
-        <input class="form-control" type="number" placeholder="0,00">
+        <input class="form-control" type="number" id="ctr_novo_valor" placeholder="0,00">
       </div>
       <div class="form-group">
         <label>Gestor Responsável</label>
-        <input class="form-control" placeholder="Nome do gestor responsável">
+        <input class="form-control" id="ctr_novo_gestor" placeholder="Nome do gestor responsável">
       </div>
     </div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
-    <button class="btn btn-primary" onclick="showToast('Contrato cadastrado com sucesso!','success');closeModal()">
+    <button class="btn btn-primary" onclick="salvarNovoContrato()">
       <i class="fas fa-save"></i> Salvar Contrato
     </button>
   `);
@@ -813,6 +906,43 @@ function openNovoContrato() {
 // ══════════════════════════════════════════════════════════════
 
 // Helpers legados – delegam ao wbs_manager.js
+// Cria o contrato de VERDADE: POST /api/contratos (tenant-isolado) com
+// fallback local honesto quando offline. Antes o botão era só um toast.
+async function salvarNovoContrato() {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const cliente = v('ctr_novo_cliente');
+  if (!cliente) { showToast('Informe o cliente do contrato.', 'error'); return; }
+  const payload = {
+    titulo: cliente,
+    tipo: v('ctr_novo_tipo') || 'Serviço',
+    objeto: v('ctr_novo_objeto'),
+    data_inicio: v('ctr_novo_inicio') || null,
+    data_fim: v('ctr_novo_fim') || null,
+    valor_total: parseFloat(v('ctr_novo_valor')) || 0,
+  };
+  let salvo = null;
+  try {
+    if (window.NexusAPI) {
+      const r = await NexusAPI.post('/api/contratos', payload);
+      if (r && r.id != null && !r._stub) salvo = r;
+    }
+  } catch (e) { /* offline → fallback local abaixo */ }
+  let cache = [];
+  try { cache = JSON.parse(localStorage.getItem('fa_contratos') || '[]'); } catch (e) {}
+  if (!salvo) salvo = { id: 'CT-local-' + Date.now(), numero: 'CT (local)', status: 'Ativo', _local: true, ...payload };
+  cache.unshift({ ...salvo, gestor: v('ctr_novo_gestor') || null });
+  try { localStorage.setItem('fa_contratos', JSON.stringify(cache)); } catch (e) {}
+  if (typeof logAction === 'function') logAction('Criar', 'Contratos', `Contrato ${salvo.numero || salvo.id} criado`);
+  closeModal();
+  showToast(salvo._local ? 'Sem servidor: contrato salvo localmente.' : `Contrato ${salvo.numero} cadastrado no servidor!`, salvo._local ? 'info' : 'success');
+  renderContratos();
+}
+window.salvarNovoContrato = salvarNovoContrato;
+window.filterContratos = filterContratos;
+window.salvarEdicaoContrato = salvarEdicaoContrato;
+window._margemContratoHTML = _margemContratoHTML;
+window.carregarMargemContrato = carregarMargemContrato;
+
 function _ctrGetProjetoId(contratoId) {
   if (typeof wbsGetProjetoIdForContrato === 'function') {
     const pid = wbsGetProjetoIdForContrato(contratoId);

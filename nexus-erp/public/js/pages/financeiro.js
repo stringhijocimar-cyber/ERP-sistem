@@ -256,176 +256,206 @@ function renderChartMargem() {
 }
 
 // --- FATURAMENTO ---
+// Resumo do faturamento a partir das contas a receber REAIS (função pura,
+// testável): pipeline por status, totais e detecção de atraso.
+function _faturamentoResumo(contas) {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const arr = Array.isArray(contas) ? contas : [];
+  const isAtraso = c => c.status === 'A Receber' && c.data_vencimento && c.data_vencimento < hoje && !c.data_recebimento;
+  const aFaturar = arr.filter(c => c.status === 'A Faturar');
+  const aReceber = arr.filter(c => c.status === 'A Receber' && !isAtraso(c));
+  const atraso = arr.filter(isAtraso);
+  const recebida = arr.filter(c => c.status === 'Recebida');
+  const sum = l => l.reduce((a, c) => a + (Number(c.valor) || 0), 0);
+  return {
+    contas: arr, isAtraso,
+    pipeline: [
+      { label: 'A Faturar', count: aFaturar.length, color: 'var(--yellow-light)', icon: 'fa-clock' },
+      { label: 'A Receber', count: aReceber.length, color: 'var(--orange)', icon: 'fa-file-invoice' },
+      { label: 'Em Atraso', count: atraso.length, color: 'var(--red-light)', icon: 'fa-triangle-exclamation' },
+      { label: 'Recebida', count: recebida.length, color: 'var(--green-light)', icon: 'fa-check-circle' },
+    ],
+    aReceberTotal: sum(aReceber) + sum(atraso), aReceberQtd: aReceber.length + atraso.length,
+    recebidoTotal: sum(recebida), recebidoQtd: recebida.length,
+    atrasoTotal: sum(atraso), atrasoQtd: atraso.length,
+  };
+}
+window._faturamentoResumo = _faturamentoResumo;
+
 function renderFaturamento() {
   const main = document.getElementById('mainContent');
-
   main.innerHTML = `
     <div class="page-header">
       <div class="page-title">
         <h2>Faturamento</h2>
-        <p>Emissão de notas fiscais e acompanhamento de recebimento</p>
+        <p>Contas a receber, faturamento e baixa de recebíveis</p>
       </div>
       <div class="page-actions">
-        <button class="btn btn-secondary btn-sm" onclick="showToast('Exportando notas...','info')">
-          <i class="fas fa-download"></i> Exportar
-        </button>
-        <button class="btn btn-primary btn-sm" onclick="openNovaFatura()">
-          <i class="fas fa-plus"></i> Emitir Fatura
-        </button>
+        <button class="btn btn-secondary btn-sm" onclick="renderFaturamento()"><i class="fas fa-sync-alt"></i> Atualizar</button>
+        <button class="btn btn-primary btn-sm" onclick="openNovaFatura()"><i class="fas fa-plus"></i> Nova cobrança</button>
       </div>
     </div>
-
-    <!-- Pipeline de Faturamento -->
-    <div class="card page-section">
-      <div class="card-body">
-        <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.5px">
-          Pipeline de Faturamento
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px">
-          ${[
-            { label: 'Medição Aprovada', count: 2, color: 'var(--blue-light)', icon: 'fa-check' },
-            { label: 'Pendente Emissão', count: 1, color: 'var(--yellow-light)', icon: 'fa-clock' },
-            { label: 'NF Emitida', count: 3, color: 'var(--orange)', icon: 'fa-file-invoice' },
-            { label: 'Aguardando Pgto.', count: 2, color: 'var(--purple)', icon: 'fa-hourglass' },
-            { label: 'Pago / Recebido', count: 2, color: 'var(--green-light)', icon: 'fa-check-circle' }
-          ].map(s => `
-            <div style="text-align:center;padding:16px 12px;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px">
-              <div style="font-size:24px;font-weight:700;color:${s.color}">${s.count}</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${s.label}</div>
-              <i class="fas ${s.icon}" style="font-size:18px;color:${s.color};opacity:0.3;margin-top:6px;display:block"></i>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    </div>
-
-    <!-- Notas Fiscais -->
-    <div class="card">
-      <div class="card-header">
-        <h3><i class="fas fa-file-invoice-dollar" style="color:var(--orange);margin-right:8px"></i>Notas Fiscais</h3>
-        <span class="badge badge-danger">1 em atraso</span>
-      </div>
-      <div class="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              <th>Nº NF</th>
-              <th>Cliente</th>
-              <th>Medição</th>
-              <th>Valor Bruto</th>
-              <th>Imposto (ISS+PIS+COFINS)</th>
-              <th>Valor Líquido</th>
-              <th>Emissão</th>
-              <th>Vencimento</th>
-              <th>Status</th>
-              <th>Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${ERP_DATA.faturas.map(f => `
-              <tr style="${f.status === 'Atrasada' ? 'background:rgba(220,38,38,0.04)' : ''}">
-                <td style="color:var(--orange);font-weight:700;font-size:12px">${f.id}</td>
-                <td style="font-weight:500">${f.cliente}</td>
-                <td style="font-size:11px;color:var(--text-muted)">${f.medicao}</td>
-                <td style="font-weight:600">${fmt(f.valor)}</td>
-                <td style="color:var(--text-muted);font-size:12px">${fmt(f.imposto)}</td>
-                <td style="font-weight:700;color:var(--green-light)">${fmt(f.liquido)}</td>
-                <td style="font-size:12px;color:var(--text-secondary)">${f.emissao}</td>
-                <td style="font-size:12px;color:${f.status === 'Atrasada' ? 'var(--red-light)' : 'var(--text-secondary)'};font-weight:${f.status === 'Atrasada' ? '700' : '400'}">
-                  ${f.vencimento}
-                  ${f.status === 'Atrasada' ? '<span class="badge badge-danger" style="margin-left:4px">+' + f.diasAtraso + 'd</span>' : ''}
-                </td>
-                <td>${statusBadge(f.status)}</td>
-                <td>
-                  <div class="actions-cell">
-                    <button class="btn btn-secondary btn-sm btn-icon" onclick="showToast('Baixando ${f.id}...','info')" title="Download">
-                      <i class="fas fa-download"></i>
-                    </button>
-                    ${f.status === 'Atrasada' ? `
-                      <button class="btn btn-warning btn-sm" style="font-size:11px;padding:4px 8px" onclick="showToast('Disparo de cobranca requer integracao de e-mail/portal — nao enviado.','info')">
-                        <i class="fas fa-bell"></i> Cobrar
-                      </button>
-                    ` : ''}
-                    ${f.status !== 'Paga' && f.status !== 'Pendente' ? `
-                      <button class="btn btn-success btn-sm btn-icon" onclick="showToast('Baixa de recebiveis requer o backend financeiro — acao nao persistida.','info')" title="Baixar">
-                        <i class="fas fa-check"></i>
-                      </button>
-                    ` : ''}
-                  </div>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Totais -->
-    <div class="grid-3 page-section" style="margin-top:16px">
-      <div class="card">
-        <div class="card-body">
-          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">TOTAL A RECEBER</div>
-          <div style="font-size:24px;font-weight:700;color:var(--orange)">${fmt(ERP_DATA.faturas.filter(f => f.status !== 'Paga').reduce((a,b) => a+b.liquido, 0))}</div>
-          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${ERP_DATA.faturas.filter(f => f.status !== 'Paga').length} títulos em aberto</div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-body">
-          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">RECEBIDO NO MÊS</div>
-          <div style="font-size:24px;font-weight:700;color:var(--green-light)">${fmt(ERP_DATA.faturas.filter(f => f.status === 'Paga').reduce((a,b) => a+b.liquido, 0))}</div>
-          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${ERP_DATA.faturas.filter(f => f.status === 'Paga').length} títulos liquidados</div>
-        </div>
-      </div>
-      <div class="card" style="${ERP_DATA.faturas.filter(f => f.status === 'Atrasada').length > 0 ? 'border-color:var(--red);' : ''}">
-        <div class="card-body">
-          <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">EM ATRASO</div>
-          <div style="font-size:24px;font-weight:700;color:var(--red-light)">${fmt(ERP_DATA.faturas.filter(f => f.status === 'Atrasada').reduce((a,b) => a+b.liquido, 0))}</div>
-          <div style="font-size:12px;color:var(--red-light);margin-top:4px">${ERP_DATA.faturas.filter(f => f.status === 'Atrasada').length} títulos em atraso</div>
-        </div>
-      </div>
-    </div>
-  `;
+    <div id="fatBody"><i class="fas fa-spinner fa-spin"></i> Carregando contas a receber...</div>`;
+  _carregarFaturamento();
 }
 
+// Busca as contas a receber do tenant e monta pipeline + tabela + totais.
+async function _carregarFaturamento() {
+  const box = document.getElementById('fatBody');
+  if (!box) return;
+  let contas = [];
+  try { contas = (typeof apiAuth === 'function' ? await apiAuth('/api/contas-receber') : []) || []; }
+  catch (e) { box.innerHTML = `<div style="color:var(--red-light);font-size:13px">Não foi possível carregar: ${e.message}</div>`; return; }
+  const R = _faturamentoResumo(contas);
+  const esc = v => (window.NexusAPI ? NexusAPI.escapeHtml(v) : String(v ?? ''));
+  const linhas = R.contas.map(c => {
+    const atraso = R.isAtraso(c);
+    return `
+      <tr style="${atraso ? 'background:rgba(220,38,38,0.05)' : ''}">
+        <td style="color:var(--orange);font-weight:700;font-size:12px">${esc(c.numero)}</td>
+        <td style="font-weight:500">${esc(c.cliente || '—')}</td>
+        <td style="font-size:11px;color:var(--text-muted)">${esc(c.descricao || '')}</td>
+        <td style="font-weight:700">${fmt(c.valor)}</td>
+        <td style="font-size:12px;color:${atraso ? 'var(--red-light)' : 'var(--text-secondary)'};font-weight:${atraso ? '700' : '400'}">${esc(c.data_vencimento || '—')}</td>
+        <td>${esc(c.nota_fiscal || '—')}</td>
+        <td>${statusBadge(atraso ? 'Atrasada' : c.status)}</td>
+        <td><div class="actions-cell">
+          ${c.status !== 'Recebida' ? `<button class="btn btn-success btn-sm btn-icon" onclick="receberFatura('${esc(String(c.id))}')" title="Dar baixa (recebido)"><i class="fas fa-check"></i></button>` : ''}
+          ${!c.nota_fiscal && c.status !== 'Recebida' ? `<button class="btn btn-outline-primary btn-sm" style="font-size:11px;padding:4px 8px" onclick="emitirNfseConta('${esc(String(c.id))}')" title="Emitir NFS-e"><i class="fas fa-file-invoice"></i> Emitir NFS-e</button>` : ''}
+        </div></td>
+      </tr>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="card page-section"><div class="card-body">
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px">Pipeline de Faturamento</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+        ${R.pipeline.map(s => `
+          <div style="text-align:center;padding:16px 12px;background:var(--bg-card2);border:1px solid var(--border);border-radius:8px">
+            <div style="font-size:24px;font-weight:700;color:${s.color}">${s.count}</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${s.label}</div>
+            <i class="fas ${s.icon}" style="font-size:18px;color:${s.color};opacity:.3;margin-top:6px;display:block"></i>
+          </div>`).join('')}
+      </div>
+    </div></div>
+
+    <div class="card"><div class="card-header">
+      <h3><i class="fas fa-file-invoice-dollar" style="color:var(--orange);margin-right:8px"></i>Contas a Receber</h3>
+      ${R.atrasoQtd > 0 ? `<span class="badge badge-danger">${R.atrasoQtd} em atraso</span>` : ''}
+    </div>
+      <div class="table-wrapper"><table>
+        <thead><tr><th>Nº</th><th>Cliente</th><th>Descrição</th><th>Valor</th><th>Vencimento</th><th>NF</th><th>Status</th><th>Ações</th></tr></thead>
+        <tbody>${linhas || '<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-muted)">Nenhuma conta a receber ainda. Use "Nova cobrança".</td></tr>'}</tbody>
+      </table></div>
+    </div>
+
+    <div class="grid-3 page-section" style="margin-top:16px">
+      <div class="card"><div class="card-body">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">TOTAL A RECEBER</div>
+        <div style="font-size:24px;font-weight:700;color:var(--orange)">${fmt(R.aReceberTotal)}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${R.aReceberQtd} títulos em aberto</div>
+      </div></div>
+      <div class="card"><div class="card-body">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">RECEBIDO</div>
+        <div style="font-size:24px;font-weight:700;color:var(--green-light)">${fmt(R.recebidoTotal)}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${R.recebidoQtd} títulos liquidados</div>
+      </div></div>
+      <div class="card" style="${R.atrasoQtd > 0 ? 'border-color:var(--red);' : ''}"><div class="card-body">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">EM ATRASO</div>
+        <div style="font-size:24px;font-weight:700;color:var(--red-light)">${fmt(R.atrasoTotal)}</div>
+        <div style="font-size:12px;color:var(--red-light);margin-top:4px">${R.atrasoQtd} títulos em atraso</div>
+      </div></div>
+    </div>`;
+}
+
+// Baixa o recebível de verdade (POST /:id/receber) e recarrega.
+async function receberFatura(id) {
+  if (!window.NexusAPI) return;
+  const r = await NexusAPI.post(`/api/contas-receber/${id}/receber`, { forma_recebimento: 'Manual' });
+  if (r && r.status === 'Recebida') { if (typeof showToast === 'function') showToast('Recebimento registrado!', 'success'); }
+  else if (typeof showToast === 'function') showToast(r && r.error ? r.error : 'Não foi possível dar baixa.', 'error');
+  _carregarFaturamento();
+}
+
+// Fatura a conta (vincula NF, se informada) e recarrega.
+async function faturarConta(id) {
+  if (!window.NexusAPI) return;
+  const nf = (typeof prompt === 'function') ? prompt('Número da NF (opcional):') : '';
+  const r = await NexusAPI.post(`/api/contas-receber/${id}/faturar`, { nota_fiscal: nf || null });
+  if (r && r.status && typeof showToast === 'function') showToast('Conta faturada.', 'success');
+  _carregarFaturamento();
+}
+// Emite a NFS-e a partir da conta (liga faturamento ao fiscal) e recarrega.
+async function emitirNfseConta(id) {
+  if (!window.NexusAPI) return;
+  const cnpj = (typeof prompt === 'function') ? prompt('CNPJ do tomador (cliente):') : '';
+  if (!cnpj) return;
+  const r = await NexusAPI.post(`/api/contas-receber/${id}/emitir-nfse`, { cnpj_destinatario: cnpj });
+  if (r && r.nota) {
+    if (typeof showToast === 'function') showToast(`NFS-e ${r.nota.numero} ${r.nota.status} — conta faturada.`, 'success', 6000);
+  } else if (typeof showToast === 'function') {
+    showToast(r && r.error ? r.error : 'Não foi possível emitir a NFS-e.', 'error');
+  }
+  _carregarFaturamento();
+}
+window.receberFatura = receberFatura;
+window.faturarConta = faturarConta;
+window.emitirNfseConta = emitirNfseConta;
+window._carregarFaturamento = _carregarFaturamento;
+
 function openNovaFatura() {
-  openModal('Emitir Fatura', `
+  openModal('Nova cobrança (conta a receber)', `
     <div class="form-row">
       <div class="form-group">
         <label>Cliente</label>
-        <select class="form-control">
-          ${ERP_DATA.contratos.map(c => `<option>${c.cliente}</option>`).join('')}
-        </select>
+        <input class="form-control" id="nf_cliente" placeholder="Razão social do cliente">
       </div>
       <div class="form-group">
-        <label>Medição de Origem</label>
-        <select class="form-control">
-          ${ERP_DATA.medicoes.filter(m => m.status === 'Aprovada').map(m =>
-            `<option value="${m.id}">${m.id} – ${m.competencia} – ${fmt(m.valorLiquido)}</option>`
-          ).join('')}
-        </select>
+        <label>Valor (R$)</label>
+        <input class="form-control" id="nf_valor" type="number" placeholder="0,00">
       </div>
     </div>
     <div class="form-row">
       <div class="form-group">
-        <label>Valor (R$)</label>
-        <input class="form-control" type="number" placeholder="0,00">
+        <label>Vencimento</label>
+        <input class="form-control" id="nf_venc" type="date">
       </div>
       <div class="form-group">
-        <label>Vencimento</label>
-        <input class="form-control" type="date">
+        <label>Contrato (opcional)</label>
+        <input class="form-control" id="nf_contrato" placeholder="Nº do contrato">
       </div>
     </div>
     <div class="form-group">
-      <label>Observações</label>
-      <input class="form-control" type="text" placeholder="Referência, contrato, período...">
+      <label>Descrição</label>
+      <input class="form-control" id="nf_desc" placeholder="Referência, medição, período...">
     </div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
-    <button class="btn btn-primary" onclick="showToast('Emissao de NF ainda nao conectada ao backend de faturamento — nada foi gravado.','info');closeModal()">
-      <i class="fas fa-file-invoice"></i> Emitir NF
-    </button>
+    <button class="btn btn-primary" onclick="salvarNovaFatura()"><i class="fas fa-save"></i> Criar cobrança</button>
   `);
 }
+
+// Cria a conta a receber de verdade (POST /api/contas-receber).
+async function salvarNovaFatura() {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const cliente = v('nf_cliente'); const valor = parseFloat(v('nf_valor'));
+  if (!cliente || !(valor > 0)) { if (typeof showToast === 'function') showToast('Informe cliente e valor (> 0).', 'error'); return; }
+  if (!window.NexusAPI) return;
+  const r = await NexusAPI.post('/api/contas-receber', {
+    cliente, valor, descricao: v('nf_desc'), contrato_id: v('nf_contrato') || null, data_vencimento: v('nf_venc') || null,
+  });
+  if (r && r.id != null && !r._stub) {
+    if (typeof logAction === 'function') logAction('Criar', 'Faturamento', `Conta a receber ${r.numero} — ${cliente}`);
+    if (typeof showToast === 'function') showToast(`Cobrança ${r.numero} criada!`, 'success');
+    if (typeof closeModal === 'function') closeModal();
+    _carregarFaturamento();
+  } else if (typeof showToast === 'function') {
+    showToast(r && r.error ? r.error : 'Não foi possível criar a cobrança.', 'error');
+  }
+}
+window.salvarNovaFatura = salvarNovaFatura;
+window.openNovaFatura = openNovaFatura;
+window.renderFaturamento = renderFaturamento;
 
 // --- CONTAS A PAGAR ---
 let FA_CONTAS_PAGAR = [];
@@ -739,16 +769,9 @@ async function salvarNovaCP() {
   document.getElementById('tabelaCP').innerHTML = renderTabelaCP_();
 }
 
-function exportarCP() {
-  const rows = [['ID','Descrição','Fornecedor','Tipo','Contrato','Valor','Vencimento','Pgto. Real','Status']];
-  FA_CONTAS_PAGAR.forEach(c => rows.push([c.id, c.descricao, c.fornecedor_nome, c.tipo, c.contrato_id, c.valor, c.vencimento, c.data_pagamento||'—', c.status]));
-  const csv = rows.map(r => r.map(v => `"${v}"`).join(';')).join('\n');
-  const a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
-  a.download = 'contas_pagar_fraser_alexander.csv';
-  a.click();
-  showToast('Contas a pagar exportadas!', 'success');
-}
+// Exportação para Excel (.xlsx real, backend multi-tenant) — substitui o CSV
+// que não neutralizava fórmulas.
+function exportarCP(ev) { nexusBaixarXLSX('/api/contas-pagar/export.xlsx', ev); }
 
 // --- LANÇAMENTO DE DESPESAS ---
 function openLancamentoDespesa() {

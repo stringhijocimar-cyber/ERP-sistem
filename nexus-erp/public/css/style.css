@@ -627,6 +627,15 @@ select.form-control { cursor: pointer; }
   margin-bottom: 20px;
 }
 
+/* Seções recolhíveis (clique no rótulo) — estado persistido em localStorage */
+.nav-section-label { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
+.nav-section-label::after {
+  content: '\f078'; font-family: 'Font Awesome 6 Free'; font-weight: 900;
+  font-size: 8px; opacity: .5; transition: transform .18s ease;
+}
+.nav-section.collapsed .nav-section-label::after { transform: rotate(-90deg); }
+.nav-section.collapsed .nav-item { display: none; }
+
 .nav-section-label {
   font-size: 10px;
   font-weight: 600;

@@ -1694,7 +1694,7 @@ async function _salvarRecebimentoPedido(pedidoId, numItens) {
 
   // Persiste também na API D1
   try {
-    await fetch('/api/recebimentos', {
+    const _resp = await fetch('/api/recebimentos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1716,6 +1716,12 @@ async function _salvarRecebimentoPedido(pedidoId, numItens) {
         cp_gerado:        false
       })
     });
+    // Guarda a(s) conta(s) a pagar do SERVIDOR para o resumo persistente.
+    try {
+      const _j = await _resp.json();
+      const _cp = _j && _j.data && _j.data.contas_pagar;
+      if (Array.isArray(_cp) && _cp.length) novoRec._contasServidor = _cp;
+    } catch(_) {}
   } catch(e) { console.warn('API recebimentos:', e); }
 
   // 4. Gera Conta a Pagar automaticamente (se não for antecipado)
@@ -1754,7 +1760,7 @@ async function _salvarRecebimentoPedido(pedidoId, numItens) {
   showToast(`Recebimento confirmado! ${acoes.join(' · ')}`, 'success', 6000);
 
   // Mostra resumo do recebimento
-  setTimeout(() => _mostrarResumoRecebimento(novoRec, pedido, !isAntecipado), 500);
+  setTimeout(() => _mostrarResumoRecebimento(novoRec, pedido, !isAntecipado, novoRec._contasServidor || []), 500);
 }
 
 async function _gerarCPRecebimento(pedido, nfNum, valorNF, dataISO, condPagto) {
@@ -1873,7 +1879,23 @@ function _registrarEntradaEstoque(itensInspecao, pedido, nfNum, dataISO) {
   } catch(e) { console.warn('Estoque:', e); }
 }
 
-function _mostrarResumoRecebimento(rec, pedido, cpGerado) {
+// Bloco com as contas a pagar REAIS do servidor (numero/valor/vencimento) —
+// helper puro exposto para teste; escapa HTML (dados vêm do banco).
+function _cpResumoHTML(contas) {
+  if (!Array.isArray(contas) || !contas.length) return '';
+  const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const m = v => typeof fmt === 'function' ? fmt(v) : ('R$ ' + (v || 0).toLocaleString('pt-BR'));
+  return contas.map(c => `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--bg-secondary);border-radius:8px;font-size:12px">
+      <i class="fas fa-file-invoice-dollar" style="color:#22c55e"></i>
+      <b>${esc(c.numero)}</b>
+      <span style="flex:1">${m(c.valor)}</span>
+      <span style="color:var(--text-muted)">${c.data_vencimento ? 'venc. ' + esc(c.data_vencimento) : ''} · ${esc(c.status || '')}</span>
+    </div>`).join('');
+}
+window._cpResumoHTML = _cpResumoHTML;
+
+function _mostrarResumoRecebimento(rec, pedido, cpGerado, contasServidor) {
   const statusColor = rec.status === 'Conforme' ? '#22c55e' : rec.status === 'Parcial' ? '#f59e0b' : '#ef4444';
   const statusIcon = rec.status === 'Conforme' ? 'check-circle' : rec.status === 'Parcial' ? 'exclamation-triangle' : 'times-circle';
 
@@ -1912,6 +1934,7 @@ function _mostrarResumoRecebimento(rec, pedido, cpGerado) {
             <div style="font-size:12px;color:var(--text-muted)">Condição: ${pedido.cond_pagamento || pedido.condicao_pagamento || '—'}</div>
           </div>
         </div>
+        ${_cpResumoHTML(contasServidor)}
       ` : ''}
       ${rec.itens_inspecao?.length > 0 ? `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(0,180,184,0.08);border:1px solid rgba(0,180,184,0.25);border-radius:8px">
@@ -1932,6 +1955,9 @@ function _mostrarResumoRecebimento(rec, pedido, cpGerado) {
     </div>
   `, `
     <button class="btn btn-secondary" onclick="closeModal()">Fechar</button>
+    ${cpGerado ? `<button class="btn btn-success" onclick="closeModal();navigate('contas_pagar')">
+      <i class="fas fa-file-invoice-dollar"></i> Ir para Contas a Pagar
+    </button>` : ''}
     <button class="btn btn-primary" onclick="closeModal();navigate('pedidos')">
       <i class="fas fa-list"></i> Ver Pedidos
     </button>
@@ -2007,16 +2033,9 @@ function abrirNovoPedidoComDados(dados) {
   }, 150);
 }
 
-function exportPedidos() {
-  const rows = [['Nº Pedido','Fornecedor','Descrição','Contrato','Valor','Emissão','Status']];
-  FA_PEDIDOS.forEach(p => rows.push([p.numero, p.fornecedor_nome, p.descricao, p.contrato_id, p.valor_total, p.data_emissao, p.status]));
-  const csv = rows.map(r => r.join(';')).join('\n');
-  const a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(csv);
-  a.download = 'pedidos_compra_fraser_alexander.csv';
-  a.click();
-  showToast('Relatório de pedidos exportado!', 'success');
-}
+// Exportação para Excel (.xlsx real, backend multi-tenant) — substitui o CSV
+// que não neutralizava fórmulas.
+function exportPedidos(ev) { nexusBaixarXLSX('/api/pedidos/export.xlsx', ev); }
 
 // ═══════════════════════════════════════════════════════════
 // MODAL PÓS-CRIAÇÃO: OPÇÕES DE PDF E ENVIO DE EMAIL
