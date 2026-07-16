@@ -665,12 +665,18 @@ const app = express()
 // navegador (criar RC, aprovar, semear demo…) falhar com 500. O allowlist
 // continua valendo para origens de OUTROS hosts (cross-origin real).
 //
-// SEGURANÇA: a detecção de same-origin compara o host da Origin com o header
-// `Host` REAL do request — que o navegador sempre define como o host de destino
-// verdadeiro e o atacante não consegue forjar via fetch/XHR. NUNCA usa
-// X-Forwarded-Host nem outros headers de proxy (esses seriam controláveis pelo
-// atacante). Atrás de um proxy que reescreve o Host, use ALLOWED_ORIGINS.
+// SEGURANÇA — a detecção de same-origin usa dois sinais, ambos definidos pelo
+// NAVEGADOR e NÃO-forjáveis por JS (headers proibidos ao fetch/XHR):
+//  1) Sec-Fetch-Site: 'same-origin' — sinal de Fetch Metadata que indica que a
+//     requisição partiu da MESMA origem do alvo. Funciona atrás de proxy (não
+//     depende do Host, que o proxy reescreve) — é o caso do deploy real.
+//  2) Fallback: host da Origin == header Host real (para navegadores/pilhas sem
+//     Sec-Fetch-Site). NUNCA usa X-Forwarded-Host nem outros headers de proxy.
+// O allowlist ALLOWED_ORIGINS continua valendo para cross-origin real (outros
+// hosts). Cross-site (Sec-Fetch-Site: 'cross-site') fora do allowlist é negado.
 function _corsSameOrigin(origin, req) {
+  const sfs = req.headers['sec-fetch-site']
+  if (sfs === 'same-origin') return true
   try { return new URL(origin).host === req.headers['host'] } catch (e) { return false }
 }
 app.use(cors((req, cb) => {
@@ -3074,6 +3080,38 @@ app.post('/api/rfq', requireAuth, (req, res) => {
   const rfq = db.prepare(`SELECT * FROM rfq WHERE id = ?`).get(rfqId)
   log(req.user.usuario_id, req.user.nome, 'Criar', 'rfq', `RFQ criada: ${numero}`)
   res.status(201).json(ok(rfq))
+})
+
+// Convida fornecedores para uma RFQ já existente (o fluxo da tela cria a RFQ e
+// depois seleciona os fornecedores). Isolado por tenant; não duplica convite.
+app.post('/api/rfq/:id/fornecedores', requireAuth, (req, res) => {
+  const rfq = rowScoped('rfq', req)
+  if (!rfq) return res.status(404).json(err('RFQ não encontrada'))
+  const { fornecedor_ids = [] } = req.body
+  if (!Array.isArray(fornecedor_ids) || !fornecedor_ids.length) return res.status(400).json(err('Informe ao menos um fornecedor'))
+  const emp = empresaDoReq(req)
+  // Todos os convidados precisam ser fornecedores DESTE tenant.
+  for (const fid of fornecedor_ids) {
+    if (!db.prepare(`SELECT 1 FROM fornecedores WHERE id = ? AND empresa_id = ?`).get(fid, emp)) {
+      return res.status(400).json(err(`Fornecedor ${fid} não pertence a esta empresa`))
+    }
+  }
+  let convidados = 0
+  for (const fid of fornecedor_ids) {
+    const ja = db.prepare(`SELECT 1 FROM rfq_fornecedores WHERE rfq_id = ? AND fornecedor_id = ?`).get(rfq.id, fid)
+    if (ja) continue // idempotente: não reconvida
+    const f = db.prepare(`SELECT nome FROM fornecedores WHERE id = ?`).get(fid)
+    db.prepare(`INSERT INTO rfq_fornecedores(rfq_id, fornecedor_id, fornecedor_nome) VALUES(?,?,?)`).run(rfq.id, fid, f?.nome || '')
+    convidados++
+    notificarFornecedor(fid, {
+      titulo: `Nova cotação: ${rfq.numero}`,
+      mensagem: `${rfq.titulo}${rfq.prazo_resposta ? ' — responda até ' + rfq.prazo_resposta : ''}. Acesse o portal para cotar.`,
+      tipo: 'rfq', ref_tipo: 'rfq', ref_id: String(rfq.id), email: true, empresa: emp,
+    })
+  }
+  log(req.user.usuario_id, req.user.nome, 'Convidar', 'rfq', `${convidados} fornecedor(es) convidado(s) para ${rfq.numero}`)
+  const fornecedores = db.prepare(`SELECT rf.*, f.nome FROM rfq_fornecedores rf JOIN fornecedores f ON f.id = rf.fornecedor_id WHERE rf.rfq_id = ?`).all(rfq.id)
+  res.status(201).json(ok({ convidados, fornecedores }))
 })
 
 app.post('/api/rfq/:id/cotacoes', requireAuth, (req, res) => {
