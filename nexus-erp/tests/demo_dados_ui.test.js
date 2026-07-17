@@ -83,12 +83,29 @@ describe('simularDadosDemo', () => {
     await window.simularDadosDemo()
     expect(toasts.join(' ')).toMatch(/completados/i)
   })
-  it('perfil sem permissão (sem roteiro) → erro', async () => {
+  it('403 → mensagem de permissão (administrador)', async () => {
     const toasts = []
     window.showToast = m => toasts.push(m)
-    window.NexusAPI.post = vi.fn(async () => ({}))
+    window.NexusAPI.post = vi.fn(async () => ({ ok: false, status: 403, error: 'Acesso negado' }))
     window.apiAuth = vi.fn(async () => [])
     await window.simularDadosDemo()
     expect(toasts.join(' ')).toMatch(/administrador/i)
+  })
+  it('401 → mensagem de sessão expirada', async () => {
+    const toasts = []
+    window.showToast = m => toasts.push(m)
+    window.NexusAPI.post = vi.fn(async () => ({ ok: false, status: 401 }))
+    window.apiAuth = vi.fn(async () => [])
+    await window.simularDadosDemo()
+    expect(toasts.join(' ')).toMatch(/sess[ãa]o/i)
+  })
+  it('sem status (CORS/rede) → mensagem aponta CORS/deploy, não "administrador"', async () => {
+    const toasts = []
+    window.showToast = m => toasts.push(m)
+    window.NexusAPI.post = vi.fn(async () => ({ ok: false, _stub: true }))
+    window.apiAuth = vi.fn(async () => [])
+    await window.simularDadosDemo()
+    expect(toasts.join(' ')).toMatch(/CORS|deploy|Ctrl/i)
+    expect(toasts.join(' ')).not.toMatch(/administrador/i)
   })
 })
