@@ -128,7 +128,14 @@ async function simularDadosDemo() {
     }
     const r = await NexusAPI.post('/api/demo/seed', {});
     if (!r || !Array.isArray(r.roteiro)) {
-      if (typeof showToast === 'function') showToast('Não foi possível inserir (apenas administrador pode semear).', 'error');
+      // Mensagem HONESTA conforme o erro real — antes dizia sempre "apenas
+      // administrador", escondendo falhas de CORS/rede/sessão.
+      let msg;
+      if (r && r.status === 403) msg = 'Sem permissão: seu usuário precisa ter perfil administrador para semear.';
+      else if (r && r.status === 401) msg = 'Sessão expirada — saia e entre de novo como administrador.';
+      else if (r && r.status) msg = `Falha ao inserir (HTTP ${r.status})${r.error ? ': ' + r.error : ''}.`;
+      else msg = 'O servidor não respondeu à gravação (provável CORS/deploy). Atualize o app com Ctrl+Shift+R; se persistir, o backend precisa do último deploy.';
+      if (typeof showToast === 'function') showToast(msg, 'error', 8000);
       return;
     }
     const msg = !r.ja_existia
