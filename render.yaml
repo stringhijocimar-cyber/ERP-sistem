@@ -1,38 +1,38 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Render Blueprint — publica o backend Node do Horus ERP (API + UI juntos).
 #
-# COMO USAR (uma vez):
-#   1. Crie conta em https://render.com (pode entrar com o GitHub).
-#   2. New  →  Blueprint  →  conecte o repositório stringhijocimar-cyber/ERP-sistem.
-#   3. O Render lê este arquivo e cria o serviço web automaticamente.
-#   4. Em "Environment", defina SEED_PASSWORD (a senha do admin inicial).
-#   5. Create  →  aguarde o build (~2-3 min). Pronto: um link público estável.
-#
-# A cada push no branch `main`, o Render republica sozinho (autoDeploy).
-# O servidor serve a UI e a API na MESMA origem → sem CORS, sem proxy, o botão
-# "Inserir dados de simulação" funciona.
+# SEGURANÇA / PERSISTÊNCIA:
+# - Em produção, SEED_PASSWORD precisa ser forte e diferente da senha padrão.
+# - Para dados reais, configure DB_PATH apontando para um disco persistente.
+# - Banco efêmero só é permitido quando ALLOW_EPHEMERAL_DB=1 for definido
+#   explicitamente para uma demonstração descartável.
 # ─────────────────────────────────────────────────────────────────────────────
 services:
   - type: web
     name: horus-erp
     runtime: node
-    plan: free                 # grátis (hiberna após inatividade; 1º acesso ~50s)
+    plan: free
     branch: main
-    buildCommand: npm install  # instala a raiz + nexus-erp (postinstall)
-    startCommand: npm start     # npm start → node nexus-erp/server.js (usa $PORT, 0.0.0.0)
+    buildCommand: npm install
+    startCommand: npm start
     healthCheckPath: /api/health
-    autoDeploy: true            # republica a cada push no main
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
-      - key: SEED_PASSWORD      # defina no painel do Render (senha do admin inicial)
+      - key: SEED_PASSWORD      # defina no painel (senha FORTE, mínimo 12 caracteres)
         sync: false
-      # O banco SQLite fica no disco efêmero do plano free (reseta a cada deploy).
-      # Basta clicar em "Inserir dados de simulação" para repovoar. Para dados
-      # PERSISTENTES, troque para um plano com disco e descomente abaixo:
+      # Plano free = disco efêmero (o banco reseta a cada deploy). O guard de
+      # produção exige este opt-in explícito para aceitar rodar sem persistência
+      # — é uma DEMO. Basta clicar em "Inserir dados de simulação" para repovoar.
+      - key: ALLOW_EPHEMERAL_DB
+        value: "1"
+      #
+      # PARA DADOS REAIS (clientes): troque para um plano com disco, comente o
+      # ALLOW_EPHEMERAL_DB acima, descomente o DB_PATH e o bloco `disk` abaixo.
       # - key: DB_PATH
       #   value: /data/nexus.db
-    # disk:                      # persistência real (requer plano pago ~US$1/mês)
+    # disk:
     #   name: horus-data
     #   mountPath: /data
     #   sizeGB: 1
