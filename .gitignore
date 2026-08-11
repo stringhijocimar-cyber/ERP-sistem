@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Runtime databases and SQLite sidecars
+*.db
+*.db-wal
+*.db-shm
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Logs and OS/editor artifacts
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Temporary/cache files
+.tmp/
+tmp/
+.cache/
+coverage/
