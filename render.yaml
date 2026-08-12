@@ -22,14 +22,16 @@ services:
         value: production
       - key: SEED_PASSWORD      # defina no painel (senha FORTE, mínimo 12 caracteres)
         sync: false
-      # Plano free = disco efêmero (o banco reseta a cada deploy). O guard de
-      # produção exige este opt-in explícito para aceitar rodar sem persistência
-      # — é uma DEMO. Basta clicar em "Inserir dados de simulação" para repovoar.
+      # Opt-in de banco EFÊMERO. Declarado aqui, mas SEM valor: o Blueprint não
+      # concede a autorização sozinho — alguém precisa definir explicitamente
+      # ALLOW_EPHEMERAL_DB=1 no painel do Render para um ambiente de DEMO.
+      # Deixando em branco, o guard falha fechado (produção sem DB_PATH e sem
+      # opt-in = start bloqueado), que é o comportamento desejado.
       - key: ALLOW_EPHEMERAL_DB
-        value: "1"
+        sync: false
       #
-      # PARA DADOS REAIS (clientes): troque para um plano com disco, comente o
-      # ALLOW_EPHEMERAL_DB acima, descomente o DB_PATH e o bloco `disk` abaixo.
+      # PARA DADOS REAIS (clientes): use um plano com disco, NÃO defina
+      # ALLOW_EPHEMERAL_DB e descomente o DB_PATH e o bloco `disk` abaixo.
       # - key: DB_PATH
       #   value: /data/nexus.db
     # disk:

@@ -40,6 +40,18 @@ describe('runtime_guard', () => {
     expect(result.stderr).toContain('senha padrão conhecida')
   })
 
+  // CASO D — independente do CASO C: aqui a senha NÃO está na lista de senhas
+  // conhecidas/padrão; o que a reprova é exclusivamente o COMPRIMENTO (<12).
+  it('bloqueia senha com menos de 12 caracteres (não-padrão)', () => {
+    const result = run({
+      NODE_ENV: 'production',
+      SEED_PASSWORD: 'Abc@123456', // 10 caracteres
+      DB_PATH: '/data/nexus.db',
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('12 caracteres')
+  })
+
   it('bloqueia banco efêmero não autorizado', () => {
     const result = run({
       NODE_ENV: 'production',
