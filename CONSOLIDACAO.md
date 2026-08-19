@@ -1,22 +1,24 @@
 # Consolidação de Backends e Migrations
 
-> Registro de decisão e plano de cutover. Decisão: **backend único =
-> Cloudflare Workers + D1** (`nexus-cf`). O Express é aposentado.
+> **Documento histórico — decisão supersedida em 18/08/2026.** Este arquivo registra a estratégia anterior de cutover para Cloudflare Worker + D1. A fonte de verdade operacional atual está em `docs/ARQUITETURA_ATUAL.md`: `nexus-erp/` (Express + SQLite) é o runtime implantado pelo `render.yaml`; `nexus-cf/` permanece como alvo de migração até D1, secrets, equivalência funcional e cutover serem efetivamente validados.
+
+> Registro de decisão e plano de cutover anterior. Decisão histórica: **backend único =
+> Cloudflare Workers + D1** (`nexus-cf`). O Express seria aposentado.
 
 ## 1. Situação encontrada (dois backends, dois modelos)
 
-| Backend | Arquivo | Modelo de dados | Status |
-|---------|---------|-----------------|--------|
-| **Cloudflare Worker** | `nexus-cf/src/index.js` + `schema.sql` | **Documento** (`id` + `payload` JSON) | ✅ **Canônico** |
-| Express + better-sqlite3 | `nexus-erp/server.js` + `migrations/*` | Relacional (coluna por campo) | ⚠️ **Legado** (sandbox) |
-| Estático | `nexus-erp/serve.js` | — (serve `public/`) | Substituído pelos assets do Worker |
+| Backend | Arquivo | Modelo de dados | Status histórico |
+|---------|---------|-----------------|------------------|
+| **Cloudflare Worker** | `nexus-cf/src/index.js` + `schema.sql` | **Documento** (`id` + `payload` JSON) | Alvo canônico da decisão anterior |
+| Express + better-sqlite3 | `nexus-erp/server.js` + `migrations/*` | Relacional (coluna por campo) | Tratado como legado na decisão anterior |
+| Estático | `nexus-erp/serve.js` | — (serve `public/`) | Substituído pelos assets do Worker no plano anterior |
 
 Os dois bancos **nunca conversaram**: têm schemas e até envelopes de resposta
 diferentes (`{data}` no Worker × `{success,data}` no Express).
 
-## 2. Por que o Worker é o canônico
+## 2. Por que o Worker foi escolhido no plano anterior
 
-O Worker já implementa, **server-authoritative**, o núcleo do negócio:
+O Worker já implementava, **server-authoritative**, o núcleo do negócio:
 - Auth forte (PBKDF2 + JWT HS256), `JWT_SECRET` obrigatório (falha fechada).
 - Aprovação multi-estágio de RC e Mapa com **autoridade rechecada na ação** e
   **no-double-approval** (SoD).
@@ -25,12 +27,11 @@ O Worker já implementa, **server-authoritative**, o núcleo do negócio:
   match. É a materialização de "nada paga sem lastro".
 - Trilha de auditoria **append-only** (`audit_log`).
 
-O Express compara senha em texto plano (corrigido no Sprint 1, mas é sandbox) e
-não tem gate de pagamento equivalente.
+O Express comparava senha em texto plano naquele estágio (corrigido posteriormente) e era tratado como sandbox naquele plano.
 
-## 3. Migrations — diagnóstico
+## 3. Migrations — diagnóstico histórico
 
-As migrations em `nexus-erp/migrations/` são do **modelo relacional legado**:
+As migrations em `nexus-erp/migrations/` eram do **modelo relacional legado**:
 - **Duplicatas de numeração**: dois `0001_*` (`schema_inicial` × `schema_completo`)
   e dois `0006_*` (`almoxarifado_v2` × `recebimentos_sem_fk`) → ordem
   não-determinística.
@@ -45,12 +46,9 @@ As migrations em `nexus-erp/migrations/` são do **modelo relacional legado**:
   localStorage não existem no D1") — workaround do split que **deixa de existir**
   no modelo documento.
 
-**Decisão:** no alvo canônico não há migrations relacionais. O schema do D1 é
-um arquivo único versionado: `nexus-cf/schema.sql`. As migrations relacionais
-ficam **congeladas como legado** (não são renomeadas/apagadas para preservar
-histórico do sandbox), e deixam de ser a fonte de verdade.
+A decisão daquele plano era congelar as migrations relacionais e usar `nexus-cf/schema.sql` como fonte de verdade no alvo Cloudflare. Essa decisão **não representa o runtime operacional vigente**; consulte `docs/ARQUITETURA_ATUAL.md`.
 
-## 4. O que já foi feito nesta consolidação
+## 4. O que foi feito naquela consolidação
 
 - `nexus-cf/schema.sql`: **absorveu** as entidades que só existiam no Express
   (`contratos`, `crm`, `projetos`, `ssma`, `almoxarifado`, `recebimentos`) no
@@ -72,9 +70,9 @@ histórico do sandbox), e deixam de ser a fonte de verdade.
 - **Call-sites da UI religados** (aditivo, via `fluxo_server_bridge.js`): com o
   modo servidor ligado, `aprovarMapa2`, `emitirPedidoDoMapa`, `gerarPedidoDeMapa`
   delegam ao servidor; `financeiro.js` paga via `DB.contas.pagar`. Modo desligado
-  preserva o comportamento legado. Cobertos por testes jsdom (15/15 na suíte).
+  preserva o comportamento legado. Cobertos por testes jsdom (15/15 na suíte daquele ciclo).
 
-## 5. Plano de cutover (não-destrutivo, por módulo)
+## 5. Plano de cutover histórico
 
 1. **Deploy do Worker + D1** (ver `DEPLOY.md`) e validar o gate de pagamento.
 2. **Religar o cliente ao servidor** (`db.js`/módulos) atrás da flag
@@ -82,13 +80,17 @@ histórico do sandbox), e deixam de ser a fonte de verdade.
    emitir PC → pagar), depois RC/OS, depois os módulos absorvidos.
 3. Provar cada módulo (inclusive **teste multiusuário em 2 navegadores**) antes
    de aposentar o `localStorage` correspondente.
-4. Quando todos os módulos estiverem no servidor: **remover** `server.js`,
-   `serve.js` e `migrations/*` relacionais; o Express sai do repositório.
+4. Quando todos os módulos estivessem no servidor: **remover** `server.js`,
+   `serve.js` e `migrations/*` relacionais; o Express sairia do repositório.
 
-## 6. Pendências conhecidas (futuro)
+Esse plano só volta a ser executável depois que os pré-requisitos atuais de Cloudflare descritos em `docs/ARQUITETURA_ATUAL.md` forem atendidos.
+
+## 6. Pendências registradas naquele momento
 
 - Ações especiais ainda não portadas ao Worker: movimentação de estoque
   (`almoxarifado/:id/movimentar`), numeração atômica de documentos
-  (hoje `{length+1}` no cliente → corrida).
+  (naquele momento `{length+1}` no cliente → corrida).
 - Matriz de cotação com auditoria de preço em nível de campo e segregação.
 - IDF/score do fornecedor lido do servidor (não do `localStorage`).
+
+> Algumas dessas pendências foram implementadas depois. Use testes e o roadmap atual, e não esta seção histórica isoladamente, para determinar o estado presente de cada função.
