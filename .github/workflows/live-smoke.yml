@@ -2,6 +2,11 @@ name: Live Smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'URL pública do Hórus (ex.: https://meu-servico.onrender.com)'
+        required: false
+        type: string
   pull_request:
     paths:
       - 'render.yaml'
@@ -17,19 +22,34 @@ permissions:
 jobs:
   health:
     name: Produção /api/health
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.HORUS_BASE_URL != '' }}
     runs-on: ubuntu-latest
     env:
-      HORUS_BASE_URL: ${{ vars.HORUS_BASE_URL || 'https://horus-erp.onrender.com' }}
+      HORUS_BASE_URL: ${{ inputs.base_url || vars.HORUS_BASE_URL }}
     steps:
+      - name: Validar URL configurada
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${HORUS_BASE_URL:-}" ]; then
+            echo "HORUS_BASE_URL não configurada. Informe base_url no disparo manual ou crie a variável HORUS_BASE_URL no repositório."
+            exit 1
+          fi
+          case "$HORUS_BASE_URL" in
+            http://*|https://*) ;;
+            *) echo "HORUS_BASE_URL precisa começar com http:// ou https://"; exit 1 ;;
+          esac
+
       - name: Verificar endpoint de saúde público
         shell: bash
         run: |
           set -euo pipefail
-          echo "Verificando ${HORUS_BASE_URL}/api/health"
+          base="${HORUS_BASE_URL%/}"
+          echo "Verificando ${base}/api/health"
           body="$(curl --fail --silent --show-error --location \
-            --connect-timeout 15 --max-time 120 \
-            --retry 4 --retry-delay 10 --retry-all-errors \
-            "${HORUS_BASE_URL}/api/health")"
+            --connect-timeout 15 --max-time 90 \
+            --retry 2 --retry-delay 10 --retry-all-errors \
+            "${base}/api/health")"
           echo "Resposta: ${body}"
           BODY="$body" node -e "const body = process.env.BODY || ''; let data; try { data = JSON.parse(body) } catch { process.exit(1) } if (!data || data.ok !== true) { console.error('Health check sem ok=true'); process.exit(1) } console.log('Health check funcional: ok=true')"
 
@@ -37,10 +57,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          base="${HORUS_BASE_URL%/}"
           curl --fail --silent --show-error --location \
-            --connect-timeout 15 --max-time 120 \
-            --retry 4 --retry-delay 10 --retry-all-errors \
+            --connect-timeout 15 --max-time 90 \
+            --retry 2 --retry-delay 10 --retry-all-errors \
             --output /tmp/horus-home.html \
-            "${HORUS_BASE_URL}/"
+            "${base}/"
           test -s /tmp/horus-home.html
           echo "Aplicação pública respondeu com conteúdo HTML."
