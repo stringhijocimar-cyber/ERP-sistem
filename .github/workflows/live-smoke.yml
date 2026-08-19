@@ -1,0 +1,46 @@
+name: Live Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'render.yaml'
+      - '.github/workflows/live-smoke.yml'
+      - 'nexus-erp/server.js'
+      - 'nexus-erp/scripts/runtime_guard.js'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    name: Produção /api/health
+    runs-on: ubuntu-latest
+    env:
+      HORUS_BASE_URL: ${{ vars.HORUS_BASE_URL || 'https://horus-erp.onrender.com' }}
+    steps:
+      - name: Verificar endpoint de saúde público
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Verificando ${HORUS_BASE_URL}/api/health"
+          body="$(curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 120 \
+            --retry 4 --retry-delay 10 --retry-all-errors \
+            "${HORUS_BASE_URL}/api/health")"
+          echo "Resposta: ${body}"
+          BODY="$body" node -e "const body = process.env.BODY || ''; let data; try { data = JSON.parse(body) } catch { process.exit(1) } if (!data || data.ok !== true) { console.error('Health check sem ok=true'); process.exit(1) } console.log('Health check funcional: ok=true')"
+
+      - name: Verificar carregamento da aplicação
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 120 \
+            --retry 4 --retry-delay 10 --retry-all-errors \
+            --output /tmp/horus-home.html \
+            "${HORUS_BASE_URL}/"
+          test -s /tmp/horus-home.html
+          echo "Aplicação pública respondeu com conteúdo HTML."
