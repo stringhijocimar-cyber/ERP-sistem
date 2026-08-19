@@ -30,6 +30,10 @@ jobs:
         working-directory: nexus-erp
         run: npm ci
 
+      - name: Auditar dependências de produção (informativo)
+        working-directory: nexus-erp
+        run: npm audit --omit=dev || true
+
       - name: Validar sintaxe dos backends
         run: |
           node --check nexus-erp/server.js
