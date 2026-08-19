@@ -2,6 +2,14 @@
 node_modules/
 **/node_modules/
 
+# Build/test caches
+.vite/
+**/.vite/
+coverage/
+.cache/
+.tmp/
+tmp/
+
 # Runtime databases and SQLite sidecars
 *.db
 *.db-wal
@@ -19,8 +27,6 @@ node_modules/
 .vscode/
 .idea/
 
-# Temporary/cache files
-.tmp/
-tmp/
-.cache/
-coverage/
+# Generated source-code bundles (release/export artifacts, not source of truth)
+nexus-erp/dist/NEXUS_ERP_CODIGO_FONTE.*
+nexus-erp/dist/nexus_erp_source_code.txt
