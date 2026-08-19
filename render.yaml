@@ -16,7 +16,8 @@ services:
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/health
-    autoDeploy: true
+    autoDeployTrigger: checksPass
+    renderSubdomainPolicy: enabled
     envVars:
       - key: NODE_ENV
         value: production

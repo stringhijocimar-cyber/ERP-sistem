@@ -1,13 +1,15 @@
 {
-  "name": "nexus-erp-workspace",
+  "name": "horus-erp-workspace",
   "version": "3.0.0",
   "private": true,
-  "description": "NEXUS ERP — workspace. O sistema canônico fica em nexus-erp/ (Express + UI) e nexus-cf/ (Cloudflare Worker de produção).",
+  "description": "Hórus ERP — workspace principal. Runtime operacional em nexus-erp/ (Express + UI); nexus-cf/ permanece como alvo alternativo Cloudflare até o cutover formal.",
   "scripts": {
     "start": "npm --prefix nexus-erp start",
     "dev": "npm --prefix nexus-erp run dev",
     "test": "npm --prefix nexus-erp test",
     "build": "echo 'Build OK (frontend estático em nexus-erp/public)'",
+    "repo:guard": "node scripts/repository_guard.mjs",
+    "verify": "npm run repo:guard && npm test",
     "postinstall": "npm --prefix nexus-erp install"
   },
   "engines": {
