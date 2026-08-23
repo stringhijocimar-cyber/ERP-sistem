@@ -3,6 +3,7 @@ name: Build Mining Proposal Analyzer APK
 on:
   push:
     branches:
+      - main
       - feature/mining-proposal-analyzer-android
     paths:
       - 'apps/mining-proposal-analyzer/**'
