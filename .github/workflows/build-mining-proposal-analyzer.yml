@@ -7,6 +7,12 @@ on:
     paths:
       - 'apps/mining-proposal-analyzer/**'
       - '.github/workflows/build-mining-proposal-analyzer.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'apps/mining-proposal-analyzer/**'
+      - '.github/workflows/build-mining-proposal-analyzer.yml'
   workflow_dispatch:
 
 permissions:
@@ -52,6 +58,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish or update GitHub Release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
