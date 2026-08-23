@@ -1,0 +1,67 @@
+name: Build Mining Proposal Analyzer APK
+
+on:
+  push:
+    branches:
+      - feature/mining-proposal-analyzer-android
+    paths:
+      - 'apps/mining-proposal-analyzer/**'
+      - '.github/workflows/build-mining-proposal-analyzer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Install Android SDK 35
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Build debug APK
+        working-directory: apps/mining-proposal-analyzer
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Prepare APK
+        run: |
+          cp apps/mining-proposal-analyzer/app/build/outputs/apk/debug/app-debug.apk Mining-Proposal-Analyzer-v1.0.0.apk
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mining-Proposal-Analyzer-APK
+          path: Mining-Proposal-Analyzer-v1.0.0.apk
+          if-no-files-found: error
+
+      - name: Publish or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="mining-analyzer-v1.0.0"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" Mining-Proposal-Analyzer-v1.0.0.apk --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" Mining-Proposal-Analyzer-v1.0.0.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Mining Proposal Analyzer v1.0.0" \
+              --notes "Aplicativo Android para análise técnico-comercial de propostas de mineração: TCO, ranking, benchmark, saving, riscos e estratégia de negociação."
+          fi
