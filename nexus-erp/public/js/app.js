@@ -249,7 +249,21 @@ function _limparErroLogin() {
 }
 
 // --- LOGIN ---
-function doLogin() {
+// Autentica no SERVIDOR e guarda o token usado por todas as chamadas /api/*.
+// Sem isto o usuário entrava na tela mas cada requisição voltava 401 — e os
+// módulos apareciam "vazios"/"sem servidor" mesmo com dados no banco.
+// Retorna o perfil do servidor, ou null quando o servidor não autenticou.
+async function _autenticarNoServidor(email, senha) {
+  if (!(window.DB && DB.auth && typeof DB.auth.login === 'function')) return null;
+  try {
+    const r = await DB.auth.login(email, senha);
+    if (r && r.token) return (r.user && (r.user.perfil || r.user.profile)) || 'diretor';
+  } catch (e) { /* servidor fora ou credencial recusada: segue no fluxo local */ }
+  return null;
+}
+window._autenticarNoServidor = _autenticarNoServidor;
+
+async function doLogin() {
   _limparErroLogin();
   const emailRaw  = (document.getElementById('loginEmail').value || '').trim();
   const senha     = (document.getElementById('loginPass').value  || '').trim();
@@ -257,6 +271,12 @@ function doLogin() {
 
   if (!emailRaw) { _mostrarErroLogin('Informe seu e-mail corporativo.'); return; }
   if (!senha)    { _mostrarErroLogin('Informe sua senha.'); return; }
+
+  // 1) Servidor primeiro: é o que gera o token. Se autenticar, entra por aqui.
+  const perfilServidor = await _autenticarNoServidor(emailRaw, senha);
+  if (perfilServidor) { loginAs(perfilServidor, emailRaw); return; }
+
+  // 2) Servidor indisponível/recusou: mantém o fluxo local existente (offline).
 
   const creds = _inicializarCredenciais();
   const userCred = creds[emailKey];
@@ -296,7 +316,20 @@ function quickLogin(profile) {
     supervisor: 'supervisor@fraseralexander.com.br',
   };
   _inicializarCredenciais();
-  loginAs(profile, emailMap[profile] || '');
+  const email = emailMap[profile] || '';
+  // Acesso rápido também precisa de token: usa a senha já digitada; se o campo
+  // estiver vazio, preenche o e-mail e pede a senha em vez de entrar sem token
+  // (entrar sem token dava 401 em tudo e a tela ficava "sem servidor").
+  const campoEmail = document.getElementById('loginEmail');
+  const campoSenha = document.getElementById('loginPass');
+  if (campoEmail) campoEmail.value = email;
+  const senha = (campoSenha && campoSenha.value || '').trim();
+  if (!senha) {
+    if (campoSenha) campoSenha.focus();
+    _mostrarErroLogin('Digite a senha para entrar como ' + profile + '.');
+    return;
+  }
+  doLogin();
 }
 
 // ── TELA DE PRIMEIRO ACESSO ───────────────────────────────

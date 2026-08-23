@@ -9,6 +9,12 @@ const I18N = {
     // Sistema / Login
     system_name:        'Horus',
     sys_name:           'Sistema de Gestão Integrado',
+    system_subtitle:    'Governança de Compras, Contratos e Operações',
+    login_email:        'E-mail corporativo',
+    login_password:     'Senha',
+    login_btn:          'Acessar o Sistema',
+    login_demo:         '— Acesso rápido para demonstração —',
+    login_how:          '📋 Como funciona o acesso? Clique aqui',
     sys_subtitle:       'Gestão Operacional, Financeira e de Contratos',
     sys_login_title:    'Acessar o sistema',
     sys_login_subtitle: 'Use suas credenciais corporativas',
@@ -118,6 +124,12 @@ const I18N = {
   en: {
     system_name:        'Horus',
     sys_name:           'Integrated Management System',
+    system_subtitle:    'Procurement, Contracts and Operations Governance',
+    login_email:        'Corporate e-mail',
+    login_password:     'Password',
+    login_btn:          'Sign in',
+    login_demo:         '— Quick access for demonstration —',
+    login_how:          '📋 How does access work? Click here',
     sys_subtitle:       'Operational, Financial and Contract Management',
     sys_login_title:    'Sign in',
     sys_login_subtitle: 'Use your corporate credentials',
@@ -222,6 +234,12 @@ const I18N = {
   es: {
     system_name:        'Horus',
     sys_name:           'Sistema de Gestión Integrado',
+    system_subtitle:    'Gobernanza de Compras, Contratos y Operaciones',
+    login_email:        'Correo corporativo',
+    login_password:     'Contraseña',
+    login_btn:          'Acceder al Sistema',
+    login_demo:         '— Acceso rápido para demostración —',
+    login_how:          '📋 ¿Cómo funciona el acceso? Haga clic aquí',
     sys_subtitle:       'Gestión Operacional, Financiera y de Contratos',
     sys_login_title:    'Iniciar sesión',
     sys_login_subtitle: 'Use sus credenciales corporativas',
@@ -332,6 +350,14 @@ function t(key) {
   return dict[key] !== undefined ? dict[key] : (I18N['pt'][key] !== undefined ? I18N['pt'][key] : key);
 }
 
+// Existe tradução para a chave (no idioma atual ou no pt como fallback)?
+// Usado para NÃO sobrescrever o texto do HTML quando a chave não foi cadastrada
+// — antes disso, a tela exibia o nome cru da chave (ex.: "login_btn").
+function _hasKey(key) {
+  const dict = I18N[_currentLang] || I18N['pt'];
+  return dict[key] !== undefined || I18N['pt'][key] !== undefined;
+}
+
 function getLang()    { return _currentLang; }
 
 function setLang(lang) {
@@ -348,6 +374,7 @@ function _applyI18nDOM() {
   document.documentElement.lang = _currentLang === 'pt' ? 'pt-BR' : _currentLang;
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.getAttribute('data-i18n');
+    if (!_hasKey(key)) return; // sem tradução: mantém o texto original do HTML
     const val = t(key);
     if (el.tagName === 'INPUT' && el.type !== 'button' && el.type !== 'submit') {
       el.placeholder = val;
@@ -356,10 +383,12 @@ function _applyI18nDOM() {
     }
   });
   document.querySelectorAll('[data-i18n-ph]').forEach(el => {
-    el.placeholder = t(el.getAttribute('data-i18n-ph'));
+    const key = el.getAttribute('data-i18n-ph');
+    if (_hasKey(key)) el.placeholder = t(key);
   });
   document.querySelectorAll('[data-i18n-title]').forEach(el => {
-    el.title = t(el.getAttribute('data-i18n-title'));
+    const key = el.getAttribute('data-i18n-title');
+    if (_hasKey(key)) el.title = t(key);
   });
   // Atualiza title da página (empresa é setado pelo multi_empresa.js)
   const empName = typeof getEmpresaAtiva === 'function'
