@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>ProcureWise | Análise de Reajuste</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <span class="eyebrow">Supplier Price Intelligence</span>
+      <h1>ProcureWise</h1>
+      <p>Analise reajustes de fornecedores, identifique markup implícito, simule preço-alvo e transforme negociação em saving mensurável.</p>
+    </div>
+    <button id="addItemBtn" class="primary">+ Adicionar item</button>
+  </header>
+
+  <main class="container">
+    <section class="kpis" aria-label="Indicadores">
+      <article><span>Spend atual</span><strong id="currentSpend">R$ 0,00</strong></article>
+      <article><span>Spend proposto</span><strong id="proposedSpend">R$ 0,00</strong></article>
+      <article><span>Saving potencial</span><strong id="savingPotential">R$ 0,00</strong></article>
+      <article><span>Impacto solicitado</span><strong id="requestedImpact">0,0%</strong></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Análise de reajuste</h2>
+          <p>Custos = matéria-prima + processo + terceiros. O preço-alvo aplica o markup desejado sobre o custo.</p>
+        </div>
+        <div class="actions">
+          <button id="demoBtn">Carregar exemplo</button>
+          <button id="exportBtn">Exportar CSV</button>
+          <button id="clearBtn" class="danger">Limpar</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>PN / Item</th>
+              <th>Fornecedor</th>
+              <th>Volume anual</th>
+              <th>Preço atual</th>
+              <th>Preço proposto</th>
+              <th>MP</th>
+              <th>Processo</th>
+              <th>Terceiros</th>
+              <th>Custo total</th>
+              <th>Markup impl.</th>
+              <th>Markup-alvo</th>
+              <th>Preço-alvo</th>
+              <th>Saving anual</th>
+              <th>Risco</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="itemsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel two-col">
+      <div>
+        <h2>Leitura executiva</h2>
+        <div id="executiveSummary" class="summary-box">Adicione itens para gerar uma recomendação.</div>
+      </div>
+      <div>
+        <h2>Estratégia de monetização</h2>
+        <ul class="pricing-list">
+          <li><strong>Free</strong><span>10 itens por análise</span></li>
+          <li><strong>Pro</strong><span>R$ 59/mês por usuário</span></li>
+          <li><strong>Business</strong><span>R$ 249/mês por equipe</span></li>
+          <li><strong>Enterprise</strong><span>workflow, índices, histórico e integrações</span></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <template id="rowTemplate">
+    <tr>
+      <td><input data-field="item" placeholder="PN 123" /></td>
+      <td><input data-field="supplier" placeholder="Fornecedor" /></td>
+      <td><input data-field="annualVolume" type="number" min="0" step="1" /></td>
+      <td><input data-field="currentPrice" type="number" min="0" step="0.01" /></td>
+      <td><input data-field="proposedPrice" type="number" min="0" step="0.01" /></td>
+      <td><input data-field="rawMaterial" type="number" min="0" step="0.01" /></td>
+      <td><input data-field="process" type="number" min="0" step="0.01" /></td>
+      <td><input data-field="thirdParty" type="number" min="0" step="0.01" /></td>
+      <td data-output="cost"></td>
+      <td data-output="impliedMarkup"></td>
+      <td><input data-field="targetMarkup" type="number" min="0" step="0.1" value="20" /></td>
+      <td data-output="targetPrice"></td>
+      <td data-output="annualSaving"></td>
+      <td><span data-output="risk" class="badge"></span></td>
+      <td><button data-action="remove" class="icon danger" aria-label="Excluir">×</button></td>
+    </tr>
+  </template>
+
+  <footer>ProcureWise MVP • dados armazenados localmente no navegador</footer>
+  <script src="app.js"></script>
+</body>
+</html>
