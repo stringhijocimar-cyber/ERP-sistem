@@ -13,7 +13,15 @@ const page = await ctx.newPage(), errors = [];
 page.on('pageerror', e => errors.push(e.message));
 const result = { checks: [], errors };
 const check = text => { result.checks.push(text); console.log(`PASS ${text}`); };
-async function noOverflow(label) { assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, label); }
+async function noOverflow(label) {
+  const width = page.viewportSize().width;
+  const measured = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth));
+  assert.ok(measured <= width + 1, `${label}: content ${measured}px exceeds viewport ${width}px`);
+}
+async function screenshot(path, fullPage = true) {
+  await page.locator('#toast.visible').waitFor({ state: 'hidden', timeout: 8000 });
+  await page.screenshot({ path, fullPage });
+}
 try {
   await page.goto('http://127.0.0.1:4173', { waitUntil: 'networkidle' });
   assert.match(await page.locator('h1').innerText(), /Mais contexto/);
@@ -22,7 +30,7 @@ try {
   await page.locator('[data-action="demo"]').click();
   await page.locator('.banner').waitFor();
   assert.match(await page.locator('.banner').innerText(), /fictícios/);
-  await page.screenshot({ path: 'qa/01-radar.png', fullPage: true });
+  await screenshot('qa/01-radar.png');
   check('Demo is explicit and opt-in');
   await page.locator('[data-nav="profile"]').first().click();
   await page.locator('[data-action="start-profile"]').click();
@@ -33,7 +41,7 @@ try {
   }
   assert.equal(await page.locator('.profile-level').innerText(), 'Arrojado');
   check('Full suitability questionnaire stores and applies the derived profile');
-  await page.screenshot({ path: 'qa/05-perfil.png', fullPage: true });
+  await screenshot('qa/05-perfil.png');
   await page.locator('[data-nav="radar"]').first().click();
   await page.locator('[data-filter="fii"]').click();
   assert.equal(await page.locator('[data-asset]').count(), 3);
@@ -47,7 +55,7 @@ try {
   assert.equal(await page.locator('[data-action="paper-open"]').isDisabled(), true);
   assert.match(await page.locator('main').innerText(), /Dados fictícios: apenas demonstração/);
   await noOverflow('analysis');
-  await page.screenshot({ path: 'qa/02-analise.png', fullPage: true });
+  await screenshot('qa/02-analise.png');
   check('Asset filters, search, real candlestick rendering and demo trading veto work');
   await page.locator('[data-mode="day"]').click();
   assert.match(await page.locator('main').innerText(), /5 minutos/);
@@ -56,7 +64,7 @@ try {
   await page.locator('[data-nav="macro"]').click();
   assert.match(await page.locator('main').innerText(), /Informação tem que ter fonte/);
   await noOverflow('macro');
-  await page.screenshot({ path: 'qa/03-cenario.png', fullPage: true });
+  await screenshot('qa/03-cenario.png');
   await page.locator('[data-nav="paper"]').click();
   await page.locator('#exercise-form button[type=submit]').click();
   assert.match(await page.locator('main').innerText(), /SEM COTAÇÃO REAL/);
@@ -65,7 +73,7 @@ try {
   await page.locator('#risk-form button[type=submit]').click();
   assert.match(await page.locator('main').innerText(), /0,25%/);
   await noOverflow('simulator');
-  await page.screenshot({ path: 'qa/04-simulador.png', fullPage: true });
+  await screenshot('qa/04-simulador.png');
   check('Manual paper exercise deducts costs and risk controls persist');
   const downloadPromise = page.waitForEvent('download');
   await page.locator('[data-action="export"]').click();
@@ -88,7 +96,7 @@ try {
   for (const width of [360, 412, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 }); await noOverflow(`viewport ${width}`);
   }
-  await page.screenshot({ path: 'qa/06-desktop.png', fullPage: true });
+  await screenshot('qa/06-desktop.png');
   check('Layouts fit 360px, 390px, 412px, 768px and 1280px');
   assert.equal(errors.length, 0, errors.join('\n'));
   check('No uncaught browser errors');
