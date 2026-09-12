@@ -124,7 +124,7 @@ function assetCard(asset) {
   return `<article class="card asset-card" role="button" tabindex="0" data-asset="${asset.symbol}" aria-label="Analisar ${asset.symbol}">
     <div class="asset-top"><div class="asset-id"><div class="asset-logo" style="--asset:${asset.color}">${asset.type === 'crypto' ? asset.symbol.slice(0, 1) : asset.symbol.slice(0, 2)}</div><div><strong>${asset.symbol.replace('BRL', '/BRL')}</strong><small>${asset.name}</small></div></div>
       <button aria-label="${favorite ? 'Remover' : 'Adicionar'} ${asset.symbol} ${favorite ? 'dos' : 'aos'} favoritos" class="favorite" style="background:none;border:0;padding:5px;color:${favorite ? 'var(--amber)' : 'var(--muted)'}" data-favorite="${asset.symbol}">${icon('star')}</button></div>
-    <div class="price-row"><strong class="price number">${money(s?.price)}</strong><span class="small number ${changeColor(s?.changePct)}">${pct(s?.changePct)}</span></div>
+    <div class="price-row"><strong class="price number ${money(s?.price).length > 11 ? 'long-price' : ''}">${money(s?.price)}</strong><span class="small number ${changeColor(s?.changePct)}">${pct(s?.changePct)}</span></div>
     ${spark(s?.bars, s?.changePct < 0 ? 'var(--red)' : 'var(--green)')}
     <div class="asset-bottom"><span class="${a.eligible ? 'green' : s?.demo ? 'amber' : 'muted'}"><span class="dot"></span> ${s?.error ? 'Fonte indisponível' : s?.referenceOnly ? 'Referência de câmbio' : a.status}</span><span class="score-text">${s?.bars?.length ? `<b>${a.score}</b>/100 confluência` : 'Dados não carregados'}</span></div>
   </article>`;

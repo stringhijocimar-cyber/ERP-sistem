@@ -6,3 +6,4 @@
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.grid-two>.stack,.card,.metric-card,.form-grid>label{min-width:0}input,select{min-width:0}
 .metric-card b{overflow-wrap:anywhere;line-height:1.25}@media(max-width:720px){.metric-card b{font-size:clamp(14px,4.6vw,20px)}}
+.asset-card .price{max-width:100%;overflow-wrap:anywhere;white-space:normal;line-height:1.35}@media(max-width:720px){.asset-card .price.long-price{font-size:clamp(14px,4.15vw,20px)}}

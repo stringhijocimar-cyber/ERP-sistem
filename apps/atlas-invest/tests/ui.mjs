@@ -101,6 +101,12 @@ try {
   await page.locator('[data-action="demo"]').click();
   for (const width of [360, 412, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 }); await noOverflow(`viewport ${width}`);
+    const clippedPrices = await page.locator('.asset-card .price').evaluateAll(items => items.filter(el => {
+      const range = document.createRange(); range.selectNodeContents(el);
+      const card = el.closest('.asset-card').getBoundingClientRect();
+      return [...range.getClientRects()].some(r => r.right > card.right - 6 || r.left < card.left + 6);
+    }).map(el => el.textContent));
+    assert.deepEqual(clippedPrices, [], `All quoted BRL prices must fit at ${width}px`);
   }
   await screenshot('qa/06-desktop.png');
   check('Layouts fit 360px, 390px, 412px, 768px and 1280px');
