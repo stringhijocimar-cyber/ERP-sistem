@@ -73,6 +73,12 @@ try {
   await page.locator('#risk-form button[type=submit]').click();
   assert.match(await page.locator('main').innerText(), /0,25%/);
   await noOverflow('simulator');
+  const overflowingNumbers = await page.locator('.metric-card b').evaluateAll(items => items.filter(el => {
+    const range = document.createRange(); range.selectNodeContents(el);
+    const card = el.closest('.metric-card').getBoundingClientRect();
+    return [...range.getClientRects()].some(r => r.right > card.right - 8 || r.left < card.left + 8);
+  }).map(el => el.textContent));
+  assert.deepEqual(overflowingNumbers, [], 'Currency values must remain inside their metric cards');
   await screenshot('qa/04-simulador.png');
   check('Manual paper exercise deducts costs and risk controls persist');
   const downloadPromise = page.waitForEvent('download');
