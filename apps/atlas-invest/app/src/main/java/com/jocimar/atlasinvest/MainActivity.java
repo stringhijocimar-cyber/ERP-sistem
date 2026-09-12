@@ -121,7 +121,7 @@ public final class MainActivity extends Activity {
                     c.setConnectTimeout(10000); c.setReadTimeout(12000);
                     c.setRequestProperty("Accept", "application/json");
                     c.setRequestProperty("User-Agent", "AtlasInvest/0.1");
-                    if (u.getHost().equals("brapi.dev") && token != null && !token.isBlank()) {
+                    if (u.getHost().equals("brapi.dev") && token != null && !token.trim().isEmpty()) {
                         if (!token.matches("[A-Za-z0-9_.-]{5,500}")) throw new IOException("Token inválido");
                         c.setRequestProperty("Authorization", "Bearer " + token);
                     }
